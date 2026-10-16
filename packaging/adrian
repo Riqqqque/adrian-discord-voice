@@ -1,0 +1,188 @@
+#!/usr/bin/env bash
+# adrian: manage the A.D.R.I.A.N. Discord voice service.
+#
+#   adrian status                 service state, health, admin UI address
+#   adrian logs [-f]              recent log (secrets are redacted)
+#   adrian start|stop|restart
+#   adrian url                    admin UI address
+#   adrian setup-code [--new]     one-time code for creating the admin account
+#   adrian reset-admin            forgot the password: remove the admin account
+#   adrian secret set NAME        set a key (prompted, hidden); also: delete NAME, list
+#   adrian check                  what's missing before the bot can start
+#   adrian voice [NAME [SPEED]]   show or change the voice (restarts the bot)
+#   adrian config KEY [VALUE]     show or change a setting, e.g. brain.extraBody.reasoning_effort medium
+#   adrian doctor                 full diagnostics
+#   adrian backup [FILE]          config, keys and state (not models) to a tar.gz
+#   adrian restore FILE
+#   adrian update BUNDLE          install a new version; rolls back if it doesn't come up
+#   adrian rollback               switch back to the previous version
+#   adrian uninstall [--keep-data]
+#   adrian version
+
+set -euo pipefail
+OPT=/opt/adrian
+ETC=/etc/adrian
+VAR=/var/lib/adrian
+SERVICE=adrian-voice
+NODE=$OPT/node/bin/node
+APP=$OPT/current
+
+die() { printf 'error: %s\n' "$*" >&2; exit 1; }
+need_root() { [ "$(id -u)" = 0 ] || die "run with sudo: sudo adrian $*"; }
+tool() { # run the node helper as the service user, so files keep the right owner
+  runuser -u adrian -- env ADRIAN_CONFIG=$ETC/config.json ADRIAN_STATE=$VAR \
+    LD_LIBRARY_PATH="$APP/node_modules/sherpa-onnx-linux-x64" "$NODE" "$APP/dist/cli/tool.js" "$@"
+}
+addr() { tool port; } # → "http 127.0.0.1 8790"
+health() { # health [timeout_s] → prints JSON, exit 0 if healthy
+  local proto host port t=${1:-5}
+  read -r proto host port < <(addr)
+  [ "$host" = 0.0.0.0 ] && host=127.0.0.1
+  curl -fsS -k --max-time "$t" "$proto://$host:$port/api/health"
+}
+wait_healthy() { # wait_healthy seconds
+  local end=$((SECONDS + $1))
+  while [ $SECONDS -lt $end ]; do
+    if out=$(health 3 2>/dev/null) && grep -q '"ok":true' <<<"$out"; then echo "$out"; return 0; fi
+    sleep 1
+  done
+  return 1
+}
+# /etc/adrian and /var/lib/adrian belong to the service account, which could
+# plant a symbolic link there; root must never follow one (it could hand over
+# or change system files).
+refuse_symlinks() {
+  local p
+  for p in "$@"; do
+    if [ -L "$p" ]; then die "$p is a symbolic link; refusing to continue (it must be a real file or directory)"; fi
+  done
+  return 0
+}
+current_version() { basename "$(readlink -f "$APP")"; }
+previous_version() { # the release that was current before the last switch
+  [ -L "$OPT/previous" ] && basename "$(readlink -f "$OPT/previous")"
+}
+switch_to() { # remember where we came from, then swap the symlink atomically
+  ln -sfn "releases/$(current_version)" "$OPT/previous"
+  ln -sfn "releases/$1" "$OPT/current.new" && mv -Tf "$OPT/current.new" "$OPT/current"
+}
+
+cmd=${1:-status}; shift || true
+case "$cmd" in
+  status)
+    need_root status
+    systemctl --no-pager --lines=0 status "$SERVICE" 2>/dev/null | sed -n '1,4p' || true
+    if h=$(health 3 2>/dev/null); then echo "health: $h"; else echo "health: not responding"; fi
+    read -r proto host port < <(addr); echo "admin UI: $proto://$host:$port/"
+    ;;
+  logs) journalctl -u "$SERVICE" --no-pager -n 200 -o cat "$@" ;;
+  start|stop|restart) need_root "$cmd"; systemctl "$cmd" "$SERVICE"; [ "$cmd" = stop ] || wait_healthy 60 >/dev/null || die "not healthy after 60 s: adrian logs" ;;
+  url) need_root url; read -r proto host port < <(addr); echo "$proto://$host:$port/" ;;
+  setup-code) need_root setup-code; tool setup-code "$@" ;;
+  reset-admin) need_root reset-admin; tool reset-admin && systemctl restart "$SERVICE" ;;
+  secret)
+    need_root secret
+    sub=${1:-}; name=${2:-}
+    case "$sub" in
+      set)
+        [ -n "$name" ] || die "usage: adrian secret set NAME"
+        if [ -t 0 ]; then read -r -s -p "Value for $name (hidden): " v; echo; else v=$(cat); fi
+        printf '%s' "$v" | tool secret-set "$name"; unset v ;;
+      delete) [ -n "$name" ] || die "usage: adrian secret delete NAME"; tool secret-delete "$name" ;;
+      list) tool secret-list ;;
+      *) die "usage: adrian secret set|delete|list [NAME]" ;;
+    esac ;;
+  check) need_root check; tool check ;;
+  config) need_root config; tool config "$@" ;;
+  voice)
+    need_root voice
+    if [ $# -eq 0 ]; then tool voice; else tool voice "$@" && systemctl restart "$SERVICE" && wait_healthy 60 >/dev/null && echo "Restarted with the new voice."; fi ;;
+  doctor)
+    need_root doctor
+    rc=0
+    ok() { printf '  ok    %s\n' "$*"; }
+    bad() { printf '  FAIL  %s\n' "$*"; rc=1; }
+    warn() { printf '  warn  %s\n' "$*"; }
+    echo "A.D.R.I.A.N. doctor (version $(current_version))"
+    [ -x "$NODE" ] && ok "node $("$NODE" --version)" || bad "node runtime missing at $NODE"
+    systemctl is-enabled --quiet "$SERVICE" && ok "service enabled" || bad "service not enabled"
+    systemctl is-active --quiet "$SERVICE" && ok "service running" || bad "service not running"
+    if h=$(health 3 2>/dev/null); then ok "health: $h"; else bad "admin UI not responding"; fi
+    [ "$(stat -c %a "$ETC/secrets.env")" = 600 ] && ok "secrets.env is 0600" || bad "secrets.env permissions are $(stat -c %a "$ETC/secrets.env") (want 600)"
+    [ "$(stat -c %U "$ETC/secrets.env")" = adrian ] && ok "secrets.env owned by adrian" || bad "secrets.env owner is $(stat -c %U "$ETC/secrets.env")"
+    for m in silero_vad.onnx sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8 kokoro-multi-lang-v1_0 sherpa-onnx-whisper-small vits-piper-vi_VN-vais1000-medium; do
+      [ -e "$VAR/models/$m" ] && ok "model $m" || bad "model $m missing (re-run the installer)"
+    done
+    [ -x "$VAR/models/yt-dlp_linux" ] && ok "yt-dlp (music)" || warn "yt-dlp missing: music is off (re-run the installer or adrian update)"
+    command -v ffmpeg >/dev/null && ok "ffmpeg (music)" || warn "ffmpeg not installed: music is off (Debian/Ubuntu: sudo apt install ffmpeg)"
+    chk=$(mktemp)
+    if tool check >"$chk" 2>&1; then ok "config complete"; else warn "setup not finished:"; sed 's/^/          /' "$chk"; fi
+    rm -f "$chk"
+    free_gb=$(df -Pk "$VAR" | awk 'NR==2{printf "%.1f", $4/1048576}')
+    awk -v f="$free_gb" 'BEGIN{exit !(f>=2)}' && ok "disk: ${free_gb} GB free" || warn "disk: only ${free_gb} GB free"
+    mem=$(systemctl show -p MemoryCurrent --value "$SERVICE" 2>/dev/null || echo)
+    [[ $mem =~ ^[0-9]+$ ]] && ok "service memory: $((mem / 1048576)) MiB (limit 4096)"
+    errs=$(journalctl -u "$SERVICE" --since "-15min" -p err --no-pager -o cat 2>/dev/null | tail -n 5)
+    [ -z "$errs" ] && ok "no errors in the last 15 minutes" || { warn "recent errors:"; sed 's/^/          /' <<<"$errs"; }
+    exit $rc ;;
+  backup)
+    need_root backup
+    out=${1:-adrian-backup-$(date +%Y%m%d-%H%M%S).tar.gz}
+    (umask 077; tar -czf "$out" -C / --exclude="${VAR#/}/models" "${ETC#/}" "${VAR#/}")
+    echo "Backup written to $out (contains your keys: keep it private)" ;;
+  restore)
+    need_root restore
+    f=${1:-}; [ -f "$f" ] || die "usage: adrian restore FILE"
+    tar -tzf "$f" | grep -qvE '^(etc/adrian|var/lib/adrian)(/|$)' && die "backup contains paths outside etc/adrian and var/lib/adrian; refusing"
+    tar -tvzf "$f" | grep -q '^[lh]' && die "backup contains links; refusing"
+    refuse_symlinks "$ETC" "$VAR" "$VAR/models"
+    systemctl stop "$SERVICE"
+    tar -xzf "$f" -C / --no-same-owner
+    chown -R adrian:adrian "$ETC" "$VAR"; chown -R root:adrian "$VAR/models"
+    refuse_symlinks "$ETC/secrets.env"
+    chmod 0600 "$ETC/secrets.env"
+    systemctl start "$SERVICE"
+    wait_healthy 60 >/dev/null && echo "Restored and running." || die "restored, but the service is not healthy: adrian logs" ;;
+  update)
+    need_root update
+    b=${1:-}; [ -f "$b" ] || die "usage: adrian update BUNDLE.tar.gz"
+    if [ -f "$b.sha256" ]; then (cd "$(dirname "$b")" && sha256sum -c --status "$(basename "$b").sha256") || die "bundle checksum mismatch"; fi
+    tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+    tar -xzf "$b" -C "$tmp" --no-same-owner
+    new=$("$NODE" -p "require('$tmp/package.json').version")
+    [[ $new =~ ^[0-9A-Za-z][0-9A-Za-z.+-]*$ && $new != *..* ]] || die "bad version in bundle"
+    old=$(current_version)
+    prev_before=$(readlink "$OPT/previous" 2>/dev/null || true)
+    [ "$new" != "$old" ] || die "version $new is already installed"
+    rm -rf "$OPT/releases/$new"; mv "$tmp" "$OPT/releases/$new"; trap - EXIT
+    chown -R root:root "$OPT/releases/$new"; chmod -R go-w "$OPT/releases/$new"; chmod 0755 "$OPT/releases/$new"
+    # The NEW release knows which models and service file it needs.
+    if [ -f "$OPT/releases/$new/packaging/upgrade-prep.sh" ]; then
+      bash "$OPT/releases/$new/packaging/upgrade-prep.sh" || { rm -rf "${OPT:?}/releases/$new"; die "could not prepare $new (models or service file); nothing was switched"; }
+    fi
+    echo "Switching $old -> $new"
+    switch_to "$new"
+    systemctl restart "$SERVICE"
+    if wait_healthy 30 >/dev/null; then
+      echo "Updated to $new."
+      # keep the three newest releases
+      ls -1t "$OPT/releases" | tail -n +4 | while read -r r; do [ "$r" != "$new" ] && [ "$r" != "$old" ] && rm -rf "${OPT:?}/releases/$r"; done
+    else
+      echo "Version $new did not become healthy within 30 s; rolling back to $old." >&2
+      switch_to "$old"; systemctl restart "$SERVICE"
+      # Forget the failed release: "previous" goes back to what it was before this update.
+      if [ -n "$prev_before" ]; then ln -sfn "$prev_before" "$OPT/previous"; else rm -f "$OPT/previous"; fi
+      rm -rf "${OPT:?}/releases/$new"
+      wait_healthy 60 >/dev/null && die "rolled back to $old" || die "rolled back to $old, but it is not healthy either: adrian logs"
+    fi ;;
+  rollback)
+    need_root rollback
+    prev=$(previous_version); [ -n "$prev" ] || die "no previous version to roll back to"
+    echo "Switching $(current_version) -> $prev"
+    switch_to "$prev"; systemctl restart "$SERVICE"
+    wait_healthy 60 >/dev/null && echo "Rolled back to $prev." || die "rolled back, but not healthy: adrian logs" ;;
+  uninstall) need_root uninstall; exec bash "$APP/packaging/install.sh" --uninstall "$@" ;;
+  version) current_version ;;
+  -h|--help|help) sed -n '2,21p' "$0" ;;
+  *) die "unknown command: $cmd (adrian help)" ;;
+esac
