@@ -17,3 +17,9 @@ describe('creator identity', () => {
     expect(theirs).not.toContain('Sam');
   });
 });
+
+describe('nicknames', () => {
+  it('shows what someone goes by in the roster', () => {
+    expect(memberLabel('mike_77', { creator: 'Sean', isCreator: false, isAsker: true, nickname: 'Big Mike' })).toBe('mike_77 (goes by "Big Mike"; talking to you now)');
+  });
+});

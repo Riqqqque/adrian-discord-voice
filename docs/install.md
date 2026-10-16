@@ -59,7 +59,7 @@ On the Linux machine that will run the bot (x86_64, systemd; Ubuntu 24.04 or Deb
 sudo apt install -y curl xz-utils bzip2 iproute2 ffmpeg
 
 # Download the release bundle and its checksum from this repo's Releases page
-VER=0.13.0
+VER=0.13.1
 curl -LO https://github.com/Riqqqque/adrian-discord-voice/releases/download/v$VER/adrian-voice-$VER-linux-x64.tar.gz
 curl -LO https://github.com/Riqqqque/adrian-discord-voice/releases/download/v$VER/adrian-voice-$VER-linux-x64.tar.gz.sha256
 sha256sum -c adrian-voice-$VER-linux-x64.tar.gz.sha256
@@ -139,9 +139,9 @@ An alternative to the native install, for machines that already run everything i
 
 ```bash
 # from a checkout of this repo, with the bundle in the current directory
-packaging/docker/build.sh adrian-voice-0.13.0-linux-x64.tar.gz
+packaging/docker/build.sh adrian-voice-0.13.1-linux-x64.tar.gz
 cd packaging/docker
-ADRIAN_VERSION=0.13.0 docker compose up -d
+ADRIAN_VERSION=0.13.1 docker compose up -d
 docker compose exec adrian node dist/cli/tool.js setup-code
 ```
 

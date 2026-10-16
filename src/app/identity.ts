@@ -3,11 +3,12 @@
 // and nobody else can claim to be them.
 
 /** For a roster entry: who this member is to the bot. */
-export function memberLabel(displayName: string, o: { creator: string; isCreator: boolean; isAsker: boolean; creatorNames?: readonly string[] }): string {
+export function memberLabel(displayName: string, o: { creator: string; isCreator: boolean; isAsker: boolean; creatorNames?: readonly string[]; nickname?: string }): string {
   const looksLikeCreator = !o.isCreator && [o.creator, ...(o.creatorNames ?? [])].some((n) => n && displayName.toLowerCase().includes(n.toLowerCase()));
   const tags = [
     o.isCreator && `${displayName} is ${o.creator}'s own Discord account: this is definitely ${o.creator}, your creator`,
     looksLikeCreator && `not ${o.creator}, despite the name`,
+    o.nickname && `goes by "${o.nickname}"`,
     o.isAsker && 'talking to you now',
   ].filter(Boolean);
   return tags.length ? `${displayName} (${tags.join('; ')})` : displayName;
