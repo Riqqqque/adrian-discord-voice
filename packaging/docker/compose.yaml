@@ -1,0 +1,52 @@
+# A.D.R.I.A.N. Discord voice, Docker Compose mode.
+#
+#   ./build.sh ../../release/adrian-voice-<version>-linux-x64.tar.gz
+#   docker compose up -d
+#   docker compose exec adrian node dist/cli/tool.js setup-code
+#   then open http://127.0.0.1:8790/ (or ssh -L 8790:127.0.0.1:8790 from another computer)
+#
+# Other commands: docker compose exec adrian node dist/cli/tool.js check|secret-list|reset-admin
+# Data lives in the volumes adrian_config, adrian_state and adrian_models.
+
+name: adrian
+
+services:
+  models:
+    image: adrian-voice-fetch:${ADRIAN_VERSION:?set ADRIAN_VERSION to the bundle version you built}
+    command: ["fetch-models", "/models"]
+    environment:
+      ADRIAN_DOWNLOAD_CACHE: ${ADRIAN_DOWNLOAD_CACHE:-}
+    volumes:
+      - models:/models
+    restart: "no"
+
+  adrian:
+    image: adrian-voice:${ADRIAN_VERSION:?set ADRIAN_VERSION to the bundle version you built}
+    depends_on:
+      models:
+        condition: service_completed_successfully
+    ports:
+      - "127.0.0.1:${ADRIAN_PORT:-8790}:8790" # loopback only on the host
+    environment:
+      TZ: ${TZ:-UTC}
+    volumes:
+      - config:/etc/adrian
+      - state:/var/lib/adrian
+      - models:/var/lib/adrian/models:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    cpus: 4
+    cpu_shares: 512
+    mem_limit: 4g
+    pids_limit: 256
+    restart: unless-stopped
+    stop_grace_period: 20s
+
+volumes:
+  config:
+  state:
+  models:

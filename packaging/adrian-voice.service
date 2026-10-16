@@ -1,0 +1,60 @@
+[Unit]
+Description=A.D.R.I.A.N. Discord voice assistant
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=adrian
+Group=adrian
+WorkingDirectory=/opt/adrian/current
+Environment=NODE_ENV=production
+Environment=ADRIAN_CONFIG=/etc/adrian/config.json
+Environment=ADRIAN_STATE=/var/lib/adrian
+Environment=LD_LIBRARY_PATH=/opt/adrian/current/node_modules/sherpa-onnx-linux-x64
+ExecStart=/opt/adrian/node/bin/node /opt/adrian/current/dist/app/main.js
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=20
+
+# Resources: at most 4 cores, low priority next to other services, hard
+# memory ceiling (about 1.5 GiB in English; up to ~3.5 GiB with every
+# language voice loaded).
+CPUQuota=400%
+CPUWeight=50
+IOWeight=50
+Nice=5
+MemoryHigh=4G
+MemoryMax=5G
+TasksMax=256
+
+# Hardening. The service can write only its config and state directories.
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/etc/adrian /var/lib/adrian
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RemoveIPC=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+# V8's JIT needs writable+executable memory, so MemoryDenyWriteExecute stays off.
+
+[Install]
+WantedBy=multi-user.target

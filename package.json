@@ -1,0 +1,43 @@
+{
+  "name": "adrian-discord-voice",
+  "version": "0.13.0",
+  "private": true,
+  "description": "Discord voice module for A.D.R.I.A.N.: say \"Hey Adrian\" in a voice channel and it answers out loud.",
+  "license": "MIT",
+  "author": "Rique",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Riqqqque/adrian-discord-voice.git"
+  },
+  "homepage": "https://github.com/Riqqqque/adrian-discord-voice#readme",
+  "type": "module",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "poc": "node dist/poc/main.js",
+    "postinstall": "node scripts/patch-voice.mjs"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "0.131.0",
+    "@discordjs/voice": "0.19.2",
+    "@node-rs/argon2": "2.2.1",
+    "@snazzah/davey": "0.1.12",
+    "discord.js": "14.27.0",
+    "opusscript": "0.0.8",
+    "prism-media": "1.3.5",
+    "sherpa-onnx-node": "1.13.8",
+    "zod": "4.6.7"
+  },
+  "optionalDependencies": {
+    "@discordjs/opus": "0.10.0"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "typescript": "7.0.2",
+    "vitest": "5.0.4"
+  }
+}
