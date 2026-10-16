@@ -109,7 +109,7 @@ switch (cmd) {
     // KEY is a dotted path (brain.extraBody.reasoning_effort, gameServers.2.name).
     if (!arg) fail('usage: config KEY [VALUE]');
     const path = arg.split('.');
-    const ALLOWED = ['brain', 'voice', 'limits', 'identity', 'gameServers', 'timezone', 'priorityRoleIds', 'playbackVolume', 'guildId', 'channelId', 'media', 'silenceMs', 'listen', 'mature', 'languages', 'owners', 'ownerStopReply', 'ownerAck', 'ownerAffection', 'autoMemory', 'cloudVoice', 'music'];
+    const ALLOWED = ['brain', 'voice', 'limits', 'identity', 'gameServers', 'timezone', 'priorityRoleIds', 'playbackVolume', 'guildId', 'channelId', 'media', 'silenceMs', 'listen', 'mature', 'languages', 'owners', 'ownerStopReply', 'ownerAck', 'ownerAffection', 'nicknames', 'autoMemory', 'cloudVoice', 'music'];
     if (!ALLOWED.includes(path[0]!) || /(file|dir)$|^vadmodel$|^secrets/i.test(path[path.length - 1]!)) fail(`"${arg}" can't be changed here (file paths belong to the installer).`);
     const get = (o: unknown, p: string[]): unknown => p.reduce<unknown>((x, k) => (x && typeof x === 'object' ? (x as Record<string, unknown>)[k] : undefined), o);
     const rawValue = process.argv[4];

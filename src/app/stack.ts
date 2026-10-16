@@ -200,7 +200,7 @@ export async function startVoiceStack(
     const people = [...ch.members.values()]
       .filter((m) => !m.user.bot)
       .slice(0, 25)
-      .map((m) => memberLabel(m.displayName, { creator, isCreator: isCreator(m.id), isAsker: m.id === askerId, creatorNames: config.identity.creatorHeardAs }));
+      .map((m) => memberLabel(m.displayName, { creator, isCreator: isCreator(m.id), isAsker: m.id === askerId, creatorNames: config.identity.creatorHeardAs, ...(config.nicknames[m.id] ? { nickname: config.nicknames[m.id] } : {}) }));
     return people.length ? [`People in this voice call right now (${ch.name}): ${people.join(', ')}.`] : [];
   }
   const sessions = new SessionMemory(16, 60 * 60_000);
@@ -266,6 +266,7 @@ export async function startVoiceStack(
         maxTokens: brain.maxTokens,
         maxToolRounds: 3,
         context: (ctx) => [
+          ...(config.nicknames[ctx.userId] ? [`Call ${ctx.speaker} "${config.nicknames[ctx.userId]}" when you address them; that's what they go by here.`] : []),
           ...(isOwner(ctx.userId) ? ownerPrompt(ctx.speaker, ctx.userId) : []),
           ...(creator && !isCreator(ctx.userId) ? creatorLines(ctx.speaker, { creator, isCreator: false }) : []),
           ...(LANGS[userLang.get(ctx.userId) ?? 'en'].prompt ? [LANGS[userLang.get(ctx.userId) ?? 'en'].prompt] : []),
@@ -587,7 +588,7 @@ export async function startVoiceStack(
     // The owner can stop any answer by saying "stop", but just talking in the
     // call must not cut off answers to other people.
     canStop: (id) => isOwner(id),
-    ack: (id) => (isOwner(id) && config.ownerAck.length ? `${nextOwnerAck().replace(/[.!]+$/, '')}?` : 'Yes?'),
+    ack: (id) => (isOwner(id) && config.ownerAck.length ? `${nextOwnerAck().replace(/[.!]+$/, '')}?` : config.nicknames[id] ? `Yes, ${config.nicknames[id]}?` : 'Yes?'),
     preempts: (id) => isOwner(id),
     stopOther: (id) => {
       if (music?.stop()) log.info('music stopped', { by: id, how: 'stop phrase' });

@@ -110,6 +110,8 @@ export const PocConfigSchema = z.object({
   ownerAck: z.array(z.string().min(1).max(40)).max(10).default([]),
   /** Be extra affectionate and devoted with owners. */
   ownerAffection: z.boolean().default(false),
+  /** What to call particular people, by Discord user ID: {"123…": "Big Mike"}. */
+  nicknames: z.record(snowflake, z.string().min(1).max(40)).default({}),
   identity: z
     .object({
       /** The person who set the bot up; it answers "who made you" with this name. Unset: no creator. */

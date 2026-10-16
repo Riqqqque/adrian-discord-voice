@@ -88,6 +88,7 @@ With Claude, the bot uses prompt caching. The rules, the tool descriptions and e
 | `ownerStopReply` | `""` | Said after an owner stops an answer |
 | `ownerAck` | `[]` | What owners hear instead of "Yes?" (used in turn) |
 | `ownerAffection` | `false` | Extra warm with owners |
+| `nicknames` | `{}` | What to call particular people, by Discord user ID: `{"123456789012345678": "Big Mike"}` |
 | `identity.creator` | (unset) | Your name, for "who made you?" |
 | `identity.creatorSpoken` | | How to pronounce it, if needed |
 | `identity.creatorHeardAs` | `[]` | How speech recognition misspells it |

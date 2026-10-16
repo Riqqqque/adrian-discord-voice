@@ -103,6 +103,10 @@ Optional flavor:
 - `ownerStopReply`: what it says after an owner stops it, for example `"Yes boss."`.
 - `ownerAffection`: extra warm and playful with owners. It uses the names from `ownerAck`.
 
+## Nicknames
+
+Set `nicknames` to give people a name it calls them by, for example `{"123456789012345678": "Big Mike"}`. It addresses them by it, mentions it in who is in the call, and answers their "Adrian?" with "Yes, Big Mike?". A nickname gives no extra rights.
+
 ## Identity
 
 Set `identity.creator` to your name, and it answers "who made you?" with it. In the call, it treats your Discord account (the owners, or `identity.creatorIds`) as you. Anyone else who claims to be you is told they aren't. If your name is spelled unusually, add `creatorSpoken` for pronunciation, and `creatorHeardAs` for the ways speech recognition misspells it.

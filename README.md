@@ -66,7 +66,7 @@ The full walkthrough, including creating the Discord bot and getting each key, i
 
 ```bash
 # 1. Download a release bundle and its checksum (Releases page of this repo)
-VER=0.13.0
+VER=0.13.1
 curl -LO https://github.com/Riqqqque/adrian-discord-voice/releases/download/v$VER/adrian-voice-$VER-linux-x64.tar.gz
 curl -LO https://github.com/Riqqqque/adrian-discord-voice/releases/download/v$VER/adrian-voice-$VER-linux-x64.tar.gz.sha256
 sha256sum -c adrian-voice-$VER-linux-x64.tar.gz.sha256
