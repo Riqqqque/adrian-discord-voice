@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { creatorLines, memberLabel } from '../src/app/identity.js';
+import { creatorLines, genderLines, memberLabel } from '../src/app/identity.js';
 
 describe('creator identity', () => {
   it('marks the creator in the roster', () => {
@@ -21,5 +21,13 @@ describe('creator identity', () => {
 describe('nicknames', () => {
   it('shows what someone goes by in the roster', () => {
     expect(memberLabel('mike_77', { creator: 'Sean', isCreator: false, isAsker: true, nickname: 'Big Mike' })).toBe('mike_77 (goes by "Big Mike"; talking to you now)');
+  });
+});
+
+describe('bot gender', () => {
+  it('tells the model who it is, or nothing', () => {
+    expect(genderLines('female').join(' ')).toContain('she/her');
+    expect(genderLines('male').join(' ')).toContain('he/him');
+    expect(genderLines('none')).toEqual([]);
   });
 });

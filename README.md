@@ -19,11 +19,19 @@ This is one module of the A.D.R.I.A.N. household assistant suite. Every module f
 - Five languages: English, Spanish, Chinese, Japanese and Vietnamese. It answers in the language you speak.
 - Remembers people: "remember that I'm vegetarian", and it also picks up facts on its own. Each person's notes are private to them.
 
+**Text chat**
+- @mention it in any channel it can see, reply to one of its messages, or DM it, and it answers in text with the same brain, tools and memory. Replies can never ping @everyone, roles or people.
+- Optional, with Discord's Message Content intent: it reads the channel's recent messages for context, and you can keep talking for a few minutes without @mentioning it again (it stays out of side talk).
+- Knows the server: who's online and what they're playing, who's in which call, members, roles and channels (only what the asker can see). Tags people when asked, and passes messages on: "tell Sam dinner's ready" sends Sam a DM from you.
+
 **Music** (YouTube Music through yt-dlp, with your Plex music library as a backup)
 - "Play Blinding Lights", "play the whole Graduation album", "put on something for a late night drive", "play a playlist like that last song", "play the newest Joe Rogan episode", "play rain sounds".
 - Queue ("play Sicko Mode next"), skip, pause, resume, shuffle, "what's playing?", "turn it down".
 - Autoplay keeps similar songs coming when the queue runs out (YouTube Music radio), without repeats.
 - Music ducks under the voice whenever someone talks to it.
+
+**Sounds**
+- "Make an airhorn sound", "give me a drum roll", "what does a cow sound like?": it finds a short sound effect and plays it in the call (up to 15 seconds, over any music).
 
 **Tools**
 - Timers and reminders ("remind me in 20 minutes to check the oven"); announced in the call, or by DM if you left.
@@ -66,7 +74,7 @@ The full walkthrough, including creating the Discord bot and getting each key, i
 
 ```bash
 # 1. Download a release bundle and its checksum (Releases page of this repo)
-VER=0.13.1
+VER=0.13.4
 curl -LO https://github.com/Riqqqque/adrian-discord-voice/releases/download/v$VER/adrian-voice-$VER-linux-x64.tar.gz
 curl -LO https://github.com/Riqqqque/adrian-discord-voice/releases/download/v$VER/adrian-voice-$VER-linux-x64.tar.gz.sha256
 sha256sum -c adrian-voice-$VER-linux-x64.tar.gz.sha256

@@ -88,6 +88,21 @@ With Claude, the bot uses prompt caching. The rules, the tool descriptions and e
 | `ownerStopReply` | `""` | Said after an owner stops an answer |
 | `ownerAck` | `[]` | What owners hear instead of "Yes?" (used in turn) |
 | `ownerAffection` | `false` | Extra warm with owners |
+| `textChat.enabled` | `true` | Answer @mentions and replies in servers |
+| `textChat.dms` | `true` | Answer direct messages |
+| `textChat.maxReplyChars` | `1800` | Longest text reply |
+| `textChat.readChannels` | `true` | With the Message Content intent on: read channel history and carry on conversations without an @ |
+| `textChat.historyMessages` | `30` | Earlier messages read as context for each answer (0-100) |
+| `textChat.followUpMinutes` | `3` | How long after an answer people can keep talking without an @ (0-30) |
+| `textChat.maxPings` | `5` | Most people one text reply may @mention, only when asked (0: never) |
+| `serverInfo.enabled` | `true` | The server_info lookup: server, members, channels, roles, who's in voice |
+| `serverInfo.members` | `true` | Use the Server Members intent (full member list) when it's switched on in the portal |
+| `serverInfo.presences` | `true` | Use the Presence intent (online status, activities) when it's switched on |
+| `messaging.enabled` | `true` | Pass messages on ("tell Sam ...") by DM or a channel @mention |
+| `messaging.perUserPerHour` | `10` | Messages each person can send through it per hour (owners exempt) |
+| `messaging.perTargetPerHour` | `5` | Messages each person can receive through it per hour |
+| `messaging.maxChars` | `600` | Longest passed-on message |
+| `botGender` | `"none"` | `female` (she/her), `male` (he/him) or `none`: how it talks about itself |
 | `nicknames` | `{}` | What to call particular people, by Discord user ID: `{"123456789012345678": "Big Mike"}` |
 | `identity.creator` | (unset) | Your name, for "who made you?" |
 | `identity.creatorSpoken` | | How to pronounce it, if needed |

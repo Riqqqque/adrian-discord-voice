@@ -111,6 +111,11 @@ export class ConversationOrchestrator {
 
   private readonly sayAs: [string, string][];
 
+  /** A chunk as it goes out: rewritten for speech, or as written for a text chat. */
+  private out(chunk: string, text?: boolean): string {
+    return text ? chunk.trim() : toSpeakable(chunk, this.o.writtenName, this.o.spokenName, this.sayAs);
+  }
+
   /** Stream speakable chunks for one request. Usage is reported once at the
    *  end. Throws on failure (callers speak a short apology). */
   async *ask(
@@ -120,7 +125,7 @@ export class ConversationOrchestrator {
     signal: AbortSignal,
     onUsage?: (u: Usage) => void,
     place?: { guildId?: string; channelId?: string },
-    opts: { followUp?: boolean; onSilent?: () => void; onTool?: (timeoutMs: number) => void } = {},
+    opts: { followUp?: boolean; onSilent?: () => void; onTool?: (timeoutMs: number) => void; text?: boolean; extra?: string[] } = {},
   ): AsyncGenerator<string> {
     const ctx: ToolContext = { userId, speaker, ...place };
     const tools = this.o.stablePrefix ? this.tools : (this.o.selectTools?.(text, ctx, this.tools) ?? this.tools);
@@ -132,8 +137,18 @@ export class ConversationOrchestrator {
       year: 'numeric',
     }).format(new Date());
     const request = requestPrompt(this.o, speaker, today, [
+          ...(opts.text
+            ? [
+                'This is a Discord text message, not voice: the speech-only rules above do not apply. Write normally (digits, short paragraphs, plain text or light Discord markdown), and keep it under about 1,200 characters. Do not @mention anyone unless you are asked to ping or tag them; then write their ping code, like <@123456>, from the channel messages or server_info. Never @everyone, @here or roles.',
+              ]
+            : []),
           ...(this.o.context?.(ctx) ?? []),
-          ...(opts.followUp
+          ...(opts.extra ?? []),
+          ...(opts.followUp && opts.text
+            ? [
+                `${speaker} wrote this in the channel without @mentioning you. People here also talk to each other. If it is not meant for you, reply with exactly SILENT and nothing else. Not meant for you: talking to someone else (including answering a question another person asked them in the messages above), reactions ("lol", "fr"), side remarks about you rather than to you. If it continues your conversation with them, answers something you asked, asks you something, or talks to you by name, just answer it, exactly as if they had @mentioned you.`,
+              ]
+            : opts.followUp
             ? [
                 `${speaker} just said this without using your name, a few seconds after your last answer. People in the call also talk to each other and about their games. If it is not meant for you, reply with exactly SILENT and nothing else. Not meant for you: talking to someone else, callouts and instructions for the game ("grab the diamonds", "run", "watch out", "go left"), reactions ("lol", "nice one"), thinking out loud. Things you could not do anyway are usually meant for someone else. If it continues your conversation or asks you something, answer normally.`,
               ]
@@ -193,7 +208,7 @@ export class ConversationOrchestrator {
                 held = '';
               }
               for (const c of splitter.push(piece)) {
-                const s = toSpeakable(c, this.o.writtenName, this.o.spokenName, this.sayAs);
+                const s = this.out(c, opts.text);
                 if (s) {
                   spoken += (spoken ? ' ' : '') + s;
                   yield s;
@@ -232,7 +247,7 @@ export class ConversationOrchestrator {
           // A short answer that merely started like "si…" ("Sure.", "Six.").
           holding = false;
           for (const c of splitter.push(held)) {
-            const s = toSpeakable(c, this.o.writtenName, this.o.spokenName, this.sayAs);
+            const s = this.out(c, opts.text);
             if (s) {
               spoken += (spoken ? ' ' : '') + s;
               yield s;
@@ -244,7 +259,7 @@ export class ConversationOrchestrator {
         if (!calls.length) break;
         // Keep words from separate rounds apart ("…question?" + "What is…").
         for (const ch of splitter.push(' ')) {
-          const s = toSpeakable(ch, this.o.writtenName, this.o.spokenName, this.sayAs);
+          const s = this.out(ch, opts.text);
           if (s) {
             spoken += (spoken ? ' ' : '') + s;
             yield s;
@@ -259,6 +274,7 @@ export class ConversationOrchestrator {
           yield f;
         }
         messages.push({ role: 'assistant', content: roundText, toolCalls: calls });
+        let ended = calls.length > 0;
         for (const c of calls) {
           const tool = tools.find((t) => t.spec.name === c.name);
           let result: string;
@@ -272,17 +288,21 @@ export class ConversationOrchestrator {
               result = asUntrustedData(c.name, await tool.run(args, ctl, ctx));
             } catch (e) {
               result = `Tool ${c.name} failed: ${(e as Error).message}`;
+              ended = false;
             }
           }
+          if (!tool?.endsTurn) ended = false;
           messages.push({ role: 'tool', toolCallId: c.id, content: result });
         }
+        // A tool that finishes the answer by itself (a sound played): stop here.
+        if (ended) break;
         if (roundText.trim()) {
           const last = messages[messages.length - 1] as { content: string };
           last.content += `\n(You already said aloud: "${roundText.trim().slice(0, 300)}". Do not repeat or rephrase it; add only what is new, or nothing.)`;
         }
       }
       for (const c of splitter.flush()) {
-        const s = toSpeakable(c, this.o.writtenName, this.o.spokenName, this.sayAs);
+        const s = this.out(c, opts.text);
         if (s) {
           spoken += (spoken ? ' ' : '') + s;
           yield s;

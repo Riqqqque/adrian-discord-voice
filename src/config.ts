@@ -110,6 +110,38 @@ export const PocConfigSchema = z.object({
   ownerAck: z.array(z.string().min(1).max(40)).max(10).default([]),
   /** Be extra affectionate and devoted with owners. */
   ownerAffection: z.boolean().default(false),
+  /** Text chat: answer when @mentioned or replied to in a server, and in DMs. */
+  textChat: z
+    .object({
+      enabled: z.boolean().default(true),
+      dms: z.boolean().default(true),
+      maxReplyChars: z.number().int().min(200).max(6000).default(1800),
+      /** With the Message Content intent on: read channels for context and carry on conversations without an @. */
+      readChannels: z.boolean().default(true),
+      /** Earlier messages read as context for each answer. */
+      historyMessages: z.number().int().min(0).max(100).default(30),
+      /** Minutes after an answer that people can keep talking to it without an @. */
+      followUpMinutes: z.number().min(0).max(30).default(3),
+      /** Most people one text reply may ping (only when asked). 0: never. */
+      maxPings: z.number().int().min(0).max(20).default(5),
+    })
+    .default({ enabled: true, dms: true, maxReplyChars: 1800, readChannels: true, historyMessages: 30, followUpMinutes: 3, maxPings: 5 }),
+  /** server_info: the server, members, channels, roles, who's in voice. members/presences
+   *  use the Server Members and Presence intents when they're switched on in the Developer Portal. */
+  serverInfo: z
+    .object({ enabled: z.boolean().default(true), members: z.boolean().default(true), presences: z.boolean().default(true) })
+    .default({ enabled: true, members: true, presences: true }),
+  /** message_member: passing messages on by DM or an @mention in a channel. */
+  messaging: z
+    .object({
+      enabled: z.boolean().default(true),
+      perUserPerHour: z.number().int().min(1).max(100).default(10),
+      perTargetPerHour: z.number().int().min(1).max(100).default(5),
+      maxChars: z.number().int().min(50).max(1500).default(600),
+    })
+    .default({ enabled: true, perUserPerHour: 10, perTargetPerHour: 5, maxChars: 600 }),
+  /** Who the bot is: female (she/her), male (he/him) or none (doesn't say). */
+  botGender: z.enum(['female', 'male', 'none']).default('none'),
   /** What to call particular people, by Discord user ID: {"123…": "Big Mike"}. */
   nicknames: z.record(snowflake, z.string().min(1).max(40)).default({}),
   identity: z

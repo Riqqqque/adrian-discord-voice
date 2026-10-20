@@ -32,6 +32,8 @@ export interface VoiceTransportEvents {
   membersChanged: (members: ReadonlySet<UserId>) => void;
   /** Someone moved the bot to another voice channel in the same server. */
   moved: (guildId: string, channelId: string) => void;
+  /** Someone disconnected the bot from voice (or the channel went away): it stays out until asked back. */
+  kicked: () => void;
 }
 
 export interface PlaybackHandle {
@@ -146,13 +148,16 @@ export interface ToolContext {
 
 export interface Tool {
   spec: ToolSpec;
-  /** Returns text the model treats as untrusted data. Tools change nothing
-   *  outside the bot's own state (timers, notes, games). */
+  /** Returns text the model treats as untrusted data. Tools change only the
+   *  bot's own state (timers, notes, games, music), except message_member,
+   *  which sends a rate-limited, attributed Discord message. */
   run(args: Record<string, unknown>, signal: AbortSignal, ctx: ToolContext): Promise<string>;
   /** Longest the tool may take (default 5 s). Music lookups need more. */
   timeoutMs?: number;
   /** Takes long enough that a short "one sec" first is worth it. */
   slow?: boolean;
+  /** When it succeeds, the answer is done: no words after it (a sound effect). */
+  endsTurn?: boolean;
 }
 
 export interface SecretsStore {

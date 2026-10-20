@@ -133,6 +133,14 @@ export class YoutubeSource implements MusicSource {
     return id ? this.resolve(id, sig) : undefined;
   }
 
+  /** A short sound-effect clip: the first result under 30 s (else under 2 min). */
+  async soundEffect(query: string, signal: AbortSignal): Promise<Track | undefined> {
+    const sig = this.sig(signal);
+    const out = await this.run(this.o.ytdlp, [...this.base(), '--flat-playlist', '--print', '%(id)s\t%(duration)s\t%(live_status)s', `ytsearch8:${query} sound effect`], sig);
+    const id = pickShort(out, 30) ?? pickShort(out, 120);
+    return id ? this.resolve(id, sig) : undefined;
+  }
+
   /** Any YouTube video, any length (a 10-hour rain loop, a live radio). */
   async video(query: string, signal: AbortSignal): Promise<Track | undefined> {
     const sig = this.sig(signal);
@@ -226,6 +234,16 @@ export function parseList(out: string): Collection {
     });
   }
   return { ...(title ? { title } : {}), tracks };
+}
+
+/** From search lines (id, duration, live status): the first clip no longer than max seconds. */
+export function pickShort(out: string, max: number): string | undefined {
+  for (const line of out.split('\n')) {
+    const [id, dur, live] = line.trim().split('\t');
+    const d = Number(dur);
+    if (id && VIDEO_ID.test(id) && live !== 'is_live' && Number.isFinite(d) && d > 0 && d <= max) return id;
+  }
+  return undefined;
 }
 
 /** Longest regular video taken for a song request (seconds). */
