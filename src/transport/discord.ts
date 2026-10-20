@@ -74,6 +74,8 @@ export class DiscordVoiceTransport extends EventEmitter implements VoiceTranspor
   private target: { guildId: string; channelId: string } | undefined;
   private rejoins = 0;
   private recovering = false;
+  /** Bumped by connect/disconnect/kick: an older reconnect attempt stops. */
+  private gen = 0;
   private closing = false;
   private readonly onVoiceState = (oldS: VoiceState, newS: VoiceState) => this.voiceStateChanged(oldS, newS);
 
@@ -101,13 +103,16 @@ export class DiscordVoiceTransport extends EventEmitter implements VoiceTranspor
   }
 
   async connect(guildId: string, channelId: string): Promise<void> {
+    this.gen++;
     this.target = { guildId, channelId };
     this.closing = false;
+    this.rejoins = 0;
     this.client.on(Events.VoiceStateUpdate, this.onVoiceState);
     await this.join();
   }
 
   async disconnect(): Promise<void> {
+    this.gen++;
     this.closing = true;
     this.client.off(Events.VoiceStateUpdate, this.onVoiceState);
     this.player.stop(true);
@@ -240,6 +245,8 @@ export class DiscordVoiceTransport extends EventEmitter implements VoiceTranspor
   }
 
   private async recoverOnce(conn: VoiceConnection): Promise<void> {
+    const gen = this.gen;
+    const current = () => !this.closing && gen === this.gen; // not kicked, moved or left meanwhile
     this.emit('disconnected', 'voice connection dropped');
     try {
       await Promise.race([
@@ -250,14 +257,16 @@ export class DiscordVoiceTransport extends EventEmitter implements VoiceTranspor
     } catch {
       /* fall through to a full rejoin */
     }
+    if (!current()) return;
     this.dropAllStreams();
     safeDestroy(conn);
     if (this.connection === conn) this.connection = undefined;
-    while (!this.closing && this.rejoins < MAX_REJOINS) {
+    while (current() && this.rejoins < MAX_REJOINS) {
       this.rejoins++;
       const delay = Math.min(30_000, 1_000 * 2 ** (this.rejoins - 1)) + Math.random() * 500;
       this.log.warn('rejoining voice', { attempt: this.rejoins, delayMs: Math.round(delay) });
       await new Promise((r) => setTimeout(r, delay));
+      if (!current()) return;
       try {
         await this.join();
         return;
@@ -265,7 +274,7 @@ export class DiscordVoiceTransport extends EventEmitter implements VoiceTranspor
         this.log.warn('rejoin failed', { error: (e as Error).message });
       }
     }
-    if (!this.closing) this.emit('failed', `gave up after ${MAX_REJOINS} rejoin attempts`);
+    if (current()) this.emit('failed', `gave up after ${MAX_REJOINS} rejoin attempts`);
   }
 
   // --- per-user receive ---------------------------------------------------
@@ -324,7 +333,11 @@ export class DiscordVoiceTransport extends EventEmitter implements VoiceTranspor
         this.dropAllStreams();
         this.emit('moved', this.target.guildId, newS.channelId);
       } else {
-        this.log.warn('bot was disconnected from the channel');
+        // Someone disconnected it (or the channel is gone). Respect that: no
+        // fighting back in; /join brings it back.
+        this.log.info('disconnected from voice by someone; staying out until /join');
+        void this.disconnect().finally(() => this.emit('kicked'));
+        return;
       }
     }
     this.emitMembers();

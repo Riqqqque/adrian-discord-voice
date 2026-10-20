@@ -56,6 +56,10 @@ Everything else goes to the language model.
 - **`/leave` or moving channels:** stops the music.
 - **Lyrics:** it won't sing or read out song lyrics. It just names what's playing.
 
+## Sounds
+
+"Make an airhorn sound", "do a drum roll", "cat meow", "sad trombone", "what does a wolf sound like?": it finds a short sound effect on YouTube and plays it once, up to 15 seconds, on top of any music (the music ducks). "Stop" cuts it off. For simple vocal sounds it may just say them. Needs the same setup as music (yt-dlp and ffmpeg).
+
 ## Timers, reminders, memory
 
 - **Timers and reminders:**
@@ -103,6 +107,10 @@ Optional flavor:
 - `ownerStopReply`: what it says after an owner stops it, for example `"Yes boss."`.
 - `ownerAffection`: extra warm and playful with owners. It uses the names from `ownerAck`.
 
+## Who it is
+
+Set `botGender` to `female` or `male` and it talks about itself that way ("I'm a girl"); `none` (the default) leaves it unsaid. Pick a voice to match with `adrian voice`.
+
 ## Nicknames
 
 Set `nicknames` to give people a name it calls them by, for example `{"123456789012345678": "Big Mike"}`. It addresses them by it, mentions it in who is in the call, and answers their "Adrian?" with "Yes, Big Mike?". A nickname gives no extra rights.
@@ -119,6 +127,38 @@ Set `identity.creator` to your name, and it answers "who made you?" with it. In 
 - `always`
 
 Hard limits stay in every mode: no sexual roleplay or explicit sexual content, no slurs, nothing involving minors, nothing that helps real harm.
+
+## Text chat
+
+@mention it in a channel ("@A.D.R.I.A.N. what's the weather in Denver?"), reply to one of its messages, or DM it. It answers in text, using the same model, tools and memory as in voice. "@A.D.R.I.A.N. play Humble" starts the song in the call it's in. It shows that it's typing, splits long answers, and never pings @everyone, roles or people. Spend caps and the hourly limit apply. Turn it off with `textChat.enabled false` (servers) or `textChat.dms false` (DMs).
+
+With **Message Content** switched on for the bot in the Developer Portal (restart the service after changing it), text chat gets two more things:
+
+- **Channel context.** Each answer comes with the channel's last 30 messages (`textChat.historyMessages`), so "@A.D.R.I.A.N. what are they planning?" works. They're fetched when it answers and not stored.
+- **Carrying on.** For 3 minutes after it answers you (`textChat.followUpMinutes`), you can keep talking without @mentioning it. Writing its name ("adrian what do you think") works for anyone, anytime. These messages are judged by the model, so it stays out of side talk and reactions. A message that @mentions or replies to someone else is never treated as one for it. Two ignored messages in a row end the conversation; side talk it stays out of doesn't count toward the hourly limit, but each one is a small model call.
+
+The log line `message content` at startup says whether it's on. Turn the extras off with `textChat.readChannels false`.
+
+## The server and its people
+
+It can look things up about the server it's in, by voice or text: "who's online?", "what's Sam playing?", "who's in voice?", "when did Kim join?", "what channels are there?", "how many people are in here?". It only tells you about channels you can see yourself. Online status and activities need the **Presence** intent, and the full member list needs **Server Members** (Developer Portal → Bot). Without them it still finds people by name. The `privileged intents` line at startup shows what's on.
+
+**Tagging people.** In text chat, "@A.D.R.I.A.N. tag Sam and tell him we're on" makes it @mention Sam. It pings only when asked, at most 5 people per reply (`textChat.maxPings`), and never @everyone, @here or roles.
+
+**Passing messages on.** "Tell Sam dinner's ready" or "let Kim know we're starting, in #general":
+
+- By default it DMs them: "**Alex** (in Game Night) asked me to tell you: dinner's ready."
+- Ask for a channel, or it's a text chat, and it posts there with an @mention of that person only.
+- It always says who the message is from. Each person can send 10 an hour and each person can get 5 an hour (`messaging.perUserPerHour`, `messaging.perTargetPerHour`); owners skip the limit.
+- It won't post in a channel you can't post in yourself.
+- Turn it off with `messaging.enabled false`, and the lookups with `serverInfo.enabled false`.
+
+## Disconnects
+
+- **Network drop or Discord hiccup:** it reconnects by itself.
+- **Someone disconnects it, or the channel is deleted:** it stays out (no fighting back in) and stops any music. Use `/join` to bring it back.
+- **Someone drags it to another channel:** it follows and keeps working there.
+- **After a restart or update:** it goes back to its home channel.
 
 ## Slash commands
 

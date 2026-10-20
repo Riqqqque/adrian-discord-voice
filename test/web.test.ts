@@ -180,7 +180,7 @@ describe('admin web server', () => {
     expect(secrets.has('DISCORD_TOKEN')).toBe(false);
     const good = await call('POST', '/api/check/discord', { token: FAKE.DISCORD_TOKEN });
     expect(good.data).toMatchObject({ ok: true, botTag: 'A.D.R.I.A.N.#0671', publicBot: false });
-    expect(String(good.data.inviteUrl)).toContain('permissions=36701184');
+    expect(String(good.data.inviteUrl)).toContain('permissions=274914675712');
     expect(secrets.has('DISCORD_TOKEN')).toBe(true);
     const ch = await call('GET', '/api/check/channels?guild=100000000000000010');
     expect(ch.data.channels).toEqual([{ id: '100000000000000020', name: 'general' }]);

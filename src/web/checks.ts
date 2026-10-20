@@ -11,7 +11,8 @@ type Fetch = typeof fetch;
 
 const DISCORD_API = 'https://discord.com/api/v10';
 /** Connect, Speak, Use Voice Activity, View Channel (see docs/milestone-2.md). */
-export const INVITE_PERMISSIONS = '36701184';
+/** View Channel, Connect, Speak, Use Voice Activity, Send Messages, Send Messages in Threads, Read Message History. */
+export const INVITE_PERMISSIONS = '274914675712';
 
 export interface DiscordCheck {
   ok: boolean;

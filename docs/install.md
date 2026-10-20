@@ -21,10 +21,10 @@ This guide takes you from nothing to a bot talking in your voice channel. Plan o
 2. Open **Bot** in the left menu:
    - Click **Reset Token** and copy the token. You'll paste it into the setup wizard. **Never share it**: anyone with the token controls the bot.
    - Turn **Public Bot** off, so only you can add it to servers. (Turn it on only while a friend adds it to their server, then off again.)
-   - No privileged intents are needed: leave Presence, Server Members and Message Content off. The bot only uses voice states.
+   - The three **Privileged Gateway Intents** are optional, and everything else works with them off. **Server Members** gives it the full member list and **Presence** lets it see who's online and what they're playing or listening to (for questions like "who's online?"). **Message Content** is for text chat: turn it on if you want the bot to read channels for context and carry on text conversations without a new @mention each time (see [Text chat](usage.md#text-chat)). Bots in fewer than 100 servers can switch them on freely; past that Discord asks for verification.
 3. Note your server's ID and the voice channel's ID. Turn on **Developer Mode** in Discord (User Settings → Advanced), then right-click the server or channel → **Copy ID**. The wizard also lets you pick them from a list, so this is optional.
 
-The wizard builds the invite link for you once the token is in. It asks only for **View Channel, Connect, Speak and Use Voice Activity**, plus the `/join` and `/leave` slash commands.
+The wizard builds the invite link for you once the token is in. It asks only for **View Channel, Connect, Speak, Use Voice Activity, Send Messages (and in threads) and Read Message History**, plus the `/join` and `/leave` slash commands. With Message Content off, the bot reads only messages that @mention it, reply to it, or DM it. If you added the bot before text chat existed, open the invite link again to give it the message permissions.
 
 ## 2. Get a language-model key
 
@@ -59,7 +59,7 @@ On the Linux machine that will run the bot (x86_64, systemd; Ubuntu 24.04 or Deb
 sudo apt install -y curl xz-utils bzip2 iproute2 ffmpeg
 
 # Download the release bundle and its checksum from this repo's Releases page
-VER=0.13.1
+VER=0.13.4
 curl -LO https://github.com/Riqqqque/adrian-discord-voice/releases/download/v$VER/adrian-voice-$VER-linux-x64.tar.gz
 curl -LO https://github.com/Riqqqque/adrian-discord-voice/releases/download/v$VER/adrian-voice-$VER-linux-x64.tar.gz.sha256
 sha256sum -c adrian-voice-$VER-linux-x64.tar.gz.sha256
@@ -139,9 +139,9 @@ An alternative to the native install, for machines that already run everything i
 
 ```bash
 # from a checkout of this repo, with the bundle in the current directory
-packaging/docker/build.sh adrian-voice-0.13.1-linux-x64.tar.gz
+packaging/docker/build.sh adrian-voice-0.13.4-linux-x64.tar.gz
 cd packaging/docker
-ADRIAN_VERSION=0.13.1 docker compose up -d
+ADRIAN_VERSION=0.13.4 docker compose up -d
 docker compose exec adrian node dist/cli/tool.js setup-code
 ```
 
@@ -186,7 +186,7 @@ Most commands need `sudo`.
 ## Updating, rolling back, backups
 
 ```bash
-VER=0.13.1   # the new version
+VER=0.13.4   # the new version
 curl -LO https://github.com/Riqqqque/adrian-discord-voice/releases/download/v$VER/adrian-voice-$VER-linux-x64.tar.gz
 curl -LO https://github.com/Riqqqque/adrian-discord-voice/releases/download/v$VER/adrian-voice-$VER-linux-x64.tar.gz.sha256
 sudo adrian update adrian-voice-$VER-linux-x64.tar.gz

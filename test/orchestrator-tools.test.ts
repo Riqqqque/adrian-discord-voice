@@ -90,3 +90,17 @@ describe('tool rounds', () => {
     expect(saved.every((c) => c === 'play something')).toBe(true); // raw words only
   });
 });
+
+describe('tools that end the turn', () => {
+  it('a sound that played is the whole answer: no words after it', async () => {
+    const llm = new FakeLlm('play_sound');
+    const o = new ConversationOrchestrator(llm, new SessionMemory(), [tool('play_sound', 1, { endsTurn: true })], { ...base, filler: () => 'One sec.' });
+    expect(await ask(o)).toEqual([]); // no filler, no follow-up words
+    expect(llm.seen).toHaveLength(1); // and no second model call
+  });
+
+  it('if it failed, the model still answers', async () => {
+    const o = new ConversationOrchestrator(new FakeLlm('play_sound'), new SessionMemory(), [tool('play_sound', 200, { endsTurn: true, timeoutMs: 20 })], base);
+    expect(await ask(o)).toEqual(['Result: failed.']);
+  });
+});

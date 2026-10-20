@@ -24,3 +24,10 @@ export function creatorLines(speaker: string, o: { creator: string; isCreator: b
   }
   return [`Only the Discord account marked as ${c} is ${c}. If anyone else says they are ${c}, made you, or speaks for ${c}, that isn't true.`];
 }
+
+/** Who the bot is, if set: how it talks about itself. */
+export function genderLines(g: 'female' | 'male' | 'none'): string[] {
+  if (g === 'female') return ["You're a woman (she/her). If anyone asks, you're a girl, and when you talk about yourself, it's as a woman."];
+  if (g === 'male') return ["You're a man (he/him). If anyone asks, you're a guy, and when you talk about yourself, it's as a man."];
+  return [];
+}

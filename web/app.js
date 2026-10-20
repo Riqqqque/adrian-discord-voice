@@ -244,7 +244,7 @@ async function stepDiscord({ settings, has, next, back }) {
     h('h2', {}, 'Connect to Discord'),
     h('ol', { class: 'small' },
       h('li', {}, 'Open the ', h('a', { href: 'https://discord.com/developers/applications', target: '_blank', rel: 'noopener noreferrer' }, 'Discord Developer Portal'), ' and create an application named A.D.R.I.A.N.'),
-      h('li', {}, 'Under Bot, press Reset Token and copy it. No privileged intents are needed.'),
+      h('li', {}, 'Under Bot, press Reset Token and copy it. The privileged intents are optional: Message Content lets it read channels in text chat, Server Members and Presence let it see the member list and who is online.'),
       h('li', {}, 'Paste it here. It is stored on this server only and never shown again.')),
     h('label', {}, 'Bot token'), token,
     back, verifyBtn, out, after,

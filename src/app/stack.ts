@@ -3,7 +3,7 @@
 // controller's queue and interruption rules and the spend caps. Started by
 // main.ts once the config is complete, and restarted by the admin UI.
 
-import { Client, Events, GatewayIntentBits, type VoiceBasedChannel } from 'discord.js';
+import { Client, Events, GatewayIntentBits, Partials, type VoiceBasedChannel } from 'discord.js';
 import { dateFormat } from '../core/time.js';
 import { humansIn, registerVoiceCommands, type VoiceSpot } from './commands.js';
 import prism from 'prism-media';
@@ -39,8 +39,11 @@ import { dirname } from 'node:path';
 import { KokoroTts } from '../speech/kokoro.js';
 import { CharBudget, SpeechifyTts } from '../speech/speechify.js';
 import { Mixer } from '../voice/mixer.js';
+import { SOUND_RULE, soundTool } from '../features/sounds.js';
 import { eager } from '../core/eager.js';
-import { creatorLines, memberLabel } from './identity.js';
+import { creatorLines, genderLines, memberLabel } from './identity.js';
+import { registerTextChat } from './textchat.js';
+import { discordTools, RelayLimiter } from '../features/discordinfo.js';
 import { describe as trackName, ffmpegDecoder, MusicPlayer, musicRules, musicState, musicTools, PlexMusicSource, type MusicSource, YoutubeSource } from '../features/music.js';
 import { classifyMusic, isTimeQuestion } from '../conversation/intents.js';
 import { ParakeetStt } from '../speech/sherpa.js';
@@ -83,7 +86,26 @@ export async function startVoiceStack(
   const token = secrets.get('DISCORD_TOKEN');
   if (!token) throw new Error('DISCORD_TOKEN is not set');
 
-  const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates] });
+  // Messages: ones that @mention the bot (and DMs) carry their text anyway.
+  // Reading the rest of a channel needs the Message Content intent, which is
+  // switched on in the Developer Portal; asking for it when it's off would
+  // fail the login, so check first.
+  const granted = await privilegedIntents(token, log);
+  const readChannels = config.textChat.enabled && config.textChat.readChannels && granted.messageContent;
+  const seeMembers = config.serverInfo.enabled && config.serverInfo.members && granted.members;
+  const seePresences = config.serverInfo.enabled && config.serverInfo.presences && granted.presences;
+  const client = new Client({
+    intents: [
+      GatewayIntentBits.Guilds,
+      GatewayIntentBits.GuildVoiceStates,
+      GatewayIntentBits.GuildMessages,
+      GatewayIntentBits.DirectMessages,
+      ...(readChannels ? [GatewayIntentBits.MessageContent] : []),
+      ...(seeMembers ? [GatewayIntentBits.GuildMembers] : []),
+      ...(seePresences ? [GatewayIntentBits.GuildPresences] : []),
+    ],
+    partials: [Partials.Channel],
+  });
   const transport = new DiscordVoiceTransport({ client, logger: log, silenceMs: config.silenceMs });
   let ready = false;
   /** The voice channel the bot is in (or joining); undefined after /leave. */
@@ -94,6 +116,13 @@ export async function startVoiceStack(
   transport.on('disconnected', (r) => {
     ready = false;
     log.warn('voice disconnected', { reason: r });
+  });
+  transport.on('kicked', () => {
+    ready = false;
+    spot = undefined;
+    controller.cancelAll();
+    music?.stop();
+    mixer.stopAll();
   });
   transport.on('moved', (guildId, channelId) => {
     if (spot?.guildId === guildId) spot = { guildId, channelId };
@@ -129,6 +158,8 @@ export async function startVoiceStack(
       : undefined;
   if (cloud) log.info('cloud voice', { provider: cv!.provider, voice: cv!.voiceId, usedChars: voiceBudget.used(), monthlyChars: cv!.monthlyChars });
   const CLOUD = 'cloud:en';
+  /** Starts like a request to play something or control the music. */
+  const MUSICISH = /^\W*(?:(?:hey|ok(?:ay)?|yo|now|so|and|alright|bro)\W+)*(?:adri\w*\W+)?(?:(?:can|could|would|will) you (?:please )?|please )?(?:play|put on|throw on|queue|blast|bump|spin|skip|pause|resume|unpause|turn (?:up|down) the music|stop the music|(?:i want to|i wanna|let me|lemme|let's) (?:hear|listen to)|(?:make|do) (?:a|an|the|some) [a-z ]*(?:sound|noise))\b/i;
   /** Said before a slow lookup when nothing else has been said yet. */
   const FILLERS = ['One sec.', 'Let me check.', 'On it.'];
   let fillerTurn = 0;
@@ -146,6 +177,34 @@ export async function startVoiceStack(
   const ffmpegOk = mc.enabled && spawnSync(mc.ffmpeg, ['-version'], { stdio: 'ignore' }).status === 0;
   const music = ffmpegOk && musicSources.length ? new MusicPlayer({ sources: musicSources, output: mixer, decode: ffmpegDecoder(mc.ffmpeg), log, volume: mc.volume, maxQueue: mc.maxQueue, autoplay: mc.autoplay }) : undefined;
   if (mc.enabled) log.info(music ? 'music ready' : 'music off', { sources: musicSources.map((s) => s.name), ffmpeg: ffmpegOk });
+
+  // --- sound effects (needs YouTube and ffmpeg, like music) -------------------
+  const ytForSounds = musicSources.find((s): s is YoutubeSource => s instanceof YoutubeSource);
+  let soundHandle: { stop(): void } | undefined;
+  const stopSound = () => {
+    soundHandle?.stop();
+    soundHandle = undefined;
+  };
+  const sounds =
+    music && ytForSounds
+      ? {
+          find: (q: string, signal: AbortSignal) => ytForSounds.soundEffect(q, signal),
+          play: async (t: { ref: string }) => {
+            stopSound();
+            const dec = ffmpegDecoder(mc.ffmpeg)({ url: t.ref });
+            const h = mixer.playPcm(dec.pcm, { volume: Math.min(1, config.playbackVolume) });
+            const cap = setTimeout(() => h.stop(), 15_000); // a sound, not a song
+            const mine = { stop: () => (h.stop(), dec.kill()) };
+            soundHandle = mine;
+            void h.done.finally(() => {
+              clearTimeout(cap);
+              dec.kill();
+              if (soundHandle === mine) soundHandle = undefined;
+            });
+            log.info('sound playing', { title: (t as { title?: string }).title });
+          },
+        }
+      : undefined;
 
   // --- languages: Whisper re-reads non-English questions --------------------
   const english = new EnglishWords(join(voice.modelDir, 'lexicon-us-en.txt'));
@@ -195,8 +254,9 @@ export async function startVoiceStack(
   const room = new RoomTalk();
   /** Who's in the voice call, so it can talk about and to everyone by name. */
   function rosterLines(channelId: string | undefined, askerId: string): string[] {
-    const ch = channelId ? (client.channels.cache.get(channelId) as VoiceBasedChannel | undefined) : undefined;
-    if (!ch) return [];
+    const any = channelId ? client.channels.cache.get(channelId) : undefined;
+    if (!any?.isVoiceBased()) return []; // a text chat has no call roster
+    const ch = any as VoiceBasedChannel;
     const people = [...ch.members.values()]
       .filter((m) => !m.user.bot)
       .slice(0, 25)
@@ -223,6 +283,16 @@ export async function startVoiceStack(
       if (searchKey) tools.push(tavilySearchTool(searchKey, brain.search?.maxResults));
       tools.push(...reminders.tools(), ...notes.tools(), ...games.tools());
       if (music) tools.push(...musicTools(music));
+      if (sounds) tools.push(soundTool(sounds));
+      if (config.serverInfo.enabled)
+        tools.push(
+          ...discordTools(
+            { client, allowedGuilds: config.allowedGuilds, members: seeMembers, presences: seePresences, timezone: config.timezone },
+            config.messaging.enabled
+              ? { limiter: new RelayLimiter(config.messaging.perUserPerHour, config.messaging.perTargetPerHour), isOwner: (id) => isOwner(id), maxChars: config.messaging.maxChars }
+              : undefined,
+          ),
+        );
       // Read-only lookups are reused briefly: asking twice in a row doesn't wait again.
       if (config.gameServers.length) tools.push(cachedTool(gameServerTool(config.gameServers), 30_000));
       const m = config.media;
@@ -286,7 +356,7 @@ export async function startVoiceStack(
         // First chunk stays a whole sentence: cutting at the first comma was
         // measured slower overall (bench/first-audio.mjs, median 1.39 vs 1.26 s).
         filler: () => FILLERS[fillerTurn++ % FILLERS.length]!,
-        stableLines: [...(config.mature === 'age-restricted' ? [] : matureContext(config.mature, false)), ...(music ? musicRules() : [])],
+        stableLines: [...genderLines(config.botGender), ...(sounds ? [SOUND_RULE] : []), ...(config.mature === 'age-restricted' ? [] : matureContext(config.mature, false)), ...(music ? musicRules() : [])],
       });
       log.info('brain ready', { model: brain.model, fallback: fbUsable ? fb!.model : null, tools: tools.map((x) => x.spec.name) });
     }
@@ -435,6 +505,9 @@ export async function startVoiceStack(
 
   async function respond(userId: UserId, command: string, outer: AbortSignal, followUp = false): Promise<void | 'silent'> {
     if (await local(userId, command, outer)) return;
+    // A music or sound request is always for the bot, even without the name.
+    const musicish = music !== undefined && MUSICISH.test(command);
+    if (musicish) followUp = false;
     let silent = false;
     // The time limit is for getting the answer, not for saying it: the
     // model's text is read in as fast as it comes (eager), the timer stops
@@ -542,9 +615,11 @@ export async function startVoiceStack(
       spentTodayUsd: Number(ledger.todayUsd().toFixed(4)),
     });
     if (failure && !timedOut && !outer.aborted) log.warn('answer failed', { user: userId, error: failure.message });
+    // Asked for music but nothing was played: log what was asked, to see why.
+    if (musicish && !outer.aborted && (silent || !usage?.toolCalls)) log.warn('music asked but not played', { user: userId, text: command.slice(0, 120) });
     if (silent) return 'silent';
     // The model answered with nothing at all: say so rather than leave silence.
-    if (!failure && !outer.aborted && firstAudioAt === undefined && generated && orchestrator && allowed.ok) {
+    if (!failure && !outer.aborted && firstAudioAt === undefined && generated && orchestrator && allowed.ok && !usage?.toolCalls) {
       await speaker.speak(fixed("Sorry, I didn't get that. Could you say it again?"), speakOpts, playSignal).catch(() => undefined);
       return;
     }
@@ -594,6 +669,7 @@ export async function startVoiceStack(
       if (music?.stop()) log.info('music stopped', { by: id, how: 'stop phrase' });
     },
     onStopped: (id) => {
+      stopSound();
       if (isOwner(id) && config.ownerStopReply.trim()) controller.announce(id, config.ownerStopReply.trim());
     },
     isPriority: (id) => {
@@ -671,6 +747,50 @@ export async function startVoiceStack(
     moving = p.catch(() => undefined);
     return p;
   };
+  // Text chat (@mentions, replies, DMs): same brain and limits as voice.
+  registerTextChat({
+    client,
+    log,
+    ...(orchestrator
+      ? {
+          ask: (userId, name, text, place, signal, opts) => {
+            const o = orchestrator!;
+            return (async function* () {
+              let usage: Usage | undefined;
+              let silent = false;
+              try {
+                yield* o.ask(userId, name, text, signal, (u) => (usage = u), place, {
+                  text: true,
+                  followUp: opts.followUp,
+                  extra: opts.extra,
+                  onSilent: () => {
+                    silent = true;
+                    opts.onSilent();
+                  },
+                });
+              } finally {
+                // Side talk it stayed out of doesn't count toward the hourly limit (its cost does).
+                if (!silent) ledger.noteRequest(userId);
+                if (usage) ledger.addCost(costUsd(usage));
+              }
+            })();
+          },
+        }
+      : {}),
+    limited: (userId) => {
+      const a = ledger.check(userId, isOwner(userId));
+      return a.ok ? undefined : LIMIT_MESSAGES[a.reason];
+    },
+    enabled: config.textChat.enabled,
+    dms: config.textChat.dms,
+    allowedGuilds: config.allowedGuilds,
+    maxQuestionChars: maxRequestChars,
+    maxReplyChars: config.textChat.maxReplyChars,
+    readChannels,
+    maxPings: config.textChat.maxPings,
+    historyMessages: config.textChat.historyMessages,
+    followUpMs: config.textChat.followUpMinutes * 60_000,
+  });
   const voiceCommands = registerVoiceCommands({ client, log, current: () => spot, moveTo: (s) => moveTo(s), leave: () => moveTo(undefined), allowedGuilds: config.allowedGuilds });
   // Outside the home channel, leave after 10 minutes with nobody else there.
   let emptySince: number | undefined;
@@ -742,4 +862,25 @@ export async function startVoiceStack(
       }
     },
   };
+}
+
+/** Which privileged intents the bot's app has switched on in the Developer
+ *  Portal (the verified or the under-100-servers flag). Asking for one that's
+ *  off fails the login, so this is checked first. Any doubt counts as off. */
+export async function privilegedIntents(
+  token: string,
+  log: { info(m: string, f?: object): void; warn(m: string, f?: object): void },
+): Promise<{ messageContent: boolean; members: boolean; presences: boolean }> {
+  try {
+    const r = await fetch('https://discord.com/api/v10/applications/@me', { headers: { Authorization: `Bot ${token}` }, signal: AbortSignal.timeout(5_000) });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const flags = Number(((await r.json()) as { flags?: number }).flags ?? 0);
+    const on = (a: number, b: number) => (flags & ((1 << a) | (1 << b))) !== 0;
+    const g = { presences: on(12, 13), members: on(14, 15), messageContent: on(18, 19) };
+    log.info('privileged intents', g);
+    return g;
+  } catch (e) {
+    log.warn('privileged intents check failed', { error: (e as Error).message });
+    return { messageContent: false, members: false, presences: false };
+  }
 }
