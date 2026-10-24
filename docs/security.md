@@ -63,6 +63,7 @@ A.D.R.I.A.N. listens to a voice channel anyone in your server can join, holds AP
 - **Release bundles** are protected by SHA-256 checksums, not signatures. Download them from this repository's Releases page over HTTPS.
 - **Backups** (`adrian backup`) contain your keys. Store them like passwords.
 - **`listen.logTranscripts`** writes what people say into the log. It's for debugging only; leave it off.
+- **`satellite.recordDays`** saves the audio of requests made at a PC (only speech already judged as meant for her) with what each listener heard, in the state folder, deleted after that many days. Off by default.
 - **Channel context** (text chat with Message Content on) sends a channel's recent messages, written by people who never addressed the bot, to your language-model provider whenever it answers there. Nothing is stored. Use `textChat.readChannels false` or `allowedGuilds` if that doesn't fit a server.
 - **Server lookups and messaging.** server_info shows only channels the asker can see. message_member always names the sender, pings only the one recipient, refuses channels the sender can't post in, and is rate limited per sender and per recipient. People can still use it to annoy each other within those limits; turn off `messaging.enabled` if that's a problem in your server.
 - **Mature mode** depends on the language model following its instructions. It isn't a content filter.

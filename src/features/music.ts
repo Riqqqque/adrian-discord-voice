@@ -4,7 +4,8 @@
 
 import { spawn } from 'node:child_process';
 import { Readable } from 'node:stream';
-import type { PlaybackHandle, Tool } from '../core/interfaces.js';
+import type { PlaybackHandle, Tool, ToolContext } from '../core/interfaces.js';
+import { parseMediaLink, spotifyItem } from './links.js';
 
 export interface Track {
   /** Song name, cleaned for speaking. */
@@ -158,6 +159,16 @@ export class YoutubeSource implements MusicSource {
     );
     const t = parseYtdlp(out);
     return t && { ...t, id };
+  }
+
+  /** A SoundCloud or Bandcamp page (already checked by parseMediaLink). */
+  async resolveUrl(url: string, signal: AbortSignal): Promise<Track | undefined> {
+    const out = await this.run(
+      this.o.ytdlp,
+      [...this.base(), '--no-playlist', '-f', 'bestaudio/best', '--print', '%(title)s	%(artist,creator,uploader)s	%(duration)s	%(url)s', url],
+      this.sig(signal),
+    );
+    return parseYtdlp(out);
   }
 
   /** A playlist-like page as tracks; each is resolved when it's played. */
@@ -393,7 +404,7 @@ export interface PlayerOptions {
 export type PlayResult = { ok: true; track: Track; queued: number } | { ok: false; message: string };
 
 /** What someone asked for, as the model understood it. */
-export type RequestKind = 'song' | 'artist' | 'album' | 'playlist' | 'vibe' | 'similar' | 'podcast' | 'video';
+export type RequestKind = 'song' | 'artist' | 'album' | 'playlist' | 'vibe' | 'similar' | 'podcast' | 'video' | 'link';
 
 export type RequestResult =
   | { ok: true; started?: Track; label?: string; added: number }
@@ -491,7 +502,7 @@ export class MusicPlayer {
 
   /** Anything someone might ask to hear, by kind. */
   async request(kind: RequestKind, query: string, mode: 'now' | 'queue', signal: AbortSignal, prefer?: Track['source']): Promise<RequestResult> {
-    const q = query.trim().slice(0, 200);
+    const q = query.trim().slice(0, kind === 'link' ? 500 : 200);
     this.o.log.info('music request', { kind, query: q, mode, ...(prefer ? { prefer } : {}) });
     const yt = prefer === 'plex' ? undefined : this.yt;
     const one = async (t: Track | undefined, label?: string): Promise<RequestResult> =>
@@ -540,6 +551,23 @@ export class MusicPlayer {
       }
       case 'video':
         return one(await yt.video(q, signal), q);
+      case 'link': {
+        const l = parseMediaLink(q);
+        if (!l) return { ok: false, message: "That isn't a link I can play. YouTube, SoundCloud, Bandcamp and Spotify links work." };
+        if (l.kind === 'youtube') return one(await yt.resolve(l.id, signal), 'that link');
+        if (l.kind === 'youtube-list') return many(await yt.list(l.url, signal, 40), 'that playlist');
+        if (l.kind === 'spotify') {
+          const s = await spotifyItem(l.url, signal).catch((e: Error) => (signal.aborted ? Promise.reject(e) : undefined));
+          if (!s) return { ok: false, message: "I couldn't read that Spotify link." };
+          if (s.kind === 'album') return many(await yt.album(s.query, signal), s.query);
+          if (s.kind === 'playlist') return many(await yt.playlist(s.query, signal), s.query);
+          return one(await yt.find(s.query, signal), s.query);
+        }
+        const t = await yt.resolveUrl(l.url, signal);
+        // SoundCloud Go+ songs only stream a 30 s preview: play the full song from YouTube.
+        if (t && /\/preview\//.test(t.ref)) return one((await yt.find(`${t.title} ${t.artist ?? ''}`.trim(), signal)) ?? t, 'that link');
+        return one(t, 'that link');
+      }
       default: {
         const r = await this.play(q, mode, signal, prefer);
         return r.ok ? { ok: true, ...(r.queued ? {} : { started: r.track }), added: r.queued ? 1 : 0 } : r;
@@ -777,9 +805,12 @@ export function musicState(p: MusicPlayer): string {
   return `Music now: ${now ? `${p.paused ? 'paused' : 'playing'} ${describe(now)}` : 'nothing playing'}; ${p.upNext.length} queued; autoplay ${p.autoplay ? 'on (similar songs keep coming)' : 'off'}.${recent.length ? ` Played before: ${recent.join('; ')}.` : ''}`;
 }
 
-const KINDS: RequestKind[] = ['song', 'artist', 'album', 'playlist', 'vibe', 'similar', 'podcast', 'video'];
+const KINDS: RequestKind[] = ['song', 'artist', 'album', 'playlist', 'vibe', 'similar', 'podcast', 'video', 'link'];
 
-export function musicTools(p: MusicPlayer): Tool[] {
+/** `player` is the one music player, or picks the player for where a request came from. */
+export function musicTools(player: MusicPlayer | ((ctx: ToolContext) => MusicPlayer | undefined)): Tool[] {
+  const get = typeof player === 'function' ? player : () => player;
+  const NONE = "Music isn't available here.";
   return [
     {
       spec: {
@@ -789,7 +820,8 @@ export function musicTools(p: MusicPlayer): Tool[] {
           'song (one specific song), artist (an artist: their top song then similar ones), album, ' +
           'playlist (a named or public playlist), vibe (a mood, genre, activity or era: "chill late night", "hype gaming", "90s r&b"; write query as a playlist search like "chill late night r&b"), ' +
           'similar (songs like what is playing or was just played, including "a playlist like that song", "more like this", "keep it going"; leave query empty, or name the song or artist to base it on), ' +
-          'podcast (a show or episode), video (any other YouTube audio: a long mix, rain sounds, a live stream, a specific video). ' +
+          'podcast (a show or episode), video (any other YouTube audio: a long mix, rain sounds, a live stream, a specific video), ' +
+          'link (a YouTube, SoundCloud, Bandcamp or Spotify link someone pasted, e.g. "play that link", "play the song Sam sent": query is the exact URL). ' +
           'when: now (default) starts it, next adds it to the queue.',
         parameters: {
           type: 'object',
@@ -805,7 +837,9 @@ export function musicTools(p: MusicPlayer): Tool[] {
       },
       timeoutMs: 25_000,
       slow: true,
-      run: async (a, signal) => {
+      run: async (a, signal, ctx) => {
+        const p = get(ctx);
+        if (!p) return NONE;
         const kind = KINDS.includes(a.request_type as RequestKind) ? (a.request_type as RequestKind) : 'song';
         const r = await p.request(kind, String(a.query ?? ''), a.when === 'next' ? 'queue' : 'now', signal, a.source === 'plex' || a.source === 'youtube' ? a.source : undefined);
         if (!r.ok) return r.message;
@@ -826,7 +860,9 @@ export function musicTools(p: MusicPlayer): Tool[] {
         },
       },
       timeoutMs: 25_000,
-      run: async (a) => {
+      run: async (a, _signal, ctx) => {
+        const p = get(ctx);
+        if (!p) return NONE;
         switch (a.action) {
           case 'pause':
             return p.pause() ? 'Paused.' : 'Nothing is playing.';

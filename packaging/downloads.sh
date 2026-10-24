@@ -16,6 +16,8 @@ MODELS=(
   # Vietnamese voice (Kokoro has none).
   "vits-piper-vi_VN-vais1000-medium|$SHERPA/tts-models/vits-piper-vi_VN-vais1000-medium.tar.bz2|fa1367710767d36ed5cf13b4a449e20c35ffd12791c2e47c2e64142bfa55551a|tar.bz2"
   "kokoro-multi-lang-v1_0|$SHERPA/tts-models/kokoro-multi-lang-v1_0.tar.bz2|c5f7e2d2caf082bc1d20fb70334a61d99d20b484500aad32e7cf84c128ea3298|tar.bz2"
+  # PC rooms: does a pause sound mid-sentence? (Smart Turn v3.2, pipecat-ai, BSD-2-Clause; 0.14.7)
+  "smart-turn-v3.2-cpu.onnx|https://huggingface.co/pipecat-ai/smart-turn-v3/resolve/f766f81d3cfdf7737ac64aad813d91bbfd56bf93/smart-turn-v3.2-cpu.onnx|2bb026316b14a660486a75b1733cd3fbab8c2fd0314dc9af7be49f8cca967e4f|file"
   # Music from YouTube (0.10.0). YouTube changes break it every few weeks: bump the
   # version and checksum (from the release's SHA2-256SUMS) and ship a new release.
   "yt-dlp_linux|https://github.com/yt-dlp/yt-dlp/releases/download/2026.08.19/yt-dlp_linux|58162f9bfdc27458ea47bfcb311cf47028f17d8154a8bf7d689861d46399230a|bin"

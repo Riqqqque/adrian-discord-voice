@@ -68,8 +68,12 @@ interface Request {
   followUp?: boolean;
 }
 
+/** Talking on within this long of a request, before she answers, continues it. */
+const CONTINUE_MS = 12_000;
+
 export class ConversationController {
-  private active: (Request & { ctl: AbortController; started: number }) | undefined;
+  /** spokeAt: when her answer became audible (unset while she's thinking). */
+  private active: (Request & { ctl: AbortController; started: number; spokeAt?: number }) | undefined;
   private readonly queue: Request[] = [];
   private readonly followUpUntil = new Map<UserId, number>();
   /** Users who just heard "Yes?": their next words are certainly for the bot. */
@@ -99,6 +103,11 @@ export class ConversationController {
 
   get queued(): number {
     return this.queue.length;
+  }
+
+  /** Her answer to this person just became audible. */
+  speaking(userId: UserId): void {
+    if (this.active?.userId === userId) this.active.spokeAt ??= this.d.now();
   }
 
   /** Would words from this person (without the wake phrase) be taken as a request? */
@@ -142,11 +151,19 @@ export class ConversationController {
       // name; an everyday word ("done", "quiet") only counts from the asker.
       const clearStop = intent.kind === 'stop' && (!intent.weak || e.woke);
       if (a && (a.userId === e.userId || mayStop || clearStop)) {
-        this.d.log?.('cancelled', { user: e.userId, by: intent.kind === 'stop' ? 'stop phrase' : 'name' });
+        const hold = intent.kind === 'stop' && intent.hold;
+        this.d.log?.('cancelled', { user: e.userId, by: hold ? 'wait' : intent.kind === 'stop' ? 'stop phrase' : 'name' });
         a.ctl.abort();
         this.followUpUntil.delete(a.userId);
         this.followUpUntil.delete(e.userId);
-        if (intent.kind === 'stop') this.d.onStopped?.(e.userId);
+        // "Wait", "hold on": quiet now, but whatever they say next is for her.
+        if (hold) this.followUpUntil.set(e.userId, now + this.o.followUpMs);
+        else if (intent.kind === 'stop') this.d.onStopped?.(e.userId);
+        return;
+      }
+      if (intent.kind === 'stop' && intent.hold) {
+        // "Wait" with nothing to stop: keep listening, leave the music alone.
+        if (e.woke || this.listeningTo(e.userId)) this.followUpUntil.set(e.userId, now + this.o.followUpMs);
         return;
       }
       if (intent.kind === 'stop') {
@@ -163,6 +180,16 @@ export class ConversationController {
         return;
       }
       if (!e.woke) return;
+    }
+
+    // Still talking while she works on the answer (a pause mid-sentence):
+    // it's the rest of the same request, not a new one.
+    const a = this.active;
+    if (!e.woke && text && a && a.userId === e.userId && a.command && !a.announce && a.spokeAt === undefined && now - a.at < CONTINUE_MS) {
+      this.d.log?.('continued', { user: e.userId });
+      this.queue.unshift({ userId: e.userId, command: `${a.command} ${text}`, at: now, ...(a.followUp ? { followUp: true } : {}) });
+      a.ctl.abort();
+      return;
     }
 
     const inFollowUp = (this.followUpUntil.get(e.userId) ?? 0) > now;
@@ -219,6 +246,9 @@ export class ConversationController {
   voiceActivity(userId: UserId, voicedMs: number): void {
     const a = this.active;
     if (!a || a.ctl.signal.aborted || voicedMs < this.o.bargeInMs) return; // already stopping: once is enough
+    // Only talking over her voice interrupts. While she's still thinking,
+    // more words are the rest of the question (see heard).
+    if (a.spokeAt === undefined) return;
     if (a.userId !== userId && !this.d.isPriority(userId)) return;
     // Ignore the tail of the request itself: barge-in only counts once the
     // answer has started.

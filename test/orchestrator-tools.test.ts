@@ -44,6 +44,17 @@ async function ask(o: ConversationOrchestrator): Promise<string[]> {
 const base = { spokenName: 'Adrian', writtenName: 'A.D.R.I.A.N.', timezone: 'UTC', firstEventTimeoutMs: 2000, maxTokens: 200, maxToolRounds: 2 };
 
 describe('tool rounds', () => {
+  it('says a tool\'s own confirmation without a second model call, unless it has none', async () => {
+    const llm = new FakeLlm('pc_apps');
+    const says = new ConversationOrchestrator(llm, new SessionMemory(), [tool('pc_apps', 5, { speak: () => "Spotify's open." })], base);
+    expect(await ask(says)).toEqual(["Spotify's open."]);
+    expect(llm.seen).toHaveLength(1);
+    const llm2 = new FakeLlm('pc_info');
+    const asks = new ConversationOrchestrator(llm2, new SessionMemory(), [tool('pc_info', 5, { speak: () => undefined })], base);
+    expect(await ask(asks)).toEqual(['Result: done.']);
+    expect(llm2.seen).toHaveLength(2);
+  });
+
   it('says a filler line before a slow tool, not before a quick one', async () => {
     const slow = new ConversationOrchestrator(new FakeLlm('play_music'), new SessionMemory(), [tool('play_music', 10, { slow: true })], { ...base, filler: () => 'One sec.' });
     expect(await ask(slow)).toEqual(['One sec.', 'Result: done.']);

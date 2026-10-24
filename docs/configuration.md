@@ -35,6 +35,8 @@ sudo adrian restart                        # most settings apply on restart
 | `listen.asrThreads` | `4` | CPU threads for speech recognition |
 | `listen.wakeName` | `"adrian"` | The name it listens for |
 | `listen.logTranscripts` | `false` | Development only: log what people say. Leave off. |
+| `satellite.recordDays` | `0` | Keep recordings of requests made at a PC (never side talk) for this many days, in `<state>/pc-recordings`, to test speech-to-text on your own voice. 0 = off. |
+| `satellite.unfinishedWaitMs` | `1200` | At a PC, when a pause sounds mid-sentence (the Smart Turn model), wait this much longer before answering, in ms. 0 = off (only the plain silence wait). |
 
 ## Language model
 

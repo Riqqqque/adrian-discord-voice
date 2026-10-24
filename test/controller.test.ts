@@ -148,6 +148,7 @@ describe('conversation controller', () => {
     const r = rig();
     r.wake('a', 'story');
     await r.tick(3_000);
+    r.c.speaking('a'); // the answer is playing
     r.c.voiceActivity('b', 2_000); // another user talking: no effect
     r.c.voiceActivity('a', 700); // a laugh or an uh-huh: no effect
     r.c.voiceActivity('a', 2_000); // a reaction or side talk: no effect
@@ -401,5 +402,45 @@ describe('everyday words vs real stops', () => {
     expect(stopped).toBe(0);
     c.heard({ userId: 'b', text: 'Hey Adrian, stop', woke: true, command: 'stop' });
     expect(stopped).toBe(1);
+  });
+
+  it('a pause mid-sentence continues the same request instead of replacing it', async () => {
+    const r = rig();
+    r.wake('a', 'open spotify and');
+    await r.tick(900);
+    r.plain('a', 'play some drake');
+    await r.tick();
+    expect(r.answers[0]!.signal.aborted).toBe(true);
+    expect(r.answers.at(-1)!.command).toBe('open spotify and play some drake');
+  });
+
+  it('talking only interrupts once she is actually speaking', async () => {
+    const r = rig();
+    r.wake('a', 'tell me about space');
+    await r.tick(1000);
+    r.c.voiceActivity('a', 3000); // still thinking: not an interruption
+    expect(r.answers[0]!.signal.aborted).toBe(false);
+    r.c.speaking('a');
+    await r.tick(3000);
+    r.c.voiceActivity('a', 3000);
+    expect(r.answers[0]!.signal.aborted).toBe(true);
+  });
+
+  it('"wait" stops her but keeps listening; "shut up" ends it', async () => {
+    const r = rig();
+    r.wake('a', 'tell me a long story');
+    await r.tick();
+    r.plain('a', 'hold on');
+    await r.tick();
+    expect(r.answers[0]!.signal.aborted).toBe(true);
+    r.plain('a', 'make it about pirates');
+    await r.tick();
+    expect(r.answers.map((x) => x.command)).toEqual(['tell me a long story', 'make it about pirates']);
+    r.plain('a', 'shut up');
+    await r.tick();
+    expect(r.answers[1]!.signal.aborted).toBe(true);
+    r.plain('a', 'and another thing');
+    await r.tick();
+    expect(r.answers).toHaveLength(2);
   });
 });

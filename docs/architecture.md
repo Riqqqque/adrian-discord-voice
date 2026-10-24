@@ -5,6 +5,8 @@ Discord voice (Opus, per speaker, DAVE end-to-end encryption)
    │  @discordjs/voice: one decoded stream per person, never mixed
    ▼
 Voice activity detection (Silero VAD) ── a phrase ends after 0.5 s of silence
+   │  PC satellites: 0.8 s, then Smart Turn v3.2 (pipecat-ai, BSD-2-Clause) checks whether it
+   │  sounds finished; if not, it waits up to 1.2 s more for the rest of the sentence
    ▼
 Speech recognition (Parakeet TDT 0.6B v3, int8, on the CPU; about 0.1 to 0.3 s per phrase)
    │  not English or Spanish? → Whisper small second pass (about 1 s): language + text
@@ -43,7 +45,7 @@ Typical time from the end of your sentence to its first word: 1.5 to 2.5 seconds
 | `transport/discord.ts` | Voice connection, per-user receive, playback, reconnects |
 | `listen/pipeline.ts` | VAD, speech recognition and wake check per speaker |
 | `wake/text-wake.ts` | Wake phrase matching on the transcript |
-| `speech/` | Parakeet and Whisper (sherpa-onnx), Kokoro, Piper, Speechify, the language check |
+| `speech/` | Parakeet and Whisper (sherpa-onnx), Kokoro, Piper, Speechify, Smart Turn (onnxruntime-node), the language check |
 | `conversation/controller.ts` | Turn-taking: queue, follow-ups, stops, barge-in, owners |
 | `conversation/intents.ts` | Local phrases (stop, thanks, volume, music, time), several languages |
 | `conversation/room.ts` | Recent call talk (5 minutes, 24 lines; memory only) |

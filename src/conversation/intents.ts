@@ -6,7 +6,7 @@
 export type Intent =
   /** weak: an everyday word ("done", "quiet", "ya") that only means stop
    *  from the person being answered or when said with the name. */
-  | { kind: 'stop'; weak?: boolean } // stop talking / cancel / shut up / stop listening
+  | { kind: 'stop'; weak?: boolean; hold?: boolean } // stop talking / cancel / shut up / stop listening; hold: "wait", keep listening
   | { kind: 'name' } // just the name ("Adrian?"): stops an answer, else a wake
   | { kind: 'thanks' }
   | { kind: 'bye' }
@@ -36,6 +36,14 @@ const PHRASES: [Intent, string[]][] = [
       'para', 'parale', 'callate', 'basta', 'ya basta', 'silencio', 'detente', 'olvidalo', 'cancela', 'cancelalo', 'no importa', 'ya', 'suficiente',
       // Vietnamese
       'dung lai', 'dung', 'im di', 'im lang', 'thoi', 'thoi di', 'im', 'khong can',
+    ],
+  ],
+  [
+    // "Wait": stop talking, but keep listening for what comes next.
+    { kind: 'stop', hold: true },
+    [
+      'wait', 'wait wait', 'wait stop', 'hold on', 'hold up', 'hold on a sec', 'hold on a second', 'wait a sec', 'wait a second',
+      'one sec', 'one second', 'stop for a sec', 'stop for a second', 'hang on', 'hang on a sec',
     ],
   ],
   [
@@ -70,6 +78,7 @@ const PHRASES: [Intent, string[]][] = [
 const WEAK_STOP = new Set([
   'done', 'end', 'nothing', 'quiet', 'mute', 'enough', 'not now', 'im done', 'we are done', 'were done', 'thats it', 'that is it',
   'thats all', 'that is all', 'ya', 'para', 'suficiente', 'dung', 'im', 'thoi', 'thoi di',
+  'wait', 'one sec', 'one second', 'hold on', 'hang on',
 ]);
 
 const TABLE = new Map<string, Intent>();
@@ -137,7 +146,7 @@ export function classify(text: string): Intent | undefined {
     return sawName ? { kind: 'name' } : undefined;
   }
   const found = TABLE.get(phrase);
-  return found?.kind === 'stop' && WEAK_STOP.has(phrase) ? { kind: 'stop', weak: true } : found;
+  return found?.kind === 'stop' && WEAK_STOP.has(phrase) ? { ...found, weak: true } : found;
 }
 
 // --- music --------------------------------------------------------------------

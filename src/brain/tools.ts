@@ -28,6 +28,19 @@ export function timeTool(timezone: string): Tool {
 }
 
 /** Tavily web search (basic depth, 1 credit per call). */
+/** The address of the best web result for a description ("JEI mod on modrinth"). */
+export async function topResultUrl(apiKey: string, query: string, signal: AbortSignal): Promise<string | undefined> {
+  const res = await fetch('https://api.tavily.com/search', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
+    body: JSON.stringify({ query: query.slice(0, 200), search_depth: 'basic', max_results: 3, include_answer: false }),
+    signal,
+  });
+  if (!res.ok) return undefined;
+  const j = (await res.json()) as { results?: { url?: string }[] };
+  return j.results?.map((r) => r.url).find((u): u is string => typeof u === 'string' && /^https?:\/\//i.test(u));
+}
+
 export function tavilySearchTool(apiKey: string, maxResults = 4): Tool {
   return {
     slow: true,

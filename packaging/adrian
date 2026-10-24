@@ -11,6 +11,7 @@
 #   adrian check                  what's missing before the bot can start
 #   adrian voice [NAME [SPEED]]   show or change the voice (restarts the bot)
 #   adrian config KEY [VALUE]     show or change a setting, e.g. brain.extraBody.reasoning_effort medium
+#   adrian satellite add NAME OWNER_ID   pair a PC (prints its token once); also: list, remove ID
 #   adrian doctor                 full diagnostics
 #   adrian backup [FILE]          config, keys and state (not models) to a tar.gz
 #   adrian restore FILE
@@ -91,6 +92,15 @@ case "$cmd" in
       delete) [ -n "$name" ] || die "usage: adrian secret delete NAME"; tool secret-delete "$name" ;;
       list) tool secret-list ;;
       *) die "usage: adrian secret set|delete|list [NAME]" ;;
+    esac ;;
+  satellite)
+    need_root satellite
+    sub=${1:-}; shift || true
+    case "$sub" in
+      add) [ $# -eq 2 ] || die "usage: adrian satellite add NAME OWNER_DISCORD_ID"; tool satellite-add "$1" "$2" ;;
+      list) tool satellite-list ;;
+      remove) [ $# -eq 1 ] || die "usage: adrian satellite remove ID"; tool satellite-remove "$1" ;;
+      *) die "usage: adrian satellite add|list|remove" ;;
     esac ;;
   check) need_root check; tool check ;;
   config) need_root config; tool config "$@" ;;
@@ -183,6 +193,6 @@ case "$cmd" in
     wait_healthy 60 >/dev/null && echo "Rolled back to $prev." || die "rolled back, but not healthy: adrian logs" ;;
   uninstall) need_root uninstall; exec bash "$APP/packaging/install.sh" --uninstall "$@" ;;
   version) current_version ;;
-  -h|--help|help) sed -n '2,21p' "$0" ;;
+  -h|--help|help) sed -n '2,22p' "$0" ;;
   *) die "unknown command: $cmd (adrian help)" ;;
 esac

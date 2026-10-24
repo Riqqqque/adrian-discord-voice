@@ -11,6 +11,9 @@
 //   port                   print the admin UI port from the config
 //   voice [NAME [SPEED]]   show or set the voice (Kokoro name, speed 0.7-1.4)
 //   config KEY [VALUE]     show or set a setting by dotted path (validated)
+//   satellite-add NAME OWNER_ID   pair a PC; prints its token once
+//   satellite-list
+//   satellite-remove ID|NAME
 
 import { existsSync, readFileSync, unlinkSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -18,6 +21,7 @@ import { configProblems } from '../app/manager.js';
 import { AdminAuth } from '../web/auth.js';
 import { KOKORO_VOICES } from '../speech/voices.js';
 import { readJsonFile, SecretsFile, writeJsonFile } from '../web/secrets-file.js';
+import { SatelliteDevices } from '../satellite/devices.js';
 import { baseConfig } from '../web/settings.js';
 
 const configFile = resolve(process.env.ADRIAN_CONFIG ?? '/etc/adrian/config.json');
@@ -42,6 +46,28 @@ const [cmd, arg] = process.argv.slice(2);
 const auth = new AdminAuth(stateDir);
 
 switch (cmd) {
+  case 'satellite-add': {
+    const owner = process.argv[4] ?? '';
+    try {
+      const { device, token } = new SatelliteDevices(stateDir).add(arg ?? '', owner);
+      console.log(`Paired "${device.name}" (id ${device.id}).`);
+      console.log(`Token (shown once; paste it into the PC app): ${token}`);
+    } catch (e) {
+      fail((e as Error).message);
+    }
+    break;
+  }
+  case 'satellite-list': {
+    const all = new SatelliteDevices(stateDir).list();
+    if (!all.length) console.log('No PCs paired.');
+    for (const d of all) console.log(`${d.id}  ${d.name}  owner ${d.owner}  paired ${d.createdAt.slice(0, 10)}`);
+    break;
+  }
+  case 'satellite-remove':
+    if (!arg) fail('usage: satellite-remove ID|NAME');
+    if (!new SatelliteDevices(stateDir).remove(arg)) fail(`no PC called ${arg}`);
+    console.log('Removed. Restart the service to drop it if it is connected.');
+    break;
   case 'secret-set': {
     if (!arg) fail('usage: secret-set NAME  (value on stdin)');
     const v = await stdin();
@@ -109,7 +135,7 @@ switch (cmd) {
     // KEY is a dotted path (brain.extraBody.reasoning_effort, gameServers.2.name).
     if (!arg) fail('usage: config KEY [VALUE]');
     const path = arg.split('.');
-    const ALLOWED = ['brain', 'voice', 'limits', 'identity', 'gameServers', 'timezone', 'priorityRoleIds', 'playbackVolume', 'guildId', 'channelId', 'media', 'silenceMs', 'listen', 'mature', 'languages', 'owners', 'ownerStopReply', 'ownerAck', 'ownerAffection', 'nicknames', 'botGender', 'textChat', 'serverInfo', 'messaging', 'autoMemory', 'cloudVoice', 'music'];
+    const ALLOWED = ['brain', 'voice', 'limits', 'identity', 'gameServers', 'timezone', 'priorityRoleIds', 'playbackVolume', 'guildId', 'channelId', 'media', 'silenceMs', 'listen', 'mature', 'languages', 'owners', 'ownerStopReply', 'ownerAck', 'ownerAffection', 'nicknames', 'botGender', 'textChat', 'serverInfo', 'messaging', 'satellite', 'cloudStt', 'autoMemory', 'cloudVoice', 'music'];
     if (!ALLOWED.includes(path[0]!) || /(file|dir)$|^vadmodel$|^secrets/i.test(path[path.length - 1]!)) fail(`"${arg}" can't be changed here (file paths belong to the installer).`);
     const get = (o: unknown, p: string[]): unknown => p.reduce<unknown>((x, k) => (x && typeof x === 'object' ? (x as Record<string, unknown>)[k] : undefined), o);
     const rawValue = process.argv[4];

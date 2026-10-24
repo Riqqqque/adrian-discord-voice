@@ -13,6 +13,7 @@
 import { ChannelType, type Client, Events, type Message } from 'discord.js';
 import type { Logger } from '../core/interfaces.js';
 import { allowedPings } from '../features/discordinfo.js';
+import { mediaLinksIn, type RecentLinks } from '../features/links.js';
 
 export interface AskOptions {
   /** Not addressed directly: the model may answer SILENT. */
@@ -42,6 +43,8 @@ export interface TextChatDeps {
   followUpMs: number;
   /** Most people one reply may ping. */
   maxPings: number;
+  /** Remembers playable links people paste, for "play that link". */
+  links?: RecentLinks;
   now?: () => number;
 }
 
@@ -168,6 +171,11 @@ export function registerTextChat(d: TextChatDeps): void {
     const me = client.user;
     if (!me || m.author.bot || m.system) return;
     const dm = m.channel.type === ChannelType.DM;
+    if (d.links && (dm || !d.allowedGuilds.length || d.allowedGuilds.includes(m.guildId ?? ''))) {
+      const embedded = m.embeds.map((e) => e.url ?? '').join(' ');
+      for (const link of mediaLinksIn(`${m.content} ${embedded}`))
+        d.links.add({ link, userId: m.author.id, name: authorName(m), ...(m.guildId ? { guildId: m.guildId } : {}), channelId: m.channelId });
+    }
     if (dm ? !d.dms : !d.enabled) return;
     if (!dm && d.allowedGuilds.length && !d.allowedGuilds.includes(m.guildId ?? '')) return;
     const mentioned = m.mentions.users.has(me.id);

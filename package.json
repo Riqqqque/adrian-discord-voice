@@ -1,6 +1,6 @@
 {
   "name": "adrian-discord-voice",
-  "version": "0.13.6",
+  "version": "0.14.8",
   "private": true,
   "description": "Discord voice module for A.D.R.I.A.N.: say \"Hey Adrian\" in a voice channel and it answers out loud.",
   "license": "MIT",
@@ -27,9 +27,11 @@
     "@node-rs/argon2": "2.2.1",
     "@snazzah/davey": "0.1.12",
     "discord.js": "14.27.0",
+    "onnxruntime-node": "1.30.0",
     "opusscript": "0.0.8",
     "prism-media": "1.3.5",
     "sherpa-onnx-node": "1.13.8",
+    "ws": "8.22.0",
     "zod": "4.6.7"
   },
   "optionalDependencies": {
@@ -37,6 +39,7 @@
   },
   "devDependencies": {
     "@types/node": "22.20.5",
+    "@types/ws": "8.18.2",
     "typescript": "7.0.2",
     "vitest": "5.0.4"
   }
