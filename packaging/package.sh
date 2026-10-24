@@ -18,10 +18,13 @@ trap 'rm -rf "$STAGE"' EXIT
 cp -r "$ROOT/package.json" "$ROOT/package-lock.json" "$ROOT/tsconfig.json" "$ROOT/scripts" "$ROOT/src" "$ROOT/web" "$ROOT/packaging" "$STAGE/"
 cp "$ROOT/LICENSE" "$ROOT/README.md" "$STAGE/" 2>/dev/null || true
 cd "$STAGE"
-npm ci --no-audit --no-fund --loglevel=error
+# onnxruntime-node (Smart Turn) would otherwise fetch CUDA libraries from NuGet.
+ONNXRUNTIME_NODE_INSTALL=skip npm ci --no-audit --no-fund --loglevel=error
 npm run build --silent
 npm prune --omit=dev --no-audit --no-fund --loglevel=error
 rm -rf src tsconfig.json packaging/package.sh
+# The bundle is Linux x64 only; onnxruntime-node ships every platform (~250 MB).
+find node_modules/onnxruntime-node/bin -mindepth 2 -maxdepth 3 -type d ! -path "*/linux" ! -path "*/linux/x64" -prune -exec rm -rf {} + 2>/dev/null || true
 find node_modules -type d -empty -delete
 chmod 0755 . packaging/adrian packaging/install.sh packaging/upgrade-prep.sh  # mktemp dirs are 0700
 

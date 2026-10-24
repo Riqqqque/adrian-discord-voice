@@ -7,6 +7,7 @@ import { EventEmitter } from 'node:events';
 import { rmsDbfs } from '../audio/pcm.js';
 import type { SpeechToText, UserId, VoiceTransport, WakeDetector } from '../core/interfaces.js';
 import { ASR_SAMPLE_RATE, Downsampler, type SileroOptions, SileroVad } from '../speech/sherpa.js';
+import type { TurnDetector } from '../speech/smart-turn.js';
 
 export interface HeardEvent {
   userId: UserId;
@@ -35,24 +36,53 @@ export interface ListeningPipelineEvents {
   error: (userId: UserId, err: Error) => void;
 }
 
-interface UserState {
+export interface UserState {
   down: Downsampler;
   vad: SileroVad;
   /** performance.now() when the current run of speech began. */
   voicedSince?: number;
+  /** Speech held because it sounded unfinished (turn option). */
+  held?: { samples: Float32Array; timer?: NodeJS.Timeout; since: number; epoch: number };
+  epoch: number;
+}
+
+/** Waiting for the rest of a sentence (PC rooms): see src/speech/smart-turn.ts. */
+export interface TurnOptions {
+  detector: TurnDetector;
+  /** How much longer to wait after the normal silence when it sounds unfinished, ms. */
+  holdMs: number;
+  /** Logs each hold, for tuning. */
+  onHold?: (userId: UserId, info: { probability: number; seconds: number }) => void;
 }
 
 /** Segments shorter than this are coughs/clicks; don't spend ASR on them. */
 const MIN_SEGMENT_SECONDS = 0.3;
+/** Silence after the speech when asking whether the turn is over (what the normal wait has heard). */
+const TURN_TAIL = new Float32Array(Math.round(0.8 * ASR_SAMPLE_RATE));
+/** Between held speech and what came next, so the recognizer hears a pause. */
+const JOIN_GAP = new Float32Array(Math.round(0.25 * ASR_SAMPLE_RATE));
+/** Never hold one person's speech longer than this in total, ms. */
+const MAX_HOLD_MS = 15_000;
+
+function concat(...parts: Float32Array[]): Float32Array {
+  const out = new Float32Array(parts.reduce((n, p) => n + p.length, 0));
+  let o = 0;
+  for (const p of parts) {
+    out.set(p, o);
+    o += p.length;
+  }
+  return out;
+}
 
 export class ListeningPipeline extends EventEmitter {
-  private readonly users = new Map<UserId, UserState>();
+  protected readonly users = new Map<UserId, UserState>();
 
   constructor(
     private readonly transport: VoiceTransport,
     private readonly stt: SpeechToText,
     private readonly wake: WakeDetector,
     private readonly vadOptions: SileroOptions,
+    private readonly turn?: TurnOptions,
   ) {
     super();
     transport.on('audio', (id, chunk) => {
@@ -82,18 +112,74 @@ export class ListeningPipeline extends EventEmitter {
     return super.on(e, l);
   }
 
-  private user(id: UserId): UserState {
+  protected user(id: UserId): UserState {
     let u = this.users.get(id);
     if (!u) {
-      u = { down: new Downsampler(), vad: new SileroVad(this.vadOptions) };
+      u = { down: new Downsampler(), vad: new SileroVad(this.vadOptions), epoch: 0 };
       this.users.set(id, u);
     }
     return u;
   }
 
   private handleSegment(userId: UserId, samples: Float32Array): void {
+    const short = samples.length / ASR_SAMPLE_RATE < MIN_SEGMENT_SECONDS;
+    if (!this.turn) {
+      if (!short) this.transcribe(userId, samples);
+      return;
+    }
+    const u = this.users.get(userId);
+    if (!u) return;
+    const held = u.held;
+    if (short) {
+      // a cough while we wait: keep waiting, but don't let the wait stall
+      if (held && !held.timer) this.arm(userId, u);
+      return;
+    }
+    if (held?.timer) clearTimeout(held.timer);
+    const all = held ? concat(held.samples, JOIN_GAP, samples) : samples;
+    const epoch = ++u.epoch;
+    u.held = { samples: all, since: held?.since ?? performance.now(), epoch };
+    void this.turn.detector
+      .complete(concat(all.length > 8 * ASR_SAMPLE_RATE ? all.subarray(all.length - 8 * ASR_SAMPLE_RATE) : all, TURN_TAIL))
+      .catch(() => 1) // if the model fails, don't make anyone wait
+      .then((p) => {
+        const h = u.held;
+        if (!h || h.epoch !== epoch) return; // more speech came in meanwhile
+        if (p > 0.5 || performance.now() - h.since > MAX_HOLD_MS) {
+          this.release(userId, u);
+        } else {
+          this.turn?.onHold?.(userId, { probability: Number(p.toFixed(2)), seconds: Number((h.samples.length / ASR_SAMPLE_RATE).toFixed(2)) });
+          this.arm(userId, u);
+        }
+      });
+  }
+
+  /** Release held speech after holdMs, unless they're talking again by then. */
+  private arm(userId: UserId, u: UserState): void {
+    const h = u.held;
+    if (!h || !this.turn) return;
+    const check = () => {
+      if (u.held !== h) return;
+      // talking again: the VAD will close a segment soon and that decides
+      if (u.vad.isSpeaking() && performance.now() - h.since < MAX_HOLD_MS) {
+        h.timer = setTimeout(check, 300);
+        return;
+      }
+      this.release(userId, u);
+    };
+    h.timer = setTimeout(check, this.turn.holdMs);
+  }
+
+  private release(userId: UserId, u: UserState): void {
+    const h = u.held;
+    if (!h) return;
+    if (h.timer) clearTimeout(h.timer);
+    delete u.held;
+    this.transcribe(userId, h.samples);
+  }
+
+  private transcribe(userId: UserId, samples: Float32Array): void {
     const audioSeconds = samples.length / ASR_SAMPLE_RATE;
-    if (audioSeconds < MIN_SEGMENT_SECONDS) return;
     const segmentClosedAt = performance.now();
     const pcm = Int16Array.from(samples, (v) => Math.max(-32768, Math.min(32767, Math.round(v * 32767))));
     const levelDbfs = Number(rmsDbfs(pcm).toFixed(1));

@@ -158,6 +158,10 @@ export interface Tool {
   slow?: boolean;
   /** When it succeeds, the answer is done: no words after it (a sound effect). */
   endsTurn?: boolean;
+  /** A line to say for this result instead of asking the model again
+   *  ("Spotify's open."), or undefined to let the model answer. Used when
+   *  every tool in the round gives one; saves a model call. */
+  speak?(args: Record<string, unknown>, result: string): string | undefined;
 }
 
 export interface SecretsStore {

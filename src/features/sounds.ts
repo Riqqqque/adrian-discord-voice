@@ -2,13 +2,13 @@
 // meow". A short clip is found on YouTube and played once over whatever is
 // going on (music ducks under it, like under speech).
 
-import type { Tool } from '../core/interfaces.js';
+import type { Tool, ToolContext } from '../core/interfaces.js';
 import type { Track } from './music.js';
 
 export interface SoundDeps {
   find(query: string, signal: AbortSignal): Promise<Track | undefined>;
-  /** Start playing; resolves once it has started. */
-  play(t: Track): Promise<void>;
+  /** Start playing where the request came from; resolves once it has started. */
+  play(t: Track, ctx: ToolContext): Promise<void>;
 }
 
 /** Prompt line: sounds are something it can do. */
@@ -31,12 +31,12 @@ export function soundTool(d: SoundDeps): Tool {
     timeoutMs: 20_000,
     // The clip is the answer: no "one sec" before it, no words after it.
     endsTurn: true,
-    run: async (a, signal) => {
+    run: async (a, signal, ctx) => {
       const q = String(a.query ?? '').trim().slice(0, 80);
       if (!q) throw new Error('no sound named');
       const t = await d.find(q, signal);
       if (!t) throw new Error(`no "${q}" sound found`);
-      await d.play(t);
+      await d.play(t, ctx);
       return `Played the ${q} sound.`;
     },
   };

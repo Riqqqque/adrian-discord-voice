@@ -12,10 +12,10 @@ import { ConversationOrchestrator, type Usage } from '../brain/orchestrator.js';
 import { OpenAiCompatibleLlm } from '../brain/openai-compatible.js';
 import { AnthropicLlm } from '../brain/anthropic.js';
 import { SessionMemory } from '../brain/sessions.js';
-import { cachedTool, tavilySearchTool, timeTool } from '../brain/tools.js';
+import { cachedTool, tavilySearchTool, timeTool, topResultUrl } from '../brain/tools.js';
 import type { PocConfig } from '../config.js';
-import { ConversationController } from '../conversation/controller.js';
-import type { LlmProvider, Logger, Tool, UserId } from '../core/interfaces.js';
+import { ConversationController, DEFAULT_CONTROLLER_OPTIONS } from '../conversation/controller.js';
+import type { LlmProvider, Logger, Tool, UserId, VoiceTransport } from '../core/interfaces.js';
 import { classify } from '../conversation/intents.js';
 import { RoomTalk } from '../conversation/room.js';
 import { matureContext } from '../brain/mature.js';
@@ -28,10 +28,12 @@ import { mediaTools } from '../features/media.js';
 import { UserNotes } from '../features/notes.js';
 import { dueMessage, Reminders } from '../features/reminders.js';
 import { join } from 'node:path';
-import { type HeardEvent, ListeningPipeline } from '../listen/pipeline.js';
+import { type HeardEvent, ListeningPipeline, type TurnOptions } from '../listen/pipeline.js';
 import { EnglishWords, LANGS, looksSpanish, type ReplyLang, replyLang, stripWakeLead } from '../speech/language.js';
 import { PiperTts, VoiceRouter } from '../speech/piper.js';
 import { WhisperStt } from '../speech/whisper.js';
+import { SmartTurn } from '../speech/smart-turn.js';
+import { groqTranscribe, sttPrompt } from '../speech/cloud-stt.js';
 import { MODEL_LAYOUT } from '../web/checks.js';
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
@@ -45,11 +47,17 @@ import { creatorLines, genderLines, memberLabel } from './identity.js';
 import { registerTextChat } from './textchat.js';
 import { discordTools, RelayLimiter } from '../features/discordinfo.js';
 import { describe as trackName, ffmpegDecoder, MusicPlayer, musicRules, musicState, musicTools, PlexMusicSource, type MusicSource, YoutubeSource } from '../features/music.js';
+import { linksLine, PLAY_THAT_LINK, RecentLinks } from '../features/links.js';
 import { classifyMusic, isTimeQuestion } from '../conversation/intents.js';
 import { ParakeetStt } from '../speech/sherpa.js';
 import { DiscordVoiceTransport } from '../transport/discord.js';
 import { Speaker } from '../voice/speaker.js';
 import { TextWakeDetector } from '../wake/text-wake.js';
+import type { SatelliteConnection } from '../satellite/connection.js';
+import { SatelliteDevices } from '../satellite/devices.js';
+import { PcRecorder } from '../satellite/recorder.js';
+import { startSatelliteServer } from '../satellite/server.js';
+import { PC_RULE, pcTools } from '../satellite/tools.js';
 
 export interface AnswerRecord {
   at: string;
@@ -166,7 +174,9 @@ export async function startVoiceStack(
   // Speech and music share Discord's one audio player through the mixer.
   const mc = config.music;
   const mixer = new Mixer({ start: (s) => transport.playPcm(s, { volume: 1 }), duckLevel: mc.duckLevel });
-  const speaker = new Speaker(mixer, new VoiceRouter(tts, { ...(piperVi ? { vi_piper: piperVi } : {}), ...(cloud ? { [CLOUD]: cloud } : {}) }));
+  // One set of voices, shared by every room (the Discord call and each PC).
+  const router = new VoiceRouter(tts, { ...(piperVi ? { vi_piper: piperVi } : {}), ...(cloud ? { [CLOUD]: cloud } : {}) });
+  const speaker = new Speaker(mixer, router);
 
   // --- music --------------------------------------------------------------
   const ytdlp = mc.ytdlp ?? join(langModels, MODEL_LAYOUT.ytdlp);
@@ -175,34 +185,78 @@ export async function startVoiceStack(
   const plexForMusic = secrets.get('PLEX_TOKEN');
   if (mc.enabled && mc.plexBackup && plexForMusic) musicSources.push(new PlexMusicSource({ url: config.media.plexUrl, token: plexForMusic }));
   const ffmpegOk = mc.enabled && spawnSync(mc.ffmpeg, ['-version'], { stdio: 'ignore' }).status === 0;
-  const music = ffmpegOk && musicSources.length ? new MusicPlayer({ sources: musicSources, output: mixer, decode: ffmpegDecoder(mc.ffmpeg), log, volume: mc.volume, maxQueue: mc.maxQueue, autoplay: mc.autoplay }) : undefined;
+  const makeMusic = (out: Mixer) =>
+    ffmpegOk && musicSources.length ? new MusicPlayer({ sources: musicSources, output: out, decode: ffmpegDecoder(mc.ffmpeg), log, volume: mc.volume, maxQueue: mc.maxQueue, autoplay: mc.autoplay }) : undefined;
+  const music = makeMusic(mixer);
   if (mc.enabled) log.info(music ? 'music ready' : 'music off', { sources: musicSources.map((s) => s.name), ffmpeg: ffmpegOk });
 
   // --- sound effects (needs YouTube and ffmpeg, like music) -------------------
   const ytForSounds = musicSources.find((s): s is YoutubeSource => s instanceof YoutubeSource);
-  let soundHandle: { stop(): void } | undefined;
-  const stopSound = () => {
-    soundHandle?.stop();
-    soundHandle = undefined;
+  /** Plays one sound effect at a time into a room's mixer. */
+  function soundPlayer(out: Mixer): { play(t: { ref: string; title?: string }): void; stop(): void } {
+    let handle: { stop(): void } | undefined;
+    const stop = () => {
+      handle?.stop();
+      handle = undefined;
+    };
+    return {
+      stop,
+      play: (t) => {
+        stop();
+        const dec = ffmpegDecoder(mc.ffmpeg)({ url: t.ref });
+        const h = out.playPcm(dec.pcm, { volume: Math.min(1, config.playbackVolume) });
+        const cap = setTimeout(() => h.stop(), 15_000); // a sound, not a song
+        const mine = { stop: () => (h.stop(), dec.kill()) };
+        handle = mine;
+        void h.done.finally(() => {
+          clearTimeout(cap);
+          dec.kill();
+          if (handle === mine) handle = undefined;
+        });
+        log.info('sound playing', { title: t.title });
+      },
+    };
+  }
+
+  // --- rooms: the Discord call, and each connected PC ------------------------
+  /** Where a conversation happens: its own speaker, music and sounds. */
+  interface Room {
+    key: string;
+    mixer: Mixer;
+    speaker: Speaker;
+    music: MusicPlayer | undefined;
+    sound: ReturnType<typeof soundPlayer>;
+    /** What tools and room talk see: the voice channel, or `sat:<id>` for a PC. */
+    place(): { guildId?: string; channelId?: string };
+    /** The PC's window, for satellites. */
+    ui?: SatelliteConnection;
+  }
+  const discordRoom: Room = {
+    key: 'discord',
+    mixer,
+    speaker,
+    music,
+    sound: soundPlayer(mixer),
+    place: () => (spot ? { guildId: spot.guildId, channelId: spot.channelId } : {}),
   };
+  const satRooms = new Map<string, Room>();
+  // PC satellites (docs/satellite.md): off unless configured, and they need the state folder for pairings.
+  const satEnabled = !!config.satellite.enabled && !!stateDir;
+  let satServer: ReturnType<typeof startSatelliteServer> | undefined;
+  const recorder = satEnabled && config.satellite.recordDays > 0 ? new PcRecorder(join(stateDir!, 'pc-recordings'), config.satellite.recordDays) : undefined;
+  if (recorder) log.info('recording PC requests', { days: config.satellite.recordDays });
+  /** The asker's own PC: the one they're talking through, else their most recently active one. */
+  function pcFor(ctx: { userId: UserId; channelId?: string | undefined }): SatelliteConnection | undefined {
+    const mine = (satServer?.connections() ?? []).filter((c) => c.owner === ctx.userId);
+    return mine.find((c) => `sat:${c.device.id}` === ctx.channelId) ?? mine.sort((a, b) => b.lastSeen - a.lastSeen)[0];
+  }
+  /** The room a request came from (tools get it through their context). */
+  const roomFor = (ctx: { channelId?: string | undefined }): Room => (ctx.channelId && satRooms.get(ctx.channelId)) || discordRoom;
   const sounds =
     music && ytForSounds
       ? {
           find: (q: string, signal: AbortSignal) => ytForSounds.soundEffect(q, signal),
-          play: async (t: { ref: string }) => {
-            stopSound();
-            const dec = ffmpegDecoder(mc.ffmpeg)({ url: t.ref });
-            const h = mixer.playPcm(dec.pcm, { volume: Math.min(1, config.playbackVolume) });
-            const cap = setTimeout(() => h.stop(), 15_000); // a sound, not a song
-            const mine = { stop: () => (h.stop(), dec.kill()) };
-            soundHandle = mine;
-            void h.done.finally(() => {
-              clearTimeout(cap);
-              dec.kill();
-              if (soundHandle === mine) soundHandle = undefined;
-            });
-            log.info('sound playing', { title: (t as { title?: string }).title });
-          },
+          play: async (t: { ref: string; title?: string }, ctx: { channelId?: string }) => roomFor(ctx).sound.play(t),
         }
       : undefined;
 
@@ -250,6 +304,8 @@ export async function startVoiceStack(
     }
   });
   const notes = new UserNotes(stateDir ? join(stateDir, 'notes.json') : undefined);
+  /** Playable links pasted in chat, for "play that link" (memory only). */
+  const links = new RecentLinks();
   const games = new PartyGames();
   const room = new RoomTalk();
   /** Who's in the voice call, so it can talk about and to everyone by name. */
@@ -282,8 +338,19 @@ export async function startVoiceStack(
       const searchKey = brain.search ? secrets.get(brain.search.apiKeySecret) : undefined;
       if (searchKey) tools.push(tavilySearchTool(searchKey, brain.search?.maxResults));
       tools.push(...reminders.tools(), ...notes.tools(), ...games.tools());
-      if (music) tools.push(...musicTools(music));
+      if (music) tools.push(...musicTools((ctx) => roomFor(ctx).music));
       if (sounds) tools.push(soundTool(sounds));
+      if (satEnabled)
+        tools.push(
+          ...pcTools({
+            pcFor: (ctx) => pcFor(ctx),
+            ...(ytForSounds ? { findVideo: async (q: string, signal: AbortSignal) => (await ytForSounds.video(q, signal))?.ref.match(/[?&]v=([\w-]{11})/)?.[1] } : {}),
+            ...(searchKey ? { findUrl: (q: string, signal: AbortSignal) => topResultUrl(searchKey, q, signal) } : {}),
+            onCall: (name, args, result) => {
+              if (config.satellite.logTranscripts) log.info('pc action', { name, args, result: result.slice(0, 200) });
+            },
+          }),
+        );
       if (config.serverInfo.enabled)
         tools.push(
           ...discordTools(
@@ -346,17 +413,24 @@ export async function startVoiceStack(
           ...room.context(ctx.channelId, ctx.userId),
           ...notes.context(ctx.userId, ctx.speaker),
           ...games.context(ctx),
-          ...(music ? [musicState(music)] : []),
+          ...(roomFor(ctx).music ? [musicState(roomFor(ctx).music!), ...linksLine(links.forPrompt(ctx.userId, ctx.guildId))] : []),
+          ...(roomFor(ctx).ui ? [`${ctx.speaker} is talking to you through their PC (A.D.R.I.A.N. satellite), not in the Discord call. Music and sounds play on that PC.`] : []),
         ],
         selectTools: (text, ctx, all) =>
-          routeTools(all, text, { gameRunning: games.context(ctx).length > 0, hasTimers: reminders.forUser(ctx.userId).length > 0, musicPlaying: !!music?.nowPlaying }),
+          routeTools(all, text, { gameRunning: games.context(ctx).length > 0, hasTimers: reminders.forUser(ctx.userId).length > 0, musicPlaying: !!roomFor(ctx).music?.nowPlaying }),
         ...(creator ? { creator: { name: creator, spoken: config.identity.creatorSpoken ?? creator, heardAs: config.identity.creatorHeardAs } } : {}),
         // Claude caches the tools and the stable prompt; that needs the same tools every call.
         stablePrefix: brain.provider === 'anthropic',
         // First chunk stays a whole sentence: cutting at the first comma was
         // measured slower overall (bench/first-audio.mjs, median 1.39 vs 1.26 s).
         filler: () => FILLERS[fillerTurn++ % FILLERS.length]!,
-        stableLines: [...genderLines(config.botGender), ...(sounds ? [SOUND_RULE] : []), ...(config.mature === 'age-restricted' ? [] : matureContext(config.mature, false)), ...(music ? musicRules() : [])],
+        stableLines: [
+          ...genderLines(config.botGender),
+          ...(sounds ? [SOUND_RULE] : []),
+          ...(config.mature === 'age-restricted' ? [] : matureContext(config.mature, false)),
+          ...(music ? musicRules() : []),
+          ...(satEnabled ? [PC_RULE] : []),
+        ],
       });
       log.info('brain ready', { model: brain.model, fallback: fbUsable ? fb!.model : null, tools: tools.map((x) => x.spec.name) });
     }
@@ -387,7 +461,10 @@ export async function startVoiceStack(
   function nameOf(id: UserId): string {
     if (!names.has(id)) {
       const m = client.guilds.cache.get(spot?.guildId ?? config.guildId)?.members.cache.get(id);
-      names.set(id, m?.displayName ?? m?.user.username ?? 'someone');
+      const u = client.users.cache.get(id);
+      const n = m?.displayName ?? u?.globalName ?? u?.username;
+      if (!n) return 'someone'; // not cached yet: try again next time
+      names.set(id, n);
     }
     return names.get(id)!;
   }
@@ -401,16 +478,16 @@ export async function startVoiceStack(
   const lastSpoken = new Map<UserId, string>();
 
   /** Everyday phrases answered locally (no model call, no cost). True if handled. */
-  async function local(userId: UserId, command: string, signal: AbortSignal): Promise<boolean> {
-    if (music && (await localMusic(userId, command, signal))) return true;
+  async function local(rm: Room, userId: UserId, command: string, signal: AbortSignal): Promise<boolean> {
+    if (rm.music && (await localMusic(rm, userId, command, signal))) return true;
     if (isTimeQuestion(command)) {
       const t = dateFormat('en-US', { timeZone: config.timezone, hour: 'numeric', minute: '2-digit' }).format(new Date());
-      await speaker.speak(fixed(`It's ${t}.`), speakOpts, signal);
+      await rm.speaker.speak(fixed(`It's ${t}.`), speakOpts, signal);
       return true;
     }
     const intent = classify(command);
     if (!intent) return false;
-    const say = (t: string) => speaker.speak(fixed(t), speakOpts, signal);
+    const say = (t: string) => rm.speaker.speak(fixed(t), speakOpts, signal);
     switch (intent.kind) {
       case 'ack':
         // "okay", "cool": nothing to say. But after a question from the bot,
@@ -424,16 +501,19 @@ export async function startVoiceStack(
         return true;
       case 'repeat': {
         const last = lastSpoken.get(userId);
-        await speaker.speak(fixed(last ?? "I haven't said anything yet."), speakOpts, signal);
+        await rm.speaker.speak(fixed(last ?? "I haven't said anything yet."), speakOpts, signal);
         return true;
       }
       case 'volume': {
+        const aboutHer = /\b(you|your|voice|talk|speak)\b/i.test(command);
         // With music on, "turn it up/down" means the music (unless it's about the voice).
-        if (music?.nowPlaying && !/\b(you|your|voice|talk|speak)\b/i.test(command)) {
-          const to = music.nudgeVolume(intent.dir);
+        if (rm.music?.nowPlaying && !aboutHer) {
+          const to = rm.music.nudgeVolume(intent.dir);
           log.info('music volume', { to, by: userId });
           return true;
         }
+        // At a PC, "turn it down" means the PC's volume: the model's pc_volume.
+        if (rm.ui && !aboutHer) return false;
         const v = speakOpts.volume;
         // Volume 1.0 is the −16 LUFS target; never above it.
         speakOpts.volume = Math.min(1, Math.max(0.25, Number((v * (intent.dir > 0 ? 1.3 : 0.75)).toFixed(2))));
@@ -454,10 +534,16 @@ export async function startVoiceStack(
   }
 
   /** "play X", "skip", "pause"...: answered without the model. */
-  async function localMusic(userId: UserId, command: string, signal: AbortSignal): Promise<boolean> {
+  async function localMusic(rm: Room, userId: UserId, command: string, signal: AbortSignal): Promise<boolean> {
+    if (rm.music && PLAY_THAT_LINK.test(command)) return playPastedLink(rm, userId, command, signal);
     const m = classifyMusic(command);
+    const music = rm.music;
     if (!m || !music) return false;
-    const say = (t: string) => speaker.speak(fixed(t), speakOpts, signal);
+    // At a PC, "pause", "skip" and "what's playing" mean whatever the PC is
+    // playing (Spotify, a video) unless her own music is on: the model's PC
+    // tools handle that.
+    if (rm.ui && m.kind !== 'play' && !music.nowPlaying) return false;
+    const say = (t: string) => rm.speaker.speak(fixed(t), speakOpts, signal);
     if (m.kind === 'play') {
       const allowed = ledger.check(userId, isOwner(userId));
       if (!allowed.ok && allowed.reason === 'user-rate') {
@@ -503,10 +589,40 @@ export async function startVoiceStack(
     }
   }
 
-  async function respond(userId: UserId, command: string, outer: AbortSignal, followUp = false): Promise<void | 'silent'> {
-    if (await local(userId, command, outer)) return;
+  /** "Play that link I just sent": the asker's latest pasted link, else the server's latest. */
+  async function playPastedLink(rm: Room, userId: UserId, command: string, signal: AbortSignal): Promise<boolean> {
+    const say = (t: string) => rm.speaker.speak(fixed(t), speakOpts, signal);
+    const pasted = links.latestFor(userId, rm.place().guildId);
+    if (!pasted) {
+      await say("I don't see a link in chat from the last half hour. Paste it and ask again.");
+      return true;
+    }
+    const allowed = ledger.check(userId, isOwner(userId));
+    if (!allowed.ok && allowed.reason === 'user-rate') {
+      await say("You've asked for a lot in the last hour. Give it a bit.");
+      return true;
+    }
+    ledger.noteRequest(userId);
+    log.info('music link', { user: userId, kind: pasted.link.kind, fromUser: pasted.userId === userId });
+    let filler: Promise<unknown> | undefined;
+    const fillerTimer = setTimeout(() => (filler = say(FILLERS[fillerTurn++ % FILLERS.length]!).catch(() => undefined)), 900);
+    const queue = /^\W*(?:\w+\W+){0,3}queue\b/i.test(command) ? 'queue' : 'now';
+    const r = await rm
+      .music!.request('link', pasted.link.url, queue, signal)
+      .catch((e: Error) => ({ ok: false as const, message: signal.aborted ? '' : (log.warn('music failed', { error: e.message }), "I couldn't play that link.") }))
+      .finally(() => clearTimeout(fillerTimer));
+    await filler;
+    if (signal.aborted) return true;
+    if (!r.ok) await say(r.message);
+    else if (r.started) await say(`Playing ${trackName(r.started)}${r.added ? `, and ${r.added} more after it` : ''}.`);
+    else await say(`Added ${r.added === 1 ? 'it' : `${r.added} songs`} to the queue.`);
+    return true;
+  }
+
+  async function respond(rm: Room, userId: UserId, command: string, outer: AbortSignal, followUp = false, onSpeaking?: () => void): Promise<void | 'silent'> {
+    if (await local(rm, userId, command, outer)) return;
     // A music or sound request is always for the bot, even without the name.
-    const musicish = music !== undefined && MUSICISH.test(command);
+    const musicish = rm.music !== undefined && MUSICISH.test(command);
     if (musicish) followUp = false;
     let silent = false;
     // The time limit is for getting the answer, not for saying it: the
@@ -536,8 +652,9 @@ export async function startVoiceStack(
     } else {
       ledger.noteRequest(userId);
       const question = command.length > maxRequestChars ? command.slice(0, maxRequestChars) : command;
-      const gen = orchestrator.ask(userId, nameOf(userId), question, signal, (u) => (usage = u), spot ? { guildId: spot.guildId, channelId: spot.channelId } : {}, {
+      const gen = orchestrator.ask(userId, nameOf(userId), question, signal, (u) => (usage = u), rm.place(), {
         followUp,
+        ...(rm.ui ? { desk: true } : {}),
         onSilent: () => (silent = true),
         // A slow tool (music lookup) may take longer than the answer limit: give
         // it its own limit plus time for the model to answer afterwards.
@@ -554,6 +671,7 @@ export async function startVoiceStack(
           for await (const chunk of gen) {
             llmFirstMs ??= Math.round(performance.now() - tStart);
             said.push(chunk);
+            rm.ui?.transcript('her', said.join(' '), false);
             yield chunk;
           }
           generated = true;
@@ -561,7 +679,10 @@ export async function startVoiceStack(
           clearTimeout(genTimer);
           if (said.length) {
             lastSpoken.set(userId, said.join(' '));
-            if (spot) room.add(spot.channelId, 'bot', `You (answering ${nameOf(userId)})`, said.join(' '));
+            const pl = rm.place();
+            if (pl.channelId) room.add(pl.channelId, 'bot', `You (answering ${nameOf(userId)})`, said.join(' '));
+            rm.ui?.transcript('her', said.join(' '));
+            if (rm.ui && config.satellite.logTranscripts) log.info('pc answer', { room: rm.key, asked: command.slice(0, 300), said: said.join(' ').slice(0, 500) });
           }
         }
         })(),
@@ -572,10 +693,10 @@ export async function startVoiceStack(
       generated = true;
     }
     let firstAudioAt: number | undefined;
-    let r: Awaited<ReturnType<typeof speaker.speak>> = { outcome: 'error', chunks: 0, synthMs: [] };
+    let r: Awaited<ReturnType<typeof rm.speaker.speak>> = { outcome: 'error', chunks: 0, synthMs: [] };
     let failure: Error | undefined;
     try {
-      r = await speaker.speak(source, { ...speakOpts, voice: voiceFor(userLang.get(userId) ?? 'en'), onFirstAudio: () => (firstAudioAt = performance.now()) }, playSignal);
+      r = await rm.speaker.speak(source, { ...speakOpts, voice: voiceFor(userLang.get(userId) ?? 'en'), onFirstAudio: () => { firstAudioAt = performance.now(); onSpeaking?.(); } }, playSignal);
     } catch (e) {
       // The model or the voice failed partway (or the time limit cut the
       // model off): what was already said stands; the accounting below runs.
@@ -620,7 +741,7 @@ export async function startVoiceStack(
     if (silent) return 'silent';
     // The model answered with nothing at all: say so rather than leave silence.
     if (!failure && !outer.aborted && firstAudioAt === undefined && generated && orchestrator && allowed.ok && !usage?.toolCalls) {
-      await speaker.speak(fixed("Sorry, I didn't get that. Could you say it again?"), speakOpts, playSignal).catch(() => undefined);
+      await rm.speaker.speak(fixed("Sorry, I didn't get that. Could you say it again?"), speakOpts, playSignal).catch(() => undefined);
       return;
     }
     // Only when nothing was said: then the user should hear a short sorry.
@@ -653,12 +774,21 @@ export async function startVoiceStack(
   let ownerAckTurn = 0;
   /** The owner's greetings in turn ("Yes boss", "Yes, chief", ...). */
   const nextOwnerAck = () => config.ownerAck[ownerAckTurn++ % config.ownerAck.length]!;
-  const controller = new ConversationController({
+  /** A conversation controller for one room (the Discord call, or a PC). */
+  function makeController(rm: Room): ConversationController {
+    const c: ConversationController = new ConversationController({
     now: () => performance.now(),
-    respond,
+    respond: async (userId, command, signal, followUp) => {
+      rm.ui?.mode('thinking');
+      try {
+        return await respond(rm, userId, command, signal, followUp, () => c.speaking(userId));
+      } finally {
+        rm.ui?.mode('idle');
+      }
+    },
     say: async (text, signal) => {
       const limit = AbortSignal.timeout(15_000);
-      await speaker.speak(fixed(text), speakOpts, signal ? AbortSignal.any([signal, limit]) : limit);
+      await rm.speaker.speak(fixed(text), speakOpts, signal ? AbortSignal.any([signal, limit]) : limit);
     },
     // The owner can stop any answer by saying "stop", but just talking in the
     // call must not cut off answers to other people.
@@ -666,33 +796,107 @@ export async function startVoiceStack(
     ack: (id) => (isOwner(id) && config.ownerAck.length ? `${nextOwnerAck().replace(/[.!]+$/, '')}?` : config.nicknames[id] ? `Yes, ${config.nicknames[id]}?` : 'Yes?'),
     preempts: (id) => isOwner(id),
     stopOther: (id) => {
-      if (music?.stop()) log.info('music stopped', { by: id, how: 'stop phrase' });
+      if (rm.music?.stop()) log.info('music stopped', { by: id, how: 'stop phrase', room: rm.key });
     },
     onStopped: (id) => {
-      stopSound();
-      if (isOwner(id) && config.ownerStopReply.trim()) controller.announce(id, config.ownerStopReply.trim());
+      rm.sound.stop();
+      if (isOwner(id) && config.ownerStopReply.trim()) c.announce(id, config.ownerStopReply.trim());
     },
     isPriority: (id) => {
       const m = client.guilds.cache.get(spot?.guildId ?? config.guildId)?.members.cache.get(id);
       return !!m && m.roles.cache.some((r) => priorityRoles.has(r.id));
     },
-    log: (event, fields) => log.info(event, fields),
-  });
+    log: (event, fields) => log.info(event, rm.ui ? { ...fields, room: rm.key } : fields),
+    // At a PC it's one person talking to her: keep the conversation open
+    // longer, and stop as soon as they talk over her (the PC only sends
+    // speech that's clearly louder than her own echo).
+    }, rm.ui ? { ...DEFAULT_CONTROLLER_OPTIONS, followUpMs: 20_000, bargeInMs: 600 } : DEFAULT_CONTROLLER_OPTIONS);
+    return c;
+  }
+  const controller = makeController(discordRoom);
 
   const wakeDetector = new TextWakeDetector({ name: listen.wakeName });
+
+  // --- the cloud second listen (config cloudStt) ---------------------------
+  const cs = config.cloudStt;
+  const csKey = cs.enabled ? secrets.get(cs.apiKeySecret) : undefined;
+  if (cs.enabled) log.info(csKey ? 'cloud speech-to-text' : 'cloud speech-to-text key missing; local only', { model: cs.model, rooms: cs.rooms });
+  let csPausedUntil = 0;
+  // Names it should expect: her creator, people's nicknames.
+  const csPrompt = sttPrompt([creator, ...Object.values(config.nicknames)].filter(Boolean));
+  const cloudSttFor = (rm: Room) => !!csKey && (cs.rooms === 'all' || !!rm.ui) && performance.now() > csPausedUntil;
+  /** The cloud's words for a segment, or undefined (slow, failed, rate-limited: use the local ones). */
+  async function cloudListen(samples: Float32Array): Promise<string | undefined> {
+    try {
+      return (await groqTranscribe(csKey!, samples, 16_000, { model: cs.model, prompt: csPrompt, signal: AbortSignal.timeout(cs.timeoutMs) })) || undefined;
+    } catch (err) {
+      const msg = (err as Error).message;
+      // Rate limit or outage: give it a minute.
+      if (/HTTP (429|5\d\d)/.test(msg)) csPausedUntil = performance.now() + 60_000;
+      log.warn('cloud speech-to-text failed; using local words', { error: msg.slice(0, 120) });
+      return undefined;
+    }
+  }
   const logTranscripts = listen.logTranscripts;
-  const pipeline = new ListeningPipeline(transport, stt, wakeDetector, {
+  // PC rooms: a pause that sounds mid-sentence waits a little longer (Smart Turn).
+  let turn: TurnOptions | undefined;
+  const turnModel = join(langModels, MODEL_LAYOUT.smartTurn);
+  if (satEnabled && config.satellite.unfinishedWaitMs > 0 && existsSync(turnModel)) {
+    try {
+      const detector = await SmartTurn.load(turnModel);
+      turn = {
+        detector,
+        holdMs: config.satellite.unfinishedWaitMs,
+        onHold: (userId, info) => log.info('waiting for the rest', { user: userId, ...info }),
+      };
+      log.info('smart turn loaded', { waitMs: turn.holdMs });
+    } catch (err) {
+      log.warn('smart turn unavailable; using the plain silence wait', { error: (err as Error).message.slice(0, 160) });
+    }
+  }
+  const vad = {
     model: listen.vadModel,
     threshold: listen.vadThreshold,
     minSilence: listen.minSilence,
     minSpeech: listen.minSpeech,
     maxSpeech: listen.maxSpeech,
-  });
+  };
+  /** Listen to one room's audio. `direct()` true: the next thing heard is a question for her (push-to-talk). */
+  function listenTo(source: VoiceTransport, rm: Room, ctl: ConversationController, direct?: () => boolean): ListeningPipeline {
+  // At a PC, a pause mid-sentence shouldn't split it in two (Discord keeps the snappier default).
+  const pipeline = rm.ui
+    ? new ListeningPipeline(source, stt, wakeDetector, { ...vad, minSilence: Math.max(vad.minSilence, 0.8) }, turn)
+    : new ListeningPipeline(source, stt, wakeDetector, vad);
   pipeline.on('heard', (e) => void heard(e).catch((err: Error) => log.warn('heard failed', { error: err.message })));
   async function heard(e: HeardEvent): Promise<void> {
-    // Questions that don't look English get a second, multilingual pass.
-    const forBot = e.woke || controller.listeningTo(e.userId);
+    if (!e.woke && direct?.()) e = { ...e, woke: true, command: e.text };
+    const forBot = e.woke || ctl.listeningTo(e.userId);
     const before = userLang.get(e.userId) ?? 'en';
+    // Said to her: a second, more accurate listen in the cloud for the words
+    // (the local model already decided it was for her). Stops and her name
+    // alone don't need it.
+    const first = classify(e.woke ? e.command : e.text);
+    const local = e.text;
+    let cloud: string | undefined;
+    if (forBot && e.samples && first?.kind !== 'stop' && first?.kind !== 'name' && cloudSttFor(rm)) {
+      const t0 = performance.now();
+      const text = (cloud = await cloudListen(e.samples));
+      if (text) {
+        const m = wakeDetector.matchLoose(text);
+        const command = e.woke ? (m.woke ? m.remainder : stripWakeLead(text)) : '';
+        if (rm.ui && config.satellite.logTranscripts) log.info('pc stt', { local: e.text, cloud: text, ms: Math.round(performance.now() - t0) });
+        // Keep the local words if the cloud lost the request itself.
+        if (!e.woke || command.trim()) e = { ...e, text, command };
+      }
+    }
+    if (recorder && forBot && rm.ui && e.samples) {
+      try {
+        recorder.save(rm.key, e.samples, { local, ...(cloud ? { cloud } : {}) });
+      } catch (err) {
+        log.warn('recording failed', { error: (err as Error).message });
+      }
+    }
+    // Questions that don't look English get a second, multilingual pass.
     const said = e.woke ? e.command : e.text;
     const quick = classify(said);
     if (forBot && said.trim() && quick?.kind !== 'stop' && quick?.kind !== 'name') {
@@ -714,20 +918,35 @@ export async function startVoiceStack(
       }
     }
     if (forBot && (userLang.get(e.userId) ?? 'en') !== before) log.info('language', { user: e.userId, from: before, to: userLang.get(e.userId) });
-    if (spot) room.add(spot.channelId, e.userId, nameOf(e.userId), e.text);
+    const pl = rm.place();
+    if (pl.channelId) room.add(pl.channelId, e.userId, nameOf(e.userId), e.text);
+    if (forBot && rm.ui) rm.ui.transcript('you', e.woke ? e.command || e.text : e.text);
     if (logTranscripts) log.debug("heard", { user: e.userId, text: e.text, woke: e.woke });
+    // PC rooms: what happened to each thing heard (no words), to tune the PC side.
+    if (rm.ui)
+      log.info('pc heard', {
+        room: rm.key,
+        seconds: e.audioSeconds,
+        woke: e.woke,
+        forBot,
+        ...(e.loose ? { loose: true } : {}),
+        ...(config.satellite.logTranscripts ? { text: e.text } : {}),
+      });
     // Data for tuning the end-of-speech wait: the same person talking again
     // right after their last segment closed may mean it was cut mid-sentence.
     const prev = lastHeard.get(e.userId);
     const gapMs = prev ? Math.round(e.segmentClosedAt - (e.audioSeconds ?? 0) * 1000 - prev.segmentClosedAt) : undefined;
     if (gapMs !== undefined && gapMs >= 0 && gapMs < 1_200) log.info('quick continuation', { user: e.userId, gapMs, woke: e.woke });
     lastHeard.set(e.userId, { segmentClosedAt: e.segmentClosedAt, sttLatencyMs: e.sttLatencyMs });
-    if (e.woke) mixer.duckFor(8_000);
+    if (e.woke) rm.mixer.duckFor(8_000);
     if (e.woke) log.info('wake', { user: e.userId, sttLatencyMs: e.sttLatencyMs, audioSeconds: e.audioSeconds, ...(e.loose ? { loose: true } : {}) });
-    controller.heard({ userId: e.userId, text: e.text, woke: e.woke, command: e.command, ...(e.loose ? { loose: true } : {}) });
+    ctl.heard({ userId: e.userId, text: e.text, woke: e.woke, command: e.command, ...(e.loose ? { loose: true } : {}) });
   }
-  pipeline.on('voiceActivity', (id, ms) => controller.voiceActivity(id, ms));
+  pipeline.on('voiceActivity', (id, ms) => ctl.voiceActivity(id, ms));
   pipeline.on('error', (id, err) => log.warn('listen error', { user: id, error: err.message }));
+  return pipeline;
+  }
+  listenTo(transport, discordRoom, controller);
 
   // --- /join and /leave ---------------------------------------------------
   let moving: Promise<void> = Promise.resolve();
@@ -777,6 +996,7 @@ export async function startVoiceStack(
           },
         }
       : {}),
+    links,
     limited: (userId) => {
       const a = ledger.check(userId, isOwner(userId));
       return a.ok ? undefined : LIMIT_MESSAGES[a.reason];
@@ -832,6 +1052,56 @@ export async function startVoiceStack(
 
   await client.login(token);
 
+  // --- PC satellites: each connected PC is a room of its own ----------------
+  if (satEnabled) {
+    satServer = startSatelliteServer({
+      bind: config.satellite.bind,
+      port: config.satellite.port,
+      devices: new SatelliteDevices(stateDir!),
+      log,
+      welcome: (c) => ({ owner: nameOf(c.owner) }),
+      onConnect: (conn) => {
+        const key = `sat:${conn.device.id}`;
+        const satMixer = new Mixer({ start: (s) => conn.playPcm(s), duckLevel: mc.duckLevel });
+        const rm: Room = {
+          key,
+          mixer: satMixer,
+          speaker: new Speaker(satMixer, router),
+          music: makeMusic(satMixer),
+          sound: soundPlayer(satMixer),
+          place: () => ({ channelId: key }),
+          ui: conn,
+        };
+        satRooms.set(key, rm);
+        const ctl = makeController(rm);
+        // Push-to-talk: the next thing heard is for her, no "Hey Adrian" needed.
+        let pttUntil = 0;
+        listenTo(conn, rm, ctl, () => {
+          const on = performance.now() < pttUntil;
+          pttUntil = 0;
+          return on;
+        });
+        conn.on('ptt', () => (pttUntil = performance.now() + 15_000));
+        conn.on('text', (text) => ctl.heard({ userId: conn.owner, text, woke: true, command: text }));
+        conn.on('stop', () => {
+          ctl.cancelAll();
+          rm.sound.stop();
+        });
+        conn.on('closed', () => {
+          ctl.cancelAll();
+          rm.music?.stop();
+          satMixer.stopAll();
+          satRooms.delete(key);
+        });
+        // Their name for the prompt, even when they aren't in a voice channel.
+        void client.users
+          .fetch(conn.owner)
+          .then(() => names.delete(conn.owner))
+          .catch(() => undefined);
+      },
+    });
+  }
+
   if (cloud) {
     // Fetch the short replies once so "Yes?" and friends play without a wait.
     const lines = ['Yes?', 'Okay.', ...FILLERS, ...config.ownerAck.map((a) => `${a.replace(/[.!]+$/, '')}?`), config.ownerStopReply.trim()].filter(Boolean);
@@ -853,6 +1123,7 @@ export async function startVoiceStack(
       reminders.stop();
       music?.stop();
       mixer.stopAll();
+      await satServer?.close();
       ledger.flush();
       voiceBudget.flush();
       try {

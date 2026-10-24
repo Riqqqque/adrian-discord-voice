@@ -131,6 +131,33 @@ export const PocConfigSchema = z.object({
   serverInfo: z
     .object({ enabled: z.boolean().default(true), members: z.boolean().default(true), presences: z.boolean().default(true) })
     .default({ enabled: true, members: true, presences: true }),
+  /** A more accurate second listen (Whisper large v3 turbo on Groq) for speech
+   *  meant for her; the local model still does all the listening. */
+  cloudStt: z
+    .object({
+      enabled: z.boolean().default(false),
+      apiKeySecret: keyName('llm').default('GROQ_API_KEY'),
+      model: z.string().min(1).default('whisper-large-v3-turbo'),
+      /** pc: only speech at a PC satellite; all: Discord calls too. */
+      rooms: z.enum(['pc', 'all']).default('pc'),
+      /** Longest wait before using the local transcript instead. */
+      timeoutMs: z.number().int().min(300).max(5000).default(1500),
+    })
+    .default({ enabled: false, apiKeySecret: 'GROQ_API_KEY', model: 'whisper-large-v3-turbo', rooms: 'pc', timeoutMs: 1500 }),
+  /** PC satellites (docs/satellite.md): a WebSocket for paired PCs. Use it on a private network or behind TLS. */
+  satellite: z
+    .object({
+      enabled: z.boolean().default(false),
+      bind: z.string().default('0.0.0.0'),
+      port: z.number().int().min(1024).max(65535).default(8791),
+      /** Log what PCs hear and what she answers (for fixing misunderstandings). Off by default. */
+      logTranscripts: z.boolean().default(false),
+      /** Keep recordings of requests made at a PC (not side talk) for this many days, for testing speech-to-text. 0 = off. */
+      recordDays: z.number().int().min(0).max(14).default(0),
+      /** At a PC, when a pause sounds mid-sentence (Smart Turn), wait this much longer before answering, ms. 0 = off. */
+      unfinishedWaitMs: z.number().int().min(0).max(3000).default(1200),
+    })
+    .default({ enabled: false, bind: '0.0.0.0', port: 8791, logTranscripts: false, recordDays: 0, unfinishedWaitMs: 1200 }),
   /** message_member: passing messages on by DM or an @mention in a channel. */
   messaging: z
     .object({

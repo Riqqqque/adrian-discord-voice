@@ -27,6 +27,8 @@ function fakeYtdlp() {
       return [seed, id('r1'), id('r2'), id('long'), id('r3')].map((v) => `Mix\t${v}\tRadio ${v}\t${v === id('long') ? 4000 : 150}`).join('\n');
     }
     if (url.startsWith('ytsearch5:')) return `${id('vid')}\t36000\tNA\n`;
+    if (url.endsWith('soundcloud.com/someone/paid')) return 'Paid Song\tSome Artist\t200\thttps://cf-preview-media.sndcdn.com/preview/0/30/x.mp3\n';
+    if (url.includes('soundcloud.com/')) return 'Free Song\tSome Artist\t200\thttps://cf-media.sndcdn.com/full.mp3\n';
     if (url.includes('watch?v=')) {
       const v = url.split('v=')[1]!;
       return `Artist - Title ${v}\tArtist\t200\thttps://stream/${v}\n`;
@@ -99,6 +101,27 @@ describe('music requests', () => {
     expect(ids).not.toContain(first); // not the seed again
     expect(ids).not.toContain(id('long')); // nothing over 15 minutes
     expect(r.calls.some((u) => u.includes(`list=RDAMVM${first}`))).toBe(true);
+  });
+
+  it('plays a pasted YouTube link directly', async () => {
+    const r = rig();
+    const res = await r.p.request('link', `https://youtu.be/${id('lnk')}?si=x`, 'now', sig());
+    expect(res).toMatchObject({ ok: true });
+    expect(r.started).toEqual([`https://stream/${id('lnk')}`]);
+  });
+
+  it('plays SoundCloud, but finds the full song on YouTube when SoundCloud only has a preview', async () => {
+    const r = rig();
+    await r.p.request('link', 'https://soundcloud.com/someone/free', 'now', sig());
+    expect(r.started.at(-1)).toBe('https://cf-media.sndcdn.com/full.mp3');
+    await r.p.request('link', 'https://soundcloud.com/someone/paid', 'now', sig());
+    expect(r.started.at(-1)).toBe(`https://stream/${id('song')}`);
+  });
+
+  it('refuses links it cannot play', async () => {
+    const r = rig();
+    expect(await r.p.request('link', 'http://192.168.1.5/x.mp3', 'now', sig())).toMatchObject({ ok: false });
+    expect(r.calls).toEqual([]);
   });
 
   it('says so when there is nothing to base "similar" on', async () => {

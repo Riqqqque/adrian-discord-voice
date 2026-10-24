@@ -207,6 +207,7 @@ export const MODEL_LAYOUT = {
   whisper: 'sherpa-onnx-whisper-small',
   piperVi: 'vits-piper-vi_VN-vais1000-medium',
   ytdlp: 'yt-dlp_linux',
+  smartTurn: 'smart-turn-v3.2-cpu.onnx',
 } as const;
 
 export interface HardwareCheck {

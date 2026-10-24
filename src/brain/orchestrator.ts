@@ -65,7 +65,7 @@ export function stablePrompt(o: OrchestratorOptions, toolNames: string[] = []): 
     'Sound like a person hanging out in a voice chat, not an assistant: contractions, casual words, an occasional "oh", "yeah", "honestly" or "hmm" where it fits, real reactions and opinions ("ha, that\'s rough", "honestly I\'d go with the second one"). Vary how you start.',
     'Get straight to it. Never open with "Great question", "Sure!", "Absolutely", "As an AI" or by repeating their question, and never end with "Let me know if you need anything", "Hope that helps" or an offer to help more. A quick fact gets a quick answer.',
     'Only answer their latest message. If an earlier answer of yours was cut off, that topic is closed: do not finish it, bring it up again, or apologize for it unless they ask.',
-    'What they say comes from speech recognition and may contain misheard words. Work out what they most likely meant; if it is truly unclear, ask one short question instead of guessing.',
+    'What they say comes from speech recognition and may contain misheard words: sound-alikes ("shoes" for "shows", "drape" for "Drake", "gift" for "skip"), names split or merged ("mod drinth" for "Modrinth"). Go by what makes sense in the conversation and what sounds similar, not the literal spelling; if it is truly unclear, ask one short question instead of guessing.',
     'Everything you write is spoken aloud by text-to-speech, so:',
     '- Usually answer in two to four sentences. Go longer (up to about eight) when the question needs explaining, or when they ask for detail; keep small talk short.',
     '- No markdown, lists, headings, emojis, URLs or code.',
@@ -125,7 +125,7 @@ export class ConversationOrchestrator {
     signal: AbortSignal,
     onUsage?: (u: Usage) => void,
     place?: { guildId?: string; channelId?: string },
-    opts: { followUp?: boolean; onSilent?: () => void; onTool?: (timeoutMs: number) => void; text?: boolean; extra?: string[] } = {},
+    opts: { followUp?: boolean; onSilent?: () => void; onTool?: (timeoutMs: number) => void; text?: boolean; extra?: string[]; desk?: boolean } = {},
   ): AsyncGenerator<string> {
     const ctx: ToolContext = { userId, speaker, ...place };
     const tools = this.o.stablePrefix ? this.tools : (this.o.selectTools?.(text, ctx, this.tools) ?? this.tools);
@@ -147,6 +147,10 @@ export class ConversationOrchestrator {
           ...(opts.followUp && opts.text
             ? [
                 `${speaker} wrote this in the channel without @mentioning you. People here also talk to each other. If it is not meant for you, reply with exactly SILENT and nothing else. Not meant for you: talking to someone else (including answering a question another person asked them in the messages above), reactions ("lol", "fr"), side remarks about you rather than to you. If it continues your conversation with them, answers something you asked, asks you something, or talks to you by name, just answer it, exactly as if they had @mentioned you.`,
+              ]
+            : opts.followUp && opts.desk
+            ? [
+                `${speaker} said this at their PC without using your name, soon after your last answer. They're usually talking to you: treat it as continuing your conversation and answer it. Reply with exactly SILENT and nothing else only if it clearly isn't for you: dialogue from a show, video or game playing on the PC, song lyrics, or them obviously talking to someone else in the room or on a call.`,
               ]
             : opts.followUp
             ? [
@@ -275,20 +279,28 @@ export class ConversationOrchestrator {
         }
         messages.push({ role: 'assistant', content: roundText, toolCalls: calls });
         let ended = calls.length > 0;
+        // Lines the tools say for themselves; null once any tool leaves it to the model.
+        let lines: string[] | null = calls.length > 0 ? [] : null;
         for (const c of calls) {
           const tool = tools.find((t) => t.spec.name === c.name);
           let result: string;
           if (!tool) {
             result = `Unknown tool ${c.name}.`;
+            lines = null;
           } else {
             try {
               const args = c.arguments ? (JSON.parse(c.arguments) as Record<string, unknown>) : {};
               opts.onTool?.(tool.timeoutMs ?? 5_000);
               const ctl = AbortSignal.any([signal, AbortSignal.timeout(tool.timeoutMs ?? 5_000)]);
-              result = asUntrustedData(c.name, await tool.run(args, ctl, ctx));
+              const raw = await tool.run(args, ctl, ctx);
+              result = asUntrustedData(c.name, raw);
+              const line = tool.speak?.(args, raw);
+              if (line && lines) lines.push(line);
+              else lines = null;
             } catch (e) {
               result = `Tool ${c.name} failed: ${(e as Error).message}`;
               ended = false;
+              lines = null;
             }
           }
           if (!tool?.endsTurn) ended = false;
@@ -296,6 +308,17 @@ export class ConversationOrchestrator {
         }
         // A tool that finishes the answer by itself (a sound played): stop here.
         if (ended) break;
+        // Done things that say themselves ("Spotify's open."): no second model call.
+        if (lines?.length) {
+          for (const l of lines) {
+            const s = this.out(l, opts.text);
+            if (s) {
+              spoken += (spoken ? ' ' : '') + s;
+              yield s;
+            }
+          }
+          break;
+        }
         if (roundText.trim()) {
           const last = messages[messages.length - 1] as { content: string };
           last.content += `\n(You already said aloud: "${roundText.trim().slice(0, 300)}". Do not repeat or rephrase it; add only what is new, or nothing.)`;
