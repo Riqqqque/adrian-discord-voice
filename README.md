@@ -27,6 +27,7 @@ This is one module of the A.D.R.I.A.N. household assistant suite. Every module f
 **Music** (YouTube Music through yt-dlp, with your Plex music library as a backup)
 - "Play Blinding Lights", "play the whole Graduation album", "put on something for a late night drive", "play a playlist like that last song", "play the newest Joe Rogan episode", "play rain sounds".
 - Queue ("play Sicko Mode next"), skip, pause, resume, shuffle, "what's playing?", "turn it down".
+- "Play that link I just sent": YouTube, SoundCloud, Bandcamp and Spotify links pasted in chat (Spotify ones are found on YouTube).
 - Autoplay keeps similar songs coming when the queue runs out (YouTube Music radio), without repeats.
 - Music ducks under the voice whenever someone talks to it.
 
@@ -44,6 +45,11 @@ This is one module of the A.D.R.I.A.N. household assistant suite. Every module f
 - 50+ built-in voices (Kokoro, runs locally), plus a Vietnamese voice (Piper).
 - Optional cloud voice for English (Speechify Simba 3.2) with a monthly character cap; it falls back to the local voice automatically.
 - Loudness-matched speech (about −16 LUFS) so it never blasts or whispers.
+
+**On your PC** (optional Windows app, [docs/pc-app.md](docs/pc-app.md))
+- She listens through your PC's mic ("Hey Adrian", or hold Ctrl+Alt+Space), answers through its speakers in the same voice, and shows a small animated window.
+- Controls the PC: open apps and games, web pages, YouTube and Spotify searches, pause or skip what's playing in a named app, volume, lock, and sleep/restart/shut down after a spoken yes. Each PC decides what's allowed.
+- In the tray it uses a few MB and stays out of the way of games. When you're in the bot's Discord call too, the call answers instead, so music plays for everyone.
 
 **Running it**
 - A web admin page with a setup wizard, live status (latency, spend), settings, keys and logs.
@@ -147,6 +153,7 @@ Details and how to report a problem: [docs/security.md](docs/security.md).
 
 - [docs/install.md](docs/install.md): Discord bot setup, keys, native and Docker install, updates, backups, uninstall
 - [docs/usage.md](docs/usage.md): everything you can say to it, owners, languages, music, mature mode
+- [docs/pc-app.md](docs/pc-app.md): the Windows PC app: turning it on, building, installing, pairing
 - [docs/configuration.md](docs/configuration.md): every setting and secret
 - [docs/architecture.md](docs/architecture.md): how the voice pipeline works
 - [docs/security.md](docs/security.md): threat model and protections
