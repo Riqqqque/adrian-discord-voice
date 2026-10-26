@@ -38,10 +38,15 @@ It prints a token that starts with `sat_`, once. Keep it for step 3. Everything
 said at that PC counts as that person, so pair each PC to the person who uses
 it. `sudo adrian satellite list` shows the PCs and `remove` takes one away.
 
-## 2. Build the app
+## 2. Get the app
 
-On the Windows PC, with [Rust](https://rustup.rs) 1.88 or newer and WebView2
-(built into Windows 10 and 11):
+Download `adrian-pc-app-<version>-windows-x64.zip` from the
+[Releases page](https://github.com/Riqqqque/adrian-discord-voice/releases),
+check it against its `.sha256` file, and unzip it. It runs on 64-bit
+Windows 10 and 11 with nothing else to install. It isn't code-signed, so
+SmartScreen may warn the first time: choose "More info", then "Run anyway".
+
+Or build it yourself, with [Rust](https://rustup.rs) 1.88 or newer:
 
 ```powershell
 git clone https://github.com/Riqqqque/A.D.R.I.A.N
@@ -49,22 +54,21 @@ cd A.D.R.I.A.N
 cargo build --release -p adrian-desktop
 ```
 
-The app is `target\release\adrian-desktop.exe`.
-
 ## 3. Install and connect
 
-`crates\desktop\packaging\Install.ps1` copies the app to
-`%LOCALAPPDATA%\A.D.R.I.A.N`, adds it to the desktop and the Start menu,
-starts it with Windows in the tray, and pairs it in one go:
+In the unzipped folder (or in the repo, after building), run:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File crates\desktop\packaging\Install.ps1 -Server myserver:8791 -Token sat_xxxxxxxx
+powershell -ExecutionPolicy Bypass -File .\Install.ps1 -Server myserver:8791 -Token sat_xxxxxxxx
 ```
 
-Leave out `-Server` and `-Token` to enter them in the app's settings instead (the gear in
-the window), and add `-NoStartup` if it shouldn't start with Windows. The
-token is stored encrypted for your Windows user only. `-Uninstall` removes
-the app and its shortcuts.
+From the repo the script is `crates\desktop\packaging\Install.ps1`. It copies
+the app to `%LOCALAPPDATA%\A.D.R.I.A.N`, adds it to the desktop and the Start
+menu, starts it with Windows in the tray, and connects it. Leave out `-Server`
+and `-Token` to enter them in the app's settings instead (the gear in the
+window), and add `-NoStartup` if it shouldn't start with Windows. The token is
+stored encrypted for your Windows user only. `-Uninstall` removes the app and
+its shortcuts.
 
 ## Using it
 
