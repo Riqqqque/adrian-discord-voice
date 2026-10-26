@@ -824,7 +824,9 @@ export async function startVoiceStack(
   let csPausedUntil = 0;
   // Names it should expect: her creator, people's nicknames.
   const csPrompt = sttPrompt([creator, ...Object.values(config.nicknames)].filter(Boolean));
-  const cloudSttFor = (rm: Room) => !!csKey && (cs.rooms === 'all' || !!rm.ui) && performance.now() > csPausedUntil;
+  // PC rooms, and PC owners in the call (their PC hands the call their requests).
+  const hasPc = (userId: UserId) => (satServer?.connections() ?? []).some((c) => c.owner === userId);
+  const cloudSttFor = (rm: Room, userId: UserId) => !!csKey && (cs.rooms === 'all' || !!rm.ui || hasPc(userId)) && performance.now() > csPausedUntil;
   /** The cloud's words for a segment, or undefined (slow, failed, rate-limited: use the local ones). */
   async function cloudListen(samples: Float32Array): Promise<string | undefined> {
     try {
@@ -861,6 +863,12 @@ export async function startVoiceStack(
     minSpeech: listen.minSpeech,
     maxSpeech: listen.maxSpeech,
   };
+  /** In the voice channel she's in, and audible there (not muted or deafened). */
+  function inHerCall(userId: UserId): boolean {
+    if (!spot) return false;
+    const vs = client.guilds.cache.get(spot.guildId)?.voiceStates.cache.get(userId);
+    return !!vs && vs.channelId === spot.channelId && !vs.mute && !vs.deaf;
+  }
   /** Listen to one room's audio. `direct()` true: the next thing heard is a question for her (push-to-talk). */
   function listenTo(source: VoiceTransport, rm: Room, ctl: ConversationController, direct?: () => boolean): ListeningPipeline {
   // At a PC, a pause mid-sentence shouldn't split it in two (Discord keeps the snappier default).
@@ -870,6 +878,17 @@ export async function startVoiceStack(
   pipeline.on('heard', (e) => void heard(e).catch((err: Error) => log.warn('heard failed', { error: err.message })));
   async function heard(e: HeardEvent): Promise<void> {
     if (!e.woke && direct?.()) e = { ...e, woke: true, command: e.text };
+    // In her Discord call too: the call hears the same words, and that's
+    // where a group wants her (music for everyone). The call answers; it can
+    // still reach this PC through the PC tools. Push-to-talk and typing in
+    // the window stay with the PC, and so does everything while muted there.
+    else if (rm.ui && inHerCall(e.userId)) {
+      if (e.woke) {
+        log.info('pc deferred to discord', { room: rm.key });
+        rm.ui.transcript('her', 'Answering in the Discord call.');
+      }
+      return;
+    }
     const forBot = e.woke || ctl.listeningTo(e.userId);
     const before = userLang.get(e.userId) ?? 'en';
     // Said to her: a second, more accurate listen in the cloud for the words
@@ -878,13 +897,13 @@ export async function startVoiceStack(
     const first = classify(e.woke ? e.command : e.text);
     const local = e.text;
     let cloud: string | undefined;
-    if (forBot && e.samples && first?.kind !== 'stop' && first?.kind !== 'name' && cloudSttFor(rm)) {
+    if (forBot && e.samples && first?.kind !== 'stop' && first?.kind !== 'name' && cloudSttFor(rm, e.userId)) {
       const t0 = performance.now();
       const text = (cloud = await cloudListen(e.samples));
       if (text) {
         const m = wakeDetector.matchLoose(text);
         const command = e.woke ? (m.woke ? m.remainder : stripWakeLead(text)) : '';
-        if (rm.ui && config.satellite.logTranscripts) log.info('pc stt', { local: e.text, cloud: text, ms: Math.round(performance.now() - t0) });
+        if (config.satellite.logTranscripts && (rm.ui || hasPc(e.userId))) log.info('pc stt', { local: e.text, cloud: text, ms: Math.round(performance.now() - t0) });
         // Keep the local words if the cloud lost the request itself.
         if (!e.woke || command.trim()) e = { ...e, text, command };
       }
