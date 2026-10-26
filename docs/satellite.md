@@ -22,6 +22,15 @@ PC actions always go to a satellite owned by the person asking. From Discord
 or text chat, "open Spotify on my PC" reaches the asker's own connected PC.
 No argument can name another person's PC.
 
+When the owner is also in the voice call the bot is in, the call hears the
+same words, so the call answers and the PC stays quiet (its window shows
+"Answering in the Discord call."). Music and sounds then play for everyone in
+the call, and PC orders ("pause Spotify", "open Valorant") still reach the
+PC through the PC tools. The PC takes over again when the owner is muted or
+deafened in Discord, leaves the call, holds push-to-talk, or types in the
+window. Their requests in the call get the same cloud speech-to-text as the
+PC (`cloudStt`).
+
 ## Connection
 
 One WebSocket per satellite, at `ws://<host>:<satellite.port>/satellite`
