@@ -29,4 +29,11 @@ if [ -f "$UNIT" ] && ! cmp -s "$HERE/adrian-voice.service" "$UNIT"; then
   systemctl daemon-reload
   say "Service file updated (previous copy: /opt/adrian/adrian-voice.service.previous)"
 fi
+# Auto-update turned on: keep its timer and service current too.
+for u in adrian-update.service adrian-update.timer; do
+  if [ -f "/etc/systemd/system/$u" ] && [ -f "$HERE/$u" ] && ! cmp -s "$HERE/$u" "/etc/systemd/system/$u"; then
+    install -m 0644 "$HERE/$u" "/etc/systemd/system/$u"
+    systemctl daemon-reload
+  fi
+done
 say "Models and service file ready"

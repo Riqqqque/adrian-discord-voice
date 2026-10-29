@@ -72,6 +72,8 @@ export interface AnswerRecord {
 export interface VoiceStack {
   readonly ledger: UsageLedger;
   voiceReady(): boolean;
+  /** Someone is in her voice call, or music is playing anywhere (no restarts now). */
+  busy(): boolean;
   botTag(): string | undefined;
   /** Latest answers, newest last (no user IDs or text). */
   answers(): readonly AnswerRecord[];
@@ -1133,6 +1135,11 @@ export async function startVoiceStack(
   return {
     ledger,
     voiceReady: () => ready,
+    busy: () => {
+      const ch = spot ? (client.channels.cache.get(spot.channelId) as VoiceBasedChannel | undefined) : undefined;
+      const people = ch?.members.filter((m) => !m.user.bot).size ?? 0;
+      return people > 0 || !!music?.nowPlaying || [...satRooms.values()].some((r) => !!r.music?.nowPlaying);
+    },
     botTag: () => client.user?.tag,
     answers: () => answers,
     stop: async () => {

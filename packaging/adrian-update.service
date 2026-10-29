@@ -1,0 +1,10 @@
+[Unit]
+Description=A.D.R.I.A.N. update check (installs a newer release when she isn't busy)
+After=network-online.target adrian-voice.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/adrian update --auto
+Nice=10
+IOSchedulingClass=idle

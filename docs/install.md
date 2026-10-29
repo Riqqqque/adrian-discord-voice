@@ -178,25 +178,47 @@ Most commands need `sudo`.
 | `adrian doctor` | Full diagnostics: service, permissions, models, ffmpeg, yt-dlp, config |
 | `adrian backup [FILE]` | Config, keys and state (not the models) to a `.tar.gz`. **It contains your keys; keep it private.** |
 | `adrian restore FILE` | Restore a backup |
-| `adrian update BUNDLE` | Install a new version (rolls back by itself if it isn't healthy within 30 s; keeps 3 versions) |
+| `adrian update` | Install the newest release from GitHub, checksum verified (rolls back by itself if it isn't healthy within 30 s; keeps 3 versions). `--check` only says whether there's one; `adrian update FILE.tar.gz` installs a bundle you downloaded |
+| `adrian auto-update on\|off\|status` | Update by itself: checks every hour, installs only while nobody is in her call and nothing is playing |
 | `adrian rollback` | Switch back to the previous version |
 | `adrian uninstall [--keep-data]` | Remove A.D.R.I.A.N. |
 | `adrian version` | Installed version |
 
 ## Updating, rolling back, backups
 
+The easy way, once:
+
 ```bash
-VER=0.13.4   # the new version
-curl -LO https://github.com/Riqqqque/adrian-discord-voice/releases/download/v$VER/adrian-voice-$VER-linux-x64.tar.gz
-curl -LO https://github.com/Riqqqque/adrian-discord-voice/releases/download/v$VER/adrian-voice-$VER-linux-x64.tar.gz.sha256
-sudo adrian update adrian-voice-$VER-linux-x64.tar.gz
+sudo adrian auto-update on
 ```
 
-The update:
-- verifies the checksum when the `.sha256` file is next to the bundle;
+From then on she checks GitHub every hour and installs a new release by
+herself, but only while nobody is in her voice call and nothing is playing, so
+an update never cuts anyone off. `sudo adrian auto-update status` shows the
+last checks, and `off` turns it off. PC apps update themselves too (see
+[pc-app.md](pc-app.md)).
+
+Or update by hand whenever you like:
+
+```bash
+sudo adrian update            # the newest release
+sudo adrian update --check    # only say whether there's a newer one
+```
+
+Every update:
+- downloads the release and checks it against its `.sha256` file (a mismatch stops it);
 - downloads any new models;
 - updates the service file;
 - switches over, and rolls back by itself if the bot isn't healthy within 30 seconds.
+
+No internet on the server? Download the bundle and its `.sha256` from the
+[Releases page](https://github.com/Riqqqque/adrian-discord-voice/releases) and
+run `sudo adrian update adrian-voice-VERSION-linux-x64.tar.gz` next to them.
+
+**Coming from 0.14.9 or older:** those versions' `adrian` can't download by
+itself yet. Update once the old way (download the bundle and `.sha256`, then
+`sudo adrian update FILE`); from then on `sudo adrian update` and auto-update
+work.
 
 `sudo adrian rollback` goes back one version at any time. After an update or restart, the bot rejoins its home channel. Use `/join` to bring it back to another one.
 
