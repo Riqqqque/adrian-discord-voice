@@ -15,7 +15,11 @@
 #   adrian doctor                 full diagnostics
 #   adrian backup [FILE]          config, keys and state (not models) to a tar.gz
 #   adrian restore FILE
-#   adrian update BUNDLE          install a new version; rolls back if it doesn't come up
+#   adrian update                 install the newest release from GitHub (checksum verified);
+#                                 rolls back if it doesn't come up. Also: update BUNDLE.tar.gz,
+#                                 update --check (is there a newer one?)
+#   adrian auto-update on|off|status   check every hour and update by itself, only while
+#                                 nobody is in her call and nothing is playing
 #   adrian rollback               switch back to the previous version
 #   adrian uninstall [--keep-data]
 #   adrian version
@@ -27,6 +31,9 @@ VAR=/var/lib/adrian
 SERVICE=adrian-voice
 NODE=$OPT/node/bin/node
 APP=$OPT/current
+# Where releases come from (adrian update, auto-update).
+REPO=${ADRIAN_UPDATE_REPO:-Riqqqque/adrian-discord-voice}
+UPDATE_UNITS=(adrian-update.service adrian-update.timer)
 
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 need_root() { [ "$(id -u)" = 0 ] || die "run with sudo: sudo adrian $*"; }
@@ -60,6 +67,21 @@ refuse_symlinks() {
   return 0
 }
 current_version() { basename "$(readlink -f "$APP")"; }
+latest_release() { # the newest published version, e.g. 0.14.9
+  local json
+  json=$(curl -fsSL --max-time 20 -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$REPO/releases/latest") || return 1
+  "$NODE" -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const t=String(JSON.parse(s).tag_name||"").replace(/^v/,"");if(!/^[0-9][0-9A-Za-z.+-]*$/.test(t)||t.includes(".."))process.exit(1);console.log(t)})' <<<"$json"
+}
+newer() { # newer A B: true when version A is above B
+  "$NODE" -e 'const[a,b]=process.argv.slice(1).map(v=>v.split(/[.+-]/).map(n=>parseInt(n,10)||0));for(let i=0;i<Math.max(a.length,b.length);i++){const d=(a[i]||0)-(b[i]||0);if(d)process.exit(d>0?0:1)}process.exit(1)' "$1" "$2"
+}
+fetch_release() { # fetch_release VERSION DIR: download the bundle and its checksum, verify, print the path
+  local name="adrian-voice-$1-linux-x64.tar.gz" base="https://github.com/$REPO/releases/download/v$1"
+  curl -fsSL --max-time 900 -o "$2/$name" "$base/$name" || return 1
+  curl -fsSL --max-time 30 -o "$2/$name.sha256" "$base/$name.sha256" || return 1
+  (cd "$2" && sha256sum -c --status "$name.sha256") || { echo "checksum mismatch for $name" >&2; return 1; }
+  echo "$2/$name"
+}
 previous_version() { # the release that was current before the last switch
   [ -L "$OPT/previous" ] && basename "$(readlink -f "$OPT/previous")"
 }
@@ -155,16 +177,36 @@ case "$cmd" in
     wait_healthy 60 >/dev/null && echo "Restored and running." || die "restored, but the service is not healthy: adrian logs" ;;
   update)
     need_root update
-    b=${1:-}; [ -f "$b" ] || die "usage: adrian update BUNDLE.tar.gz"
+    b=${1:-latest}
+    case "$b" in
+      --check)
+        v=$(latest_release) || die "couldn't reach GitHub"
+        if newer "$v" "$(current_version)"; then echo "Version $v is available (installed: $(current_version)). Install it: sudo adrian update"
+        else echo "Up to date ($(current_version))."; fi
+        exit 0 ;;
+      latest|--auto)
+        auto=0; [ "$b" = --auto ] && auto=1
+        v=$(latest_release) || { [ $auto = 1 ] && { echo "update check: couldn't reach GitHub"; exit 0; }; die "couldn't reach GitHub"; }
+        if ! newer "$v" "$(current_version)"; then [ $auto = 1 ] || echo "Up to date ($(current_version))."; exit 0; fi
+        # Never restart her mid-call or mid-song: try again next hour.
+        if [ $auto = 1 ] && h=$(health 5 2>/dev/null) && grep -q '"busy":true' <<<"$h"; then
+          echo "update $v waits: someone is in her call or music is playing"; exit 0
+        fi
+        dl=$(mktemp -d); trap 'rm -rf "$dl"' EXIT
+        echo "Downloading $v"
+        b=$(fetch_release "$v" "$dl") || die "download of $v failed"
+        ;;
+    esac
+    [ -f "$b" ] || die "usage: adrian update [BUNDLE.tar.gz | --check]"
     if [ -f "$b.sha256" ]; then (cd "$(dirname "$b")" && sha256sum -c --status "$(basename "$b").sha256") || die "bundle checksum mismatch"; fi
-    tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+    tmp=$(mktemp -d); trap 'rm -rf "$tmp" ${dl:+"$dl"}' EXIT
     tar -xzf "$b" -C "$tmp" --no-same-owner
     new=$("$NODE" -p "require('$tmp/package.json').version")
     [[ $new =~ ^[0-9A-Za-z][0-9A-Za-z.+-]*$ && $new != *..* ]] || die "bad version in bundle"
     old=$(current_version)
     prev_before=$(readlink "$OPT/previous" 2>/dev/null || true)
     [ "$new" != "$old" ] || die "version $new is already installed"
-    rm -rf "$OPT/releases/$new"; mv "$tmp" "$OPT/releases/$new"; trap - EXIT
+    rm -rf "$OPT/releases/$new"; mv "$tmp" "$OPT/releases/$new"; trap ${dl:+"rm -rf '$dl'"} EXIT
     chown -R root:root "$OPT/releases/$new"; chmod -R go-w "$OPT/releases/$new"; chmod 0755 "$OPT/releases/$new"
     # The NEW release knows which models and service file it needs.
     if [ -f "$OPT/releases/$new/packaging/upgrade-prep.sh" ]; then
@@ -185,6 +227,30 @@ case "$cmd" in
       rm -rf "${OPT:?}/releases/$new"
       wait_healthy 60 >/dev/null && die "rolled back to $old" || die "rolled back to $old, but it is not healthy either: adrian logs"
     fi ;;
+  auto-update)
+    need_root auto-update
+    case ${1:-status} in
+      on)
+        for u in "${UPDATE_UNITS[@]}"; do install -m 0644 "$APP/packaging/$u" "/etc/systemd/system/$u"; done
+        systemctl daemon-reload
+        systemctl enable --now --quiet adrian-update.timer
+        echo "Auto-update is on: every hour she checks GitHub and updates, only while nobody is in her call and nothing is playing."
+        echo "See what it did: journalctl -u adrian-update" ;;
+      off)
+        systemctl disable --now --quiet adrian-update.timer 2>/dev/null || true
+        for u in "${UPDATE_UNITS[@]}"; do rm -f "/etc/systemd/system/$u"; done
+        systemctl daemon-reload
+        echo "Auto-update is off. Update by hand with: sudo adrian update" ;;
+      status)
+        if systemctl is-enabled --quiet adrian-update.timer 2>/dev/null; then
+          echo "Auto-update: on"
+          systemctl list-timers adrian-update.timer --no-pager | sed -n '1,2p'
+          journalctl -u adrian-update --no-pager -n 5 -o cat 2>/dev/null || true
+        else
+          echo "Auto-update: off (turn on: sudo adrian auto-update on)"
+        fi ;;
+      *) die "usage: adrian auto-update on|off|status" ;;
+    esac ;;
   rollback)
     need_root rollback
     prev=$(previous_version); [ -n "$prev" ] || die "no previous version to roll back to"

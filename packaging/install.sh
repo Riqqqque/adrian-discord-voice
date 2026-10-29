@@ -82,6 +82,11 @@ if [ "$UNINSTALL" = 1 ]; then
     systemctl daemon-reload || true
     systemctl reset-failed "$SERVICE" 2>/dev/null || true
   fi
+  if command -v systemctl >/dev/null && [ -f /etc/systemd/system/adrian-update.timer ]; then
+    systemctl disable --now adrian-update.timer 2>/dev/null || true
+    rm -f /etc/systemd/system/adrian-update.timer /etc/systemd/system/adrian-update.service
+    systemctl daemon-reload || true
+  fi
   rm -f "$CLI"
   rm -rf "$OPT"
   if [ "$KEEP_DATA" = 1 ]; then

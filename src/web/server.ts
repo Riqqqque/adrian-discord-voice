@@ -180,6 +180,8 @@ export function createAdminServer(d: WebDeps): Server {
         ok: s.state === 'running' || s.state === 'setup',
         state: s.state,
         voiceReady: s.current?.voiceReady() ?? false,
+        // People in her call or music playing: the auto-updater waits.
+        busy: s.current?.busy() ?? false,
         version: d.version,
       });
     }

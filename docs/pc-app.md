@@ -85,6 +85,19 @@ its shortcuts.
   Mute yourself in Discord, hold Ctrl+Alt+Space or type in the window to talk
   to the PC alone.
 
+## Updates
+
+The app updates itself. A few minutes after it starts, and every six hours,
+it checks the [Releases page](https://github.com/Riqqqque/adrian-discord-voice/releases)
+for a newer version. It downloads it, checks it against its `.sha256`, and
+installs it the next time she's idle in the tray (window closed, nothing
+playing, nobody talking), then starts again in the tray. The settings (gear)
+show the version and the last check, and have a switch to turn automatic
+updates off; then it only tells you a new version is out.
+
+For the bot on the server, `sudo adrian auto-update on` does the same (see
+[install.md](install.md#updating-rolling-back-backups)).
+
 ## What it may do
 
 The app's settings decide which PC actions the bot may take: apps, web pages,
