@@ -141,6 +141,7 @@ sudo adrian restart
 | `music.duckLevel` | `0.2` | Music level while it listens or talks, as a share of normal |
 | `music.maxQueue` | `25` | |
 | `music.autoplay` | `true` | Keep playing similar songs after the queue ends |
+| `music.topSongs` | `true` | Artist requests shuffle the artist's top songs, ranked by Deezer's free public API. Off: their top song, then similar ones |
 | `music.plexBackup` | `true` | Use Plex music when YouTube fails (needs `PLEX_TOKEN`) |
 | `music.ffmpeg` | `"ffmpeg"` | Path to ffmpeg |
 

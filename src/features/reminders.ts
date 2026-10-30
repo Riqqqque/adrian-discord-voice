@@ -166,6 +166,7 @@ export class Reminders {
             additionalProperties: false,
           },
         },
+        acts: true,
         run: async (a, _s, ctx) => {
           const ms = (num(a.hours) * 3600 + num(a.minutes) * 60 + num(a.seconds)) * 1000;
           if (ms < 1000) return 'No duration given; ask how long.';
@@ -190,6 +191,7 @@ export class Reminders {
             additionalProperties: false,
           },
         },
+        acts: true,
         run: async (a, _s, ctx) => {
           const text = typeof a.text === 'string' ? a.text : '';
           if (!text.trim()) return 'Ask what the reminder is for.';
@@ -222,6 +224,7 @@ export class Reminders {
             additionalProperties: false,
           },
         },
+        acts: true,
         run: async (a, _s, ctx) => {
           const hit = this.cancel(ctx.userId, typeof a.which === 'string' ? a.which : '');
           return hit.length ? `Cancelled: ${hit.map((r) => `${r.kind} "${r.text}"`).join(', ')}.` : 'Nothing matched; list them first.';

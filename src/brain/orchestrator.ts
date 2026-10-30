@@ -125,7 +125,7 @@ export class ConversationOrchestrator {
     signal: AbortSignal,
     onUsage?: (u: Usage) => void,
     place?: { guildId?: string; channelId?: string },
-    opts: { followUp?: boolean; onSilent?: () => void; onTool?: (timeoutMs: number) => void; text?: boolean; extra?: string[]; desk?: boolean } = {},
+    opts: { followUp?: boolean; onSilent?: () => void; onTool?: (timeoutMs: number) => void; onActed?: () => void; text?: boolean; extra?: string[]; desk?: boolean } = {},
   ): AsyncGenerator<string> {
     const ctx: ToolContext = { userId, speaker, ...place };
     const tools = this.o.stablePrefix ? this.tools : (this.o.selectTools?.(text, ctx, this.tools) ?? this.tools);
@@ -294,6 +294,7 @@ export class ConversationOrchestrator {
               const ctl = AbortSignal.any([signal, AbortSignal.timeout(tool.timeoutMs ?? 5_000)]);
               const raw = await tool.run(args, ctl, ctx);
               result = asUntrustedData(c.name, raw);
+              if (typeof tool.acts === 'function' ? tool.acts(args) : tool.acts) opts.onActed?.();
               const line = tool.speak?.(args, raw);
               if (line && lines) lines.push(line);
               else lines = null;

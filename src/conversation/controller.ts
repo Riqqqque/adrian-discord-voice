@@ -31,8 +31,9 @@ export interface ControllerDeps {
   now(): number;
   /** Answer one request; must stop promptly when `signal` aborts. */
   /** Answer one request. `followUp`: said without the wake phrase right after
-   *  an answer. Return "silent" if it wasn't meant for the bot. */
-  respond(userId: UserId, command: string, signal: AbortSignal, followUp?: boolean): Promise<void | 'silent'>;
+   *  an answer. Return "silent" if it wasn't meant for the bot, "done" if it
+   *  was an order carried out (no follow-up window after it). */
+  respond(userId: UserId, command: string, signal: AbortSignal, followUp?: boolean): Promise<void | 'silent' | 'done'>;
   /** A stop for the bot while it isn't talking (stops the music). */
   stopOther?: (userId: UserId) => void;
   /** Short fixed reply (apologies, "Yes?", announcements); stops when `signal` aborts. */
@@ -47,6 +48,9 @@ export interface ControllerDeps {
   /** What to say to a bare wake (default "Yes?"). */
   ack?(userId: UserId): string;
   log?(event: string, fields: Record<string, unknown>): void;
+  /** Whether she's listening to this person (or to everyone, no id) may have
+   *  changed; `listenLeftMs` says for how long now. */
+  listenChanged?(userId?: UserId): void;
 }
 
 export interface HeardInput {
@@ -71,14 +75,34 @@ interface Request {
 /** Talking on within this long of a request, before she answers, continues it. */
 const CONTINUE_MS = 12_000;
 
+/** A per-person deadline map that reports every change. */
+class Deadlines extends Map<UserId, number> {
+  constructor(private readonly changed: (userId?: UserId) => void) {
+    super();
+  }
+  override set(k: UserId, v: number): this {
+    super.set(k, v);
+    this.changed(k);
+    return this;
+  }
+  override delete(k: UserId): boolean {
+    const had = super.delete(k);
+    if (had) this.changed(k);
+    return had;
+  }
+  override clear(): void {
+    super.clear();
+    this.changed();
+  }
+}
+
 export class ConversationController {
   /** spokeAt: when her answer became audible (unset while she's thinking). */
   private active: (Request & { ctl: AbortController; started: number; spokeAt?: number }) | undefined;
   private readonly queue: Request[] = [];
-  private readonly followUpUntil = new Map<UserId, number>();
-  /** Users who just heard "Yes?": their next words are certainly for the bot. */
+  private readonly followUpUntil = new Deadlines((u) => this.d.listenChanged?.(u));
   /** After "Yes?": who it is waiting for, until when. */
-  private readonly expecting = new Map<UserId, number>();
+  private readonly expecting = new Deadlines((u) => this.d.listenChanged?.(u));
   /** When the bot last finished saying something (for "shut up" right after). */
   private lastSpoke = -Infinity;
   private lastAcceptedWake: { userId: UserId; at: number } | undefined;
@@ -114,6 +138,12 @@ export class ConversationController {
   listeningTo(userId: UserId): boolean {
     const now = this.d.now();
     return (this.expecting.get(userId) ?? 0) > now || (this.followUpUntil.get(userId) ?? 0) > now;
+  }
+
+  /** How much longer words from this person count without the wake phrase (0: not listening). */
+  listenLeftMs(userId: UserId): number {
+    const until = Math.max(this.expecting.get(userId) ?? 0, this.followUpUntil.get(userId) ?? 0);
+    return Math.max(0, Math.round(until - this.d.now()));
   }
 
   /** Say something unprompted (a timer going off) as soon as nothing else is
@@ -276,10 +306,10 @@ export class ConversationController {
     }
     const ctl = new AbortController();
     this.active = { ...req, ctl, started: this.d.now() };
-    let silent = false;
+    let outcome: void | 'silent' | 'done' = undefined;
     try {
       if (req.announce) await this.d.say(req.announce, ctl.signal);
-      else if (req.command) silent = (await this.d.respond(req.userId, req.command, ctl.signal, req.followUp)) === 'silent';
+      else if (req.command) outcome = await this.d.respond(req.userId, req.command, ctl.signal, req.followUp);
       else {
         await this.d.say(this.d.ack?.(req.userId) ?? 'Yes?', ctl.signal);
         this.expecting.set(req.userId, this.d.now() + 20_000);
@@ -296,8 +326,12 @@ export class ConversationController {
     } finally {
       this.active = undefined;
       this.lastSpoke = this.d.now();
-      if (silent) {
+      if (outcome === 'silent') {
         this.d.log?.('not for me', { user: req.userId });
+        this.followUpUntil.delete(req.userId);
+      } else if (outcome === 'done' && !ctl.signal.aborted) {
+        // An order carried out ("play Drake"): she stops listening, so talk
+        // to someone else afterwards isn't taken as more for her.
         this.followUpUntil.delete(req.userId);
       } else if (!ctl.signal.aborted || req.command === '') {
         this.followUpUntil.set(req.userId, this.d.now() + this.o.followUpMs);

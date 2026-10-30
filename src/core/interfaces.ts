@@ -162,6 +162,10 @@ export interface Tool {
    *  ("Spotify's open."), or undefined to let the model answer. Used when
    *  every tool in the round gives one; saves a model call. */
   speak?(args: Record<string, unknown>, result: string): string | undefined;
+  /** Does something (plays music, sets a timer, opens an app) rather than
+   *  looking something up. An answer that did that ends the conversation:
+   *  she stops listening for follow-ups, unless she asked a question. */
+  acts?: boolean | ((args: Record<string, unknown>) => boolean);
 }
 
 export interface SecretsStore {

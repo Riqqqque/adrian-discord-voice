@@ -28,6 +28,7 @@ This is one module of the A.D.R.I.A.N. household assistant suite. Every module f
 - "Play Blinding Lights", "play the whole Graduation album", "put on something for a late night drive", "play a playlist like that last song", "play the newest Joe Rogan episode", "play rain sounds".
 - Queue ("play Sicko Mode next"), skip, pause, resume, shuffle, "what's playing?", "turn it down".
 - "Play that link I just sent": YouTube, SoundCloud, Bandcamp and Spotify links pasted in chat (Spotify ones are found on YouTube).
+- "Play Travis Scott" shuffles their best-known songs. "Play some music" plays what you like: she learns your taste from what you ask for, and has her own.
 - Autoplay keeps similar songs coming when the queue runs out (YouTube Music radio), without repeats.
 - Music ducks under the voice whenever someone talks to it.
 

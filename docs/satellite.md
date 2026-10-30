@@ -59,7 +59,8 @@ Text frames are JSON objects with a `type`. Binary frames are audio.
 |---|---|---|
 | `welcome` | `owner`, `name` | Accepted. `owner` is the owner's display name. |
 | `denied` | `reason` | Rejected; the connection closes. |
-| `mode` | `mode` | `thinking` while she works on an answer, `idle` after. The PC knows `listening` (its own mic) and `speaking` (audio arriving) by itself. |
+| `mode` | `mode` | `thinking` while she works on an answer, `idle` after. |
+| `state` | `speaking`, `listenMs` (either or both) | `speaking`: her voice is audible, as opposed to music only (the PC gets both as one stream, and only turns her voice down when you talk over it). `listenMs`: how much longer she takes words without her name, 0 when she doesn't. |
 | `transcript` | `who` (`you`/`her`), `text`, `final` | What was heard, and what she's saying so far (`final: false` while it grows). |
 | *(binary)* | PCM s16le mono 48 kHz | Her voice, music and sounds, in real time. |
 | `audio_stop` | | Drop any audio still buffered (she was interrupted). |
