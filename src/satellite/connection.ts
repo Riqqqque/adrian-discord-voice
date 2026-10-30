@@ -112,6 +112,12 @@ export class SatelliteConnection extends EventEmitter implements VoiceTransport 
     this.send({ type: 'mode', mode });
   }
 
+  /** Her voice is audible on the PC (not just music), and how much longer she
+   *  takes words without her name there (ms, 0 = not listening). */
+  state(s: { speaking?: boolean; listenMs?: number }): void {
+    this.send({ type: 'state', ...s });
+  }
+
   transcript(who: 'you' | 'her', text: string, final = true): void {
     this.send({ type: 'transcript', who, text, final });
   }

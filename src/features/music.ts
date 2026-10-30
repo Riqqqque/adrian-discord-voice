@@ -6,6 +6,7 @@ import { spawn } from 'node:child_process';
 import { Readable } from 'node:stream';
 import type { PlaybackHandle, Tool, ToolContext } from '../core/interfaces.js';
 import { parseMediaLink, spotifyItem } from './links.js';
+import type { MusicTaste } from './taste.js';
 
 export interface Track {
   /** Song name, cleaned for speaking. */
@@ -20,6 +21,8 @@ export interface Track {
   kind?: 'podcast';
   /** The title as published (podcast episodes are spoken in full). */
   fullTitle?: string;
+  /** Found on YouTube Music by these words when its turn comes (an artist's top songs). */
+  query?: string;
 }
 
 export interface MusicSource {
@@ -210,7 +213,18 @@ export class YoutubeSource implements MusicSource {
 
   /** Fill in the stream URL ahead of time (a track from a list). */
   async prepare(t: Track, signal: AbortSignal): Promise<void> {
-    if (t.ref || !t.id) return;
+    if (t.ref) return;
+    if (!t.id && t.query) {
+      // Named but not looked up yet: the top song result for its words.
+      const f = await this.find(t.query, signal);
+      if (!f?.id) throw new Error('not found on YouTube');
+      t.id = f.id;
+      t.ref = f.ref;
+      if (f.durationS) t.durationS = f.durationS;
+      if (!t.artist && f.artist) t.artist = f.artist;
+      return;
+    }
+    if (!t.id) return;
     const r = await this.resolve(t.id, signal);
     if (!r) throw new Error('that one is unavailable');
     t.ref = r.ref;
@@ -222,6 +236,7 @@ export class YoutubeSource implements MusicSource {
 
   async open(t: Track, signal: AbortSignal): Promise<{ url: string }> {
     await this.prepare(t, signal);
+    if (!t.ref) throw new Error('nothing to play');
     return { url: t.ref };
   }
 }
@@ -284,6 +299,62 @@ export function parseYtdlp(out: string): Track | undefined {
   const artists = uploader && uploader !== 'NA' ? [...new Set(uploader.split(/,\s*/).map((x) => x.trim()).filter(Boolean))].join(', ') : undefined;
   return { ...cleanTitle(title, artists), fullTitle: title.trim(), ...(Number.isFinite(d) && d > 0 ? { durationS: d } : {}), source: 'youtube', ref: url.trim() };
 }
+
+// --- an artist's most popular songs ----------------------------------------------
+
+/** An artist's best-known songs, most popular first. `known`: that name really
+ *  is a well-known artist, not just the nearest match. */
+export type TopTracks = (artist: string, signal: AbortSignal) => Promise<{ artist: string; titles: string[]; known: boolean } | undefined>;
+
+const fold = (s: string) =>
+  s
+    .normalize('NFKD')
+    .replace(/\p{M}+/gu, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+
+/** "Dracula (with JENNIE)", "Song - Remastered 2011" → "dracula", "song": versions of one song. */
+const songKey = (title: string) => fold(title.replace(/\s*[([].*?[)\]]/g, '').replace(/\s+-\s+.*$/, ''));
+
+/** Fans an exact name match needs before a bare "play X" counts as the artist:
+ *  below this, X is more likely a song that some small act is also called. */
+const KNOWN_FANS = 5_000;
+
+/** Deezer's public catalog (no key): the artist by name, then their top
+ *  tracks by popularity. Only the artist's name is sent. */
+export function deezerTopTracks(f: typeof fetch = fetch): TopTracks {
+  const get = async (url: string, signal: AbortSignal) => {
+    const r = await f(url, { signal: AbortSignal.any([signal, AbortSignal.timeout(3_000)]), headers: { accept: 'application/json' } });
+    if (!r.ok) throw new Error(`Deezer answered ${r.status}`);
+    return (await r.json()) as { data?: unknown[] };
+  };
+  return async (name, signal) => {
+    const q = name.trim().slice(0, 100);
+    if (!q) return undefined;
+    const found = (await get(`https://api.deezer.com/search/artist?q=${encodeURIComponent(q)}&limit=5`, signal)).data as
+      | { id?: number; name?: string; nb_fan?: number }[]
+      | undefined;
+    const exact = (found ?? []).filter((a) => a.name && fold(a.name) === fold(q)).sort((a, b) => (b.nb_fan ?? 0) - (a.nb_fan ?? 0));
+    const artist = exact[0] ?? found?.[0];
+    if (!artist?.id || !artist.name) return undefined;
+    const top = (await get(`https://api.deezer.com/artist/${artist.id}/top?limit=50`, signal)).data as { title?: string; artist?: { id?: number } }[] | undefined;
+    const seen = new Set<string>();
+    const titles: string[] = [];
+    for (const t of top ?? []) {
+      // Their own songs (not someone else's that features them), one version each.
+      if (!t.title || t.artist?.id !== artist.id) continue;
+      const k = songKey(t.title);
+      if (!k || seen.has(k)) continue;
+      seen.add(k);
+      titles.push(t.title);
+    }
+    return { artist: artist.name, titles, known: artist === exact[0] && (artist.nb_fan ?? 0) >= KNOWN_FANS };
+  };
+}
+
+/** Fewer than this many top songs: not worth a shuffle, use the old way. */
+const MIN_TOP = 5;
 
 // --- Plex -------------------------------------------------------------------
 
@@ -399,6 +470,8 @@ export interface PlayerOptions {
   maxQueue?: number;
   /** When the queue runs out, keep going with similar songs (YouTube Music radio). */
   autoplay?: boolean;
+  /** An artist's top songs, for artist requests and mixes (off: their top song, then radio). */
+  topTracks?: TopTracks;
 }
 
 export type PlayResult = { ok: true; track: Track; queued: number } | { ok: false; message: string };
@@ -407,7 +480,7 @@ export type PlayResult = { ok: true; track: Track; queued: number } | { ok: fals
 export type RequestKind = 'song' | 'artist' | 'album' | 'playlist' | 'vibe' | 'similar' | 'podcast' | 'video' | 'link';
 
 export type RequestResult =
-  | { ok: true; started?: Track; label?: string; added: number }
+  | { ok: true; started?: Track; label?: string; added: number; artist?: string; queuedAs?: { track: Track; position: number } }
   | { ok: false; message: string };
 
 /** Unplayable tracks in a row before giving up (like Yusic). */
@@ -527,6 +600,9 @@ export class MusicPlayer {
     }
     switch (kind) {
       case 'artist': {
+        // Their best-known songs, shuffled; then autoplay carries on with similar ones.
+        const best = await this.topOf([q], 25, signal);
+        if (best.tracks.length >= MIN_TOP) return this.artistList(best, mode, signal);
         const top = await yt.find(q, signal);
         if (!top?.id) return one(await this.find(q, signal));
         const radio = this.fresh(await yt.radio(top.id, signal).catch(() => []), { skip: top.id, replacing: mode === 'now' });
@@ -573,6 +649,68 @@ export class MusicPlayer {
         return r.ok ? { ok: true, ...(r.queued ? {} : { started: r.track }), added: r.queued ? 1 : 0 } : r;
       }
     }
+  }
+
+  private async artistList(best: { names: string[]; tracks: Track[] }, mode: 'now' | 'queue', signal: AbortSignal): Promise<RequestResult> {
+    const artist = best.names[0]!;
+    const r = await this.playList(best.tracks, mode, signal, `${artist}'s top songs, shuffled`);
+    return r.ok ? { ...r, artist } : r;
+  }
+
+  /** A bare "play X" (no model to say what X is): a well-known artist's name
+   *  shuffles their top songs, anything else is one song. */
+  async playNamed(query: string, mode: 'now' | 'queue', signal: AbortSignal, prefer?: Track['source']): Promise<RequestResult> {
+    const name = query
+      .trim()
+      .replace(/^(?:some|a little|a bit of|more)\s+/i, '')
+      .replace(/^(?:music|songs)\s+(?:by|from)\s+/i, '')
+      .replace(/\s+(?:music|songs)$/i, '');
+    if (!prefer && name) {
+      const best = await this.topOf([name], 25, signal, true);
+      if (best.tracks.length >= MIN_TOP) return this.artistList(best, mode, signal);
+    }
+    const r = await this.play(query, mode, signal, prefer);
+    if (!r.ok) return r;
+    return r.queued ? { ok: true, added: 1, queuedAs: { track: r.track, position: r.queued } } : { ok: true, started: r.track, added: 0 };
+  }
+
+  /** Several artists' top songs mixed and shuffled ("music I like"). */
+  async mix(artists: string[], mode: 'now' | 'queue', signal: AbortSignal, label: string): Promise<RequestResult> {
+    const names = artists.map((a) => a.trim()).filter(Boolean).slice(0, 8);
+    if (!names.length) return { ok: false, message: 'Which artists?' };
+    this.o.log.info('music mix', { artists: names.length, mode });
+    const each = Math.max(4, Math.ceil(30 / names.length));
+    const best = await this.topOf(names, each, signal);
+    if (best.tracks.length) return this.playList(best.tracks.slice(0, 25), mode, signal, label);
+    // No song lists: the first artist the usual way.
+    return this.request('artist', names[0]!, mode, signal);
+  }
+
+  /** The named artists' top songs (up to `each` per artist), shuffled together, as tracks found when played. */
+  private async topOf(artists: string[], each: number, signal: AbortSignal, knownOnly = false): Promise<{ names: string[]; tracks: Track[] }> {
+    const top = this.o.topTracks;
+    if (!top || !this.yt) return { names: [], tracks: [] };
+    const lists = await Promise.all(
+      artists.map((a) =>
+        top(a, signal).catch((e: Error) => {
+          if (signal.aborted) throw e;
+          this.o.log.warn('top songs lookup failed', { error: e.message.slice(0, 120) });
+          return undefined;
+        }),
+      ),
+    );
+    const names: string[] = [];
+    const tracks: Track[] = [];
+    const recent = new Set(this.played.slice(-20).map((t) => songKey(t.title)));
+    for (const l of lists) {
+      if (!l?.titles.length || (knownOnly && !l.known)) continue;
+      names.push(l.artist);
+      // Skip what just played when there's enough else.
+      const fresh = l.titles.filter((t) => !recent.has(songKey(t)));
+      const pick = (fresh.length >= MIN_TOP ? fresh : l.titles).slice(0, each);
+      tracks.push(...pick.map((title): Track => ({ title, artist: l.artist, source: 'youtube', ref: '', query: `${title} ${l.artist}` })));
+    }
+    return { names, tracks: shuffle(tracks) };
   }
 
   /** Tracks not played lately (and not already queued, unless the queue is
@@ -794,7 +932,9 @@ export function musicRules(): string[] {
     'You can play audio in this voice call with play_music and music_control: songs, artists, albums, playlists, moods and vibes, songs similar to what was just playing, podcasts, and any YouTube video (YouTube Music, plus the household Plex library). ' +
       'Whenever anyone asks to hear anything, even vaguely ("something chill", "a playlist like that last song", "keep it going", "put on Joe Rogan"), call play_music right away with your best guess of request_type and a good search query you write yourself. ' +
       "Infer what they mean from the conversation and what's been playing. Never say you can't play something or have no music access without trying the tool first, and never say something is playing unless the tool says it started. " +
-      'After it starts, say what is playing in a few words. Never sing, recite or quote song lyrics.',
+      'After it starts, say what is playing in a few words. Never sing, recite or quote song lyrics. ' +
+      'An artist request shuffles their best-known songs by itself. "Play some music", "something I would like", "my music" with nothing more specific means request_type favorites (what they like); "play something you like", "your favorites" means hers (what you like). ' +
+      'You have your own taste in music. Keep it consistent, let it grow, and save it with music_taste: when someone tells you what they like or hate, or you settle on what you like yourself.',
   ];
 }
 
@@ -806,9 +946,11 @@ export function musicState(p: MusicPlayer): string {
 }
 
 const KINDS: RequestKind[] = ['song', 'artist', 'album', 'playlist', 'vibe', 'similar', 'podcast', 'video', 'link'];
+/** Requests answered from remembered taste. */
+const TASTE_KINDS = ['favorites', 'hers'] as const;
 
 /** `player` is the one music player, or picks the player for where a request came from. */
-export function musicTools(player: MusicPlayer | ((ctx: ToolContext) => MusicPlayer | undefined)): Tool[] {
+export function musicTools(player: MusicPlayer | ((ctx: ToolContext) => MusicPlayer | undefined), taste?: MusicTaste): Tool[] {
   const get = typeof player === 'function' ? player : () => player;
   const NONE = "Music isn't available here.";
   return [
@@ -817,16 +959,17 @@ export function musicTools(player: MusicPlayer | ((ctx: ToolContext) => MusicPla
         name: 'play_music',
         description:
           'Play audio in the voice call. Pick request_type from what they mean: ' +
-          'song (one specific song), artist (an artist: their top song then similar ones), album, ' +
+          'song (one specific song), artist (an artist: their best-known songs, shuffled, then similar ones), album, ' +
           'playlist (a named or public playlist), vibe (a mood, genre, activity or era: "chill late night", "hype gaming", "90s r&b"; write query as a playlist search like "chill late night r&b"), ' +
           'similar (songs like what is playing or was just played, including "a playlist like that song", "more like this", "keep it going"; leave query empty, or name the song or artist to base it on), ' +
           'podcast (a show or episode), video (any other YouTube audio: a long mix, rain sounds, a live stream, a specific video), ' +
           'link (a YouTube, SoundCloud, Bandcamp or Spotify link someone pasted, e.g. "play that link", "play the song Sam sent": query is the exact URL). ' +
+          (taste ? 'favorites (music the person asking likes: "play some music", "something I would like", "my music"; no query), hers (music you like yourself: "play something you like"; no query). ' : '') +
           'when: now (default) starts it, next adds it to the queue.',
         parameters: {
           type: 'object',
           properties: {
-            request_type: { type: 'string', enum: KINDS },
+            request_type: { type: 'string', enum: taste ? [...KINDS, ...TASTE_KINDS] : KINDS },
             query: { type: 'string', description: 'Search words you choose, e.g. "get lucky daft punk", "graduation kanye west", "chill late night r&b". Empty for similar-to-current.' },
             when: { type: 'string', enum: ['now', 'next'] },
             source: { type: 'string', enum: ['youtube', 'plex'], description: 'Only if they named one.' },
@@ -837,15 +980,37 @@ export function musicTools(player: MusicPlayer | ((ctx: ToolContext) => MusicPla
       },
       timeoutMs: 25_000,
       slow: true,
+      acts: true,
       run: async (a, signal, ctx) => {
         const p = get(ctx);
         if (!p) return NONE;
+        const mode = a.when === 'next' ? 'queue' : 'now';
+        const said = (r: RequestResult) => {
+          if (!r.ok) return r.message;
+          const what = r.label ? ` (${r.label})` : '';
+          if (r.started) return `Now playing ${describe(r.started)}${what}${r.added ? `, with ${r.added} more queued` : ''}. Tell them in a few words; don't describe or quote the song.`;
+          return `Added ${r.added} to the queue${what}.`;
+        };
+        if (taste && (a.request_type === 'favorites' || a.request_type === 'hers')) {
+          const hers = a.request_type === 'hers';
+          const artists = hers ? taste.hers() : taste.top(ctx.userId);
+          if (!artists.length) {
+            return hers
+              ? 'You have no favorites saved yet. Pick an artist you like, save it with music_taste, and play them with request_type artist.'
+              : `You don't know what ${ctx.speaker} likes yet. Ask them who they like, or play something popular with request_type vibe.`;
+          }
+          return said(await p.mix(artists, mode, signal, hers ? 'music you like' : `music ${ctx.speaker} likes`));
+        }
         const kind = KINDS.includes(a.request_type as RequestKind) ? (a.request_type as RequestKind) : 'song';
-        const r = await p.request(kind, String(a.query ?? ''), a.when === 'next' ? 'queue' : 'now', signal, a.source === 'plex' || a.source === 'youtube' ? a.source : undefined);
-        if (!r.ok) return r.message;
-        const what = r.label ? ` (${r.label})` : '';
-        if (r.started) return `Now playing ${describe(r.started)}${what}${r.added ? `, with ${r.added} more queued` : ''}. Tell them in a few words; don't describe or quote the song.`;
-        return `Added ${r.added} to the queue${what}.`;
+        const query = String(a.query ?? '');
+        const r = await p.request(kind, query, mode, signal, a.source === 'plex' || a.source === 'youtube' ? a.source : undefined);
+        // What they ask to hear is what they like. The asked-for artist, not the
+        // first song's: a "similar" list or a playlist says nothing about them.
+        if (r.ok) {
+          const artist = kind === 'artist' ? (r.artist ?? query) : kind === 'song' || kind === 'album' || kind === 'link' ? r.started?.artist : undefined;
+          if (artist) taste?.played(ctx.userId, artist);
+        }
+        return said(r);
       },
     },
     {
@@ -860,6 +1025,7 @@ export function musicTools(player: MusicPlayer | ((ctx: ToolContext) => MusicPla
         },
       },
       timeoutMs: 25_000,
+      acts: (a) => a.action !== 'status',
       run: async (a, _signal, ctx) => {
         const p = get(ctx);
         if (!p) return NONE;

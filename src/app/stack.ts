@@ -46,7 +46,8 @@ import { eager } from '../core/eager.js';
 import { creatorLines, genderLines, memberLabel } from './identity.js';
 import { registerTextChat } from './textchat.js';
 import { discordTools, RelayLimiter } from '../features/discordinfo.js';
-import { describe as trackName, ffmpegDecoder, MusicPlayer, musicRules, musicState, musicTools, PlexMusicSource, type MusicSource, YoutubeSource } from '../features/music.js';
+import { MusicTaste } from '../features/taste.js';
+import { deezerTopTracks, describe as trackName, ffmpegDecoder, MusicPlayer, musicRules, musicState, musicTools, PlexMusicSource, type MusicSource, YoutubeSource } from '../features/music.js';
 import { linksLine, PLAY_THAT_LINK, RecentLinks } from '../features/links.js';
 import { classifyMusic, isTimeQuestion } from '../conversation/intents.js';
 import { ParakeetStt } from '../speech/sherpa.js';
@@ -188,7 +189,7 @@ export async function startVoiceStack(
   if (mc.enabled && mc.plexBackup && plexForMusic) musicSources.push(new PlexMusicSource({ url: config.media.plexUrl, token: plexForMusic }));
   const ffmpegOk = mc.enabled && spawnSync(mc.ffmpeg, ['-version'], { stdio: 'ignore' }).status === 0;
   const makeMusic = (out: Mixer) =>
-    ffmpegOk && musicSources.length ? new MusicPlayer({ sources: musicSources, output: out, decode: ffmpegDecoder(mc.ffmpeg), log, volume: mc.volume, maxQueue: mc.maxQueue, autoplay: mc.autoplay }) : undefined;
+    ffmpegOk && musicSources.length ? new MusicPlayer({ sources: musicSources, output: out, decode: ffmpegDecoder(mc.ffmpeg), log, volume: mc.volume, maxQueue: mc.maxQueue, autoplay: mc.autoplay, ...(mc.topSongs ? { topTracks: deezerTopTracks() } : {}) }) : undefined;
   const music = makeMusic(mixer);
   if (mc.enabled) log.info(music ? 'music ready' : 'music off', { sources: musicSources.map((s) => s.name), ffmpeg: ffmpegOk });
 
@@ -306,6 +307,7 @@ export async function startVoiceStack(
     }
   });
   const notes = new UserNotes(stateDir ? join(stateDir, 'notes.json') : undefined);
+  const taste = new MusicTaste(stateDir ? join(stateDir, 'music-taste.json') : undefined);
   /** Playable links pasted in chat, for "play that link" (memory only). */
   const links = new RecentLinks();
   const games = new PartyGames();
@@ -340,7 +342,7 @@ export async function startVoiceStack(
       const searchKey = brain.search ? secrets.get(brain.search.apiKeySecret) : undefined;
       if (searchKey) tools.push(tavilySearchTool(searchKey, brain.search?.maxResults));
       tools.push(...reminders.tools(), ...notes.tools(), ...games.tools());
-      if (music) tools.push(...musicTools((ctx) => roomFor(ctx).music));
+      if (music) tools.push(...musicTools((ctx) => roomFor(ctx).music, taste), ...taste.tools());
       if (sounds) tools.push(soundTool(sounds));
       if (satEnabled)
         tools.push(
@@ -415,7 +417,7 @@ export async function startVoiceStack(
           ...room.context(ctx.channelId, ctx.userId),
           ...notes.context(ctx.userId, ctx.speaker),
           ...games.context(ctx),
-          ...(roomFor(ctx).music ? [musicState(roomFor(ctx).music!), ...linksLine(links.forPrompt(ctx.userId, ctx.guildId))] : []),
+          ...(roomFor(ctx).music ? [musicState(roomFor(ctx).music!), ...linksLine(links.forPrompt(ctx.userId, ctx.guildId)), ...taste.context(ctx.userId, ctx.speaker)] : []),
           ...(roomFor(ctx).ui ? [`${ctx.speaker} is talking to you through their PC (A.D.R.I.A.N. satellite), not in the Discord call. Music and sounds play on that PC.`] : []),
         ],
         selectTools: (text, ctx, all) =>
@@ -558,13 +560,21 @@ export async function startVoiceStack(
       let filler: Promise<unknown> | undefined;
       const fillerTimer = setTimeout(() => (filler = say(FILLERS[fillerTurn++ % FILLERS.length]!).catch(() => undefined)), 900);
       const r = await music
-        .play(m.query, m.mode, signal, m.source)
+        .playNamed(m.query, m.mode, signal, m.source)
         .catch((e: Error) => ({ ok: false as const, message: signal.aborted ? '' : (log.warn('music failed', { error: e.message }), "I couldn't play that.") }))
         .finally(() => clearTimeout(fillerTimer));
       await filler;
       if (signal.aborted) return true;
-      if (!r.ok) await say(r.message);
-      else await say(r.queued ? `Added ${trackName(r.track)}, number ${r.queued} in the queue.` : `Playing ${trackName(r.track)}.`);
+      if (!r.ok) {
+        await say(r.message);
+        return true;
+      }
+      const artist = r.artist ?? (r.started ?? r.queuedAs?.track)?.artist;
+      if (artist) taste.played(userId, artist);
+      if (r.queuedAs) await say(`Added ${trackName(r.queuedAs.track)}, number ${r.queuedAs.position} in the queue.`);
+      else if (r.artist && r.started) await say(`Shuffling ${r.artist}, starting with ${r.started.title}.`);
+      else if (r.artist) await say(`Added ${r.added} ${r.artist} songs to the queue.`);
+      else if (r.started) await say(`Playing ${trackName(r.started)}.`);
       return true;
     }
     switch (m.action) {
@@ -621,12 +631,15 @@ export async function startVoiceStack(
     return true;
   }
 
-  async function respond(rm: Room, userId: UserId, command: string, outer: AbortSignal, followUp = false, onSpeaking?: () => void): Promise<void | 'silent'> {
-    if (await local(rm, userId, command, outer)) return;
+  async function respond(rm: Room, userId: UserId, command: string, outer: AbortSignal, followUp = false, onSpeaking?: () => void): Promise<void | 'silent' | 'done'> {
+    if (await local(rm, userId, command, outer)) return 'done';
     // A music or sound request is always for the bot, even without the name.
     const musicish = rm.music !== undefined && MUSICISH.test(command);
     if (musicish) followUp = false;
     let silent = false;
+    /** A tool did something (played music, opened an app): an order, not a chat. */
+    let acted = false;
+    let saidAll = '';
     // The time limit is for getting the answer, not for saying it: the
     // model's text is read in as fast as it comes (eager), the timer stops
     // when it's done, and long answers keep playing (2 min hard cap).
@@ -658,6 +671,7 @@ export async function startVoiceStack(
         followUp,
         ...(rm.ui ? { desk: true } : {}),
         onSilent: () => (silent = true),
+        onActed: () => (acted = true),
         // A slow tool (music lookup) may take longer than the answer limit: give
         // it its own limit plus time for the model to answer afterwards.
         onTool: (ms) => {
@@ -680,6 +694,7 @@ export async function startVoiceStack(
         } finally {
           clearTimeout(genTimer);
           if (said.length) {
+            saidAll = said.join(' ');
             lastSpoken.set(userId, said.join(' '));
             const pl = rm.place();
             if (pl.channelId) room.add(pl.channelId, 'bot', `You (answering ${nameOf(userId)})`, said.join(' '));
@@ -749,6 +764,8 @@ export async function startVoiceStack(
     // Only when nothing was said: then the user should hear a short sorry.
     // A partial answer that was cut off just ends.
     if ((timedOut || failure) && !outer.aborted && firstAudioAt === undefined) throw failure ?? new Error('timed out');
+    // An order carried out, and she didn't ask anything back: the conversation is over.
+    if (acted && !failure && !/\?\s*$/.test(saidAll)) return 'done';
   }
 
   /** The names in the owner's greetings ("Yes, chief" → "chief"). */
@@ -809,6 +826,15 @@ export async function startVoiceStack(
       return !!m && m.roles.cache.some((r) => priorityRoles.has(r.id));
     },
     log: (event, fields) => log.info(event, rm.ui ? { ...fields, room: rm.key } : fields),
+    // The PC shows "listening" only while she'd really take words without her name.
+    ...(rm.ui
+      ? {
+          listenChanged: (id?: UserId) => {
+            const owner = rm.ui!.owner;
+            if (id === undefined || id === owner) rm.ui!.state({ listenMs: c.listenLeftMs(owner) });
+          },
+        }
+      : {}),
     // At a PC it's one person talking to her: keep the conversation open
     // longer, and stop as soon as they talk over her (the PC only sends
     // speech that's clearly louder than her own echo).
@@ -1083,7 +1109,9 @@ export async function startVoiceStack(
       welcome: (c) => ({ owner: nameOf(c.owner) }),
       onConnect: (conn) => {
         const key = `sat:${conn.device.id}`;
-        const satMixer = new Mixer({ start: (s) => conn.playPcm(s), duckLevel: mc.duckLevel });
+        // The PC gets music and voice as one stream: tell it which is which,
+        // so talking only turns her voice down there, never the music.
+        const satMixer = new Mixer({ start: (s) => conn.playPcm(s), duckLevel: mc.duckLevel, onVoice: (on) => conn.state({ speaking: on }) });
         const rm: Room = {
           key,
           mixer: satMixer,

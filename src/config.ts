@@ -242,8 +242,10 @@ export const PocConfigSchema = z.object({
       maxQueue: z.number().int().min(1).max(100).default(25),
       /** When the queue runs out, keep playing similar songs. */
       autoplay: z.boolean().default(true),
+      /** Artist requests shuffle the artist's top songs (ranked by Deezer's free public API; only the artist's name is sent). */
+      topSongs: z.boolean().default(true),
     })
-    .default({ enabled: true, ffmpeg: 'ffmpeg', plexBackup: true, volume: 0.5, duckLevel: 0.2, maxQueue: 25, autoplay: true }),
+    .default({ enabled: true, ffmpeg: 'ffmpeg', plexBackup: true, volume: 0.5, duckLevel: 0.2, maxQueue: 25, autoplay: true, topSongs: true }),
   /** Cloud voice for English replies; the local voice stays as fallback. */
   cloudVoice: z
     .object({

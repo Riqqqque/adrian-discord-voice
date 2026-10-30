@@ -113,6 +113,8 @@ export interface MixerOptions {
   start(stream: Readable): PlaybackHandle;
   /** Music level while ducked, as a fraction of its normal level. */
   duckLevel?: number;
+  /** Her voice (or a sound) started or stopped being played. */
+  onVoice?: (on: boolean) => void;
   /** Clock (tests use a fake one). */
   setInterval?: (fn: () => void, ms: number) => unknown;
   clearInterval?: (h: unknown) => void;
@@ -135,6 +137,8 @@ export class Mixer {
   private stats = { musicGaps: 0, madeUp: 0, longestStallMs: 0 };
   private lastTick = 0;
   private paused = false;
+  /** What onVoice last said. */
+  private voice = false;
 
   constructor(
     private readonly o: MixerOptions,
@@ -247,6 +251,13 @@ export class Mixer {
     this.out = undefined;
     this.playback = undefined;
     out?.end();
+    this.setVoice(false);
+  }
+
+  private setVoice(on: boolean): void {
+    if (on === this.voice) return;
+    this.voice = on;
+    this.o.onVoice?.(on);
   }
 
   /** Write every frame that is due by now (plus the lead). Public for tests. */
@@ -282,6 +293,7 @@ export class Mixer {
     const mFrame = this.paused ? undefined : this.music?.take();
     if (this.music && !this.paused && !mFrame && this.music.started && !this.music.ended) this.stats.musicGaps++;
 
+    this.setVoice(!!sFrame || this.speaking);
     const ducked = this.holds > 0 || this.speaking || this.now() < this.duckedUntil;
     const target = ducked ? (this.o.duckLevel ?? 0.2) : 1;
 

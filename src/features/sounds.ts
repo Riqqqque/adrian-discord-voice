@@ -28,6 +28,7 @@ export function soundTool(d: SoundDeps): Tool {
         additionalProperties: false,
       },
     },
+    acts: true,
     timeoutMs: 20_000,
     // The clip is the answer: no "one sec" before it, no words after it.
     endsTurn: true,

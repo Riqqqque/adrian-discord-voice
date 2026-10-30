@@ -110,10 +110,13 @@ export function pcTools(d: PcToolDeps): Tool[] {
       return result;
     },
     speak: (a, result) => confirmation(name, a, result),
+    acts: (a) => !LOOKUPS.has(`${name}.${String(a.action ?? '')}`) && name !== 'pc_info',
   }));
 }
 
 const NOT_DONE = "Didn't happen: ";
+/** pc_ calls that only look something up (the conversation may go on). */
+const LOOKUPS = new Set(['pc_apps.running', 'pc_apps.list', 'pc_media.status', 'pc_volume.get']);
 
 /** Say it in words: "40%" → "40 percent". */
 const spoken = (s: string) => s.replace(/(\d+)\s?%/g, '$1 percent');

@@ -38,7 +38,10 @@ Everything else goes to the language model.
 | You say | It does |
 |---|---|
 | "Play Blinding Lights" | Searches YouTube Music's song catalog and plays the real track. |
-| "Play Travis Scott" | Their top song, then similar songs. |
+| "Play Travis Scott" | Shuffles their best-known songs, then similar songs. |
+| "Play some music", "play something I'd like" | A shuffled mix of the artists you ask for most. |
+| "Play something you like" | Her own taste. |
+| "I love Frank Ocean", "I hate country" | She remembers it for next time. |
 | "Play the whole Graduation album" | The album in order. |
 | "Put on something chill for a late night drive" | Finds a matching public playlist and shuffles it. |
 | "Play a playlist like that last song" / "more like this" | YouTube Music radio based on what was playing. |
@@ -50,7 +53,9 @@ Everything else goes to the language model.
 | "Shuffle", "clear the queue", "what's playing?", "what's next?" | Queue control and status. |
 | "Turn off autoplay" | Stop adding similar songs when the queue ends. |
 
-- **Volume:** music sits under the voice and drops further whenever someone says the name or the bot talks.
+- **Volume:** music sits under the voice and drops further whenever someone says the name or the bot talks. Noise and talking to other people leave it alone.
+- **Taste:** she learns what you like from the artists and songs you ask for, and favors recent ones. She also builds up a taste of her own. Yours is only used in your own conversations.
+- **After an order:** when she's done something ("play Drake", "set a timer"), she stops listening right away, so talking to someone else afterwards isn't taken as more for her. After a normal answer, or if she asked you something, you can carry on without her name.
 - **Autoplay:** when the queue runs low, it adds songs similar to the last one and skips anything played recently.
 - **"Stop":** when the bot is talking, it stops the talking and the music keeps playing. When the bot isn't talking, a stop aimed at it stops the music.
 - **`/leave` or moving channels:** stops the music.

@@ -283,6 +283,7 @@ export function discordTools(d: DiscordInfoDeps, relay?: { limiter: RelayLimiter
         additionalProperties: false,
       },
     },
+    acts: true,
     timeoutMs: 12_000,
     run: async (a, _signal, ctx) => {
       const text = String(a.message ?? '').replace(/@(everyone|here)/gi, '@​$1').trim().slice(0, relay.maxChars);
