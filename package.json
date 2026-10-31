@@ -1,6 +1,6 @@
 {
   "name": "adrian-discord-voice",
-  "version": "0.15.0",
+  "version": "0.15.1",
   "private": true,
   "description": "Discord voice module for A.D.R.I.A.N.: say \"Hey Adrian\" in a voice channel and it answers out loud.",
   "license": "MIT",
