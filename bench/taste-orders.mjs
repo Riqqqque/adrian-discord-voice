@@ -19,6 +19,8 @@ const CASES = [
   ['play my music', 'play_music', { request_type: 'favorites' }],
   ['play something you like', 'play_music', { request_type: 'hers' }],
   ['play your favorite music', 'play_music', { request_type: 'hers' }],
+  ["play some music I like. That's what you do to me. What you do to me.", 'play_music', { request_type: 'favorites' }],
+  ['just play some music, hurry up', 'play_music', { request_type: 'favorites' }],
   ['play some Frank Ocean', 'play_music', { request_type: 'artist' }],
   ['put on Kendrick', 'play_music', { request_type: 'artist' }],
   ['play Nights by Frank Ocean', 'play_music', { request_type: 'song' }],

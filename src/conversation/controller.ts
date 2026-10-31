@@ -98,7 +98,7 @@ class Deadlines extends Map<UserId, number> {
 
 export class ConversationController {
   /** spokeAt: when her answer became audible (unset while she's thinking). */
-  private active: (Request & { ctl: AbortController; started: number; spokeAt?: number }) | undefined;
+  private active: (Request & { ctl: AbortController; started: number; spokeAt?: number; working?: boolean }) | undefined;
   private readonly queue: Request[] = [];
   private readonly followUpUntil = new Deadlines((u) => this.d.listenChanged?.(u));
   /** After "Yes?": who it is waiting for, until when. */
@@ -132,6 +132,12 @@ export class ConversationController {
   /** Her answer to this person just became audible. */
   speaking(userId: UserId): void {
     if (this.active?.userId === userId) this.active.spokeAt ??= this.d.now();
+  }
+
+  /** She's carrying out this person's order: a song being found, a timer being
+   *  set. Talk or noise now doesn't cancel it or change it; "stop" still does. */
+  working(userId: UserId, on: boolean): void {
+    if (this.active?.userId === userId) this.active.working = on;
   }
 
   /** Would words from this person (without the wake phrase) be taken as a request? */
@@ -205,7 +211,8 @@ export class ConversationController {
         // Nothing being said, but music on: "stop" meant the music.
         // Music only stops when the stop was clearly for the bot: said with the
         // name, or by someone it's talking with, and not just an everyday word.
-        if ((e.woke || this.listeningTo(e.userId)) && (!intent.weak || e.woke)) this.d.stopOther?.(e.userId);
+        // "Stop listening" is about her, not the music.
+        if ((e.woke || this.listeningTo(e.userId)) && (!intent.weak || e.woke) && !intent.listen) this.d.stopOther?.(e.userId);
         if (forBot) this.d.onStopped?.(e.userId);
         return;
       }
@@ -215,7 +222,7 @@ export class ConversationController {
     // Still talking while she works on the answer (a pause mid-sentence):
     // it's the rest of the same request, not a new one.
     const a = this.active;
-    if (!e.woke && text && a && a.userId === e.userId && a.command && !a.announce && a.spokeAt === undefined && now - a.at < CONTINUE_MS) {
+    if (!e.woke && text && a && a.userId === e.userId && a.command && !a.announce && !a.working && a.spokeAt === undefined && now - a.at < CONTINUE_MS) {
       this.d.log?.('continued', { user: e.userId });
       this.queue.unshift({ userId: e.userId, command: `${a.command} ${text}`, at: now, ...(a.followUp ? { followUp: true } : {}) });
       a.ctl.abort();
@@ -278,7 +285,7 @@ export class ConversationController {
     if (!a || a.ctl.signal.aborted || voicedMs < this.o.bargeInMs) return; // already stopping: once is enough
     // Only talking over her voice interrupts. While she's still thinking,
     // more words are the rest of the question (see heard).
-    if (a.spokeAt === undefined) return;
+    if (a.spokeAt === undefined || a.working) return;
     if (a.userId !== userId && !this.d.isPriority(userId)) return;
     // Ignore the tail of the request itself: barge-in only counts once the
     // answer has started.
