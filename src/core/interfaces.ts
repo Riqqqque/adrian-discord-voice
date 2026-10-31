@@ -154,13 +154,16 @@ export interface Tool {
   run(args: Record<string, unknown>, signal: AbortSignal, ctx: ToolContext): Promise<string>;
   /** Longest the tool may take (default 5 s). Music lookups need more. */
   timeoutMs?: number;
-  /** Takes long enough that a short "one sec" first is worth it. */
+  /** Takes long enough that a short "one sec" is worth it if it isn't back quickly. */
   slow?: boolean;
+  /** That line, when it should always be this one. */
+  filler?: string;
   /** When it succeeds, the answer is done: no words after it (a sound effect). */
   endsTurn?: boolean;
   /** A line to say for this result instead of asking the model again
-   *  ("Spotify's open."), or undefined to let the model answer. Used when
-   *  every tool in the round gives one; saves a model call. */
+   *  ("Spotify's open."), '' to say nothing (the music starting says it), or
+   *  undefined to let the model answer. Used when every tool in the round
+   *  gives one; saves a model call. */
   speak?(args: Record<string, unknown>, result: string): string | undefined;
   /** Does something (plays music, sets a timer, opens an app) rather than
    *  looking something up. An answer that did that ends the conversation:

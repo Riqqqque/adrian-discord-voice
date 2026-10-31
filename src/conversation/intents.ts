@@ -6,7 +6,7 @@
 export type Intent =
   /** weak: an everyday word ("done", "quiet", "ya") that only means stop
    *  from the person being answered or when said with the name. */
-  | { kind: 'stop'; weak?: boolean; hold?: boolean } // stop talking / cancel / shut up / stop listening; hold: "wait", keep listening
+  | { kind: 'stop'; weak?: boolean; hold?: boolean; listen?: boolean } // stop talking / cancel / shut up; hold: "wait", keep listening; listen: "stop listening", leave the music on
   | { kind: 'name' } // just the name ("Adrian?"): stops an answer, else a wake
   | { kind: 'thanks' }
   | { kind: 'bye' }
@@ -20,10 +20,11 @@ const LEAD = new Set(['hey', 'hi', 'ok', 'okay', 'k', 'yo', 'um', 'uh', 'erm', '
 const TAIL = new Set(['please', 'now', 'already', 'man', 'dude', 'bro', 'thanks', 'ok', 'okay', 'pls', 'plz']);
 
 const PHRASES: [Intent, string[]][] = [
+  [{ kind: 'stop', listen: true }, ['stop listening', 'stop listening to me', 'quit listening', 'quit listening to me']],
   [
     { kind: 'stop' },
     [
-      'stop', 'stop it', 'stop that', 'stop stop', 'stop talking', 'stop speaking', 'stop listening', 'stop listening to me',
+      'stop', 'stop it', 'stop that', 'stop stop', 'stop talking', 'stop speaking',
       'stop talking to me', 'quit it', 'quit talking', 'shut up', 'shut it', 'shush', 'shh', 'sh', 'hush', 'quiet',
       'be quiet', 'silence', 'zip it', 'pipe down', 'enough', 'that is enough', 'thats enough', 'enough talking',
       'cancel', 'cancel that', 'never mind', 'nevermind', 'forget it', 'forget about it', 'forget that', 'scratch that',

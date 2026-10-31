@@ -931,9 +931,9 @@ export function musicRules(): string[] {
   return [
     'You can play audio in this voice call with play_music and music_control: songs, artists, albums, playlists, moods and vibes, songs similar to what was just playing, podcasts, and any YouTube video (YouTube Music, plus the household Plex library). ' +
       'Whenever anyone asks to hear anything, even vaguely ("something chill", "a playlist like that last song", "keep it going", "put on Joe Rogan"), call play_music right away with your best guess of request_type and a good search query you write yourself. ' +
-      "Infer what they mean from the conversation and what's been playing. Never say you can't play something or have no music access without trying the tool first, and never say something is playing unless the tool says it started. " +
-      'After it starts, say what is playing in a few words. Never sing, recite or quote song lyrics. ' +
-      'An artist request shuffles their best-known songs by itself. "Play some music", "something I would like", "my music" with nothing more specific means request_type favorites (what they like); "play something you like", "your favorites" means hers (what you like). ' +
+      "Infer what they mean from what they just said and what's been playing, never from old topics or notes, and never pick music from a word they didn't ask for. Words after a clear order that don't fit it are usually a song or show playing near the mic: ignore them. Never say you can't play something or have no music access without trying the tool first, and never say something is playing unless the tool says it started. " +
+      'Never sing, recite or quote song lyrics. ' +
+      'An artist request shuffles their best-known songs by itself. "Play some music", "play music", "something I would like", "my music" with nothing more specific means request_type favorites (what they like), never a made-up vibe; "play something you like", "your favorites" means hers (what you like). ' +
       'You have your own taste in music. Keep it consistent, let it grow, and save it with music_taste: when someone tells you what they like or hate, or you settle on what you like yourself.',
   ];
 }
@@ -946,6 +946,8 @@ export function musicState(p: MusicPlayer): string {
 }
 
 const KINDS: RequestKind[] = ['song', 'artist', 'album', 'playlist', 'vibe', 'similar', 'podcast', 'video', 'link'];
+/** "Play some music" from someone she knows nothing about yet. */
+const NO_TASTE = "You don't know what they like yet.";
 /** Requests answered from remembered taste. */
 const TASTE_KINDS = ['favorites', 'hers'] as const;
 
@@ -980,6 +982,9 @@ export function musicTools(player: MusicPlayer | ((ctx: ToolContext) => MusicPla
       },
       timeoutMs: 25_000,
       slow: true,
+      filler: 'On it.',
+      // The music starting is the answer. Words only for what it can't say.
+      speak: (_a, raw) => (raw === NO_TASTE ? 'Who do you want to hear?' : raw.startsWith('Now playing') ? '' : raw.startsWith('Added ') ? 'Added.' : undefined),
       acts: true,
       run: async (a, signal, ctx) => {
         const p = get(ctx);
@@ -988,7 +993,7 @@ export function musicTools(player: MusicPlayer | ((ctx: ToolContext) => MusicPla
         const said = (r: RequestResult) => {
           if (!r.ok) return r.message;
           const what = r.label ? ` (${r.label})` : '';
-          if (r.started) return `Now playing ${describe(r.started)}${what}${r.added ? `, with ${r.added} more queued` : ''}. Tell them in a few words; don't describe or quote the song.`;
+          if (r.started) return `Now playing ${describe(r.started)}${what}${r.added ? `, with ${r.added} more queued` : ''}.`;
           return `Added ${r.added} to the queue${what}.`;
         };
         if (taste && (a.request_type === 'favorites' || a.request_type === 'hers')) {
@@ -997,7 +1002,7 @@ export function musicTools(player: MusicPlayer | ((ctx: ToolContext) => MusicPla
           if (!artists.length) {
             return hers
               ? 'You have no favorites saved yet. Pick an artist you like, save it with music_taste, and play them with request_type artist.'
-              : `You don't know what ${ctx.speaker} likes yet. Ask them who they like, or play something popular with request_type vibe.`;
+              : NO_TASTE;
           }
           return said(await p.mix(artists, mode, signal, hers ? 'music you like' : `music ${ctx.speaker} likes`));
         }

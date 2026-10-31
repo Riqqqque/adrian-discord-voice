@@ -482,8 +482,8 @@ export async function startVoiceStack(
   const lastSpoken = new Map<UserId, string>();
 
   /** Everyday phrases answered locally (no model call, no cost). True if handled. */
-  async function local(rm: Room, userId: UserId, command: string, signal: AbortSignal): Promise<boolean> {
-    if (rm.music && (await localMusic(rm, userId, command, signal))) return true;
+  async function local(rm: Room, userId: UserId, command: string, signal: AbortSignal, onWorking?: (on: boolean) => void): Promise<boolean> {
+    if (rm.music && (await localMusic(rm, userId, command, signal, onWorking))) return true;
     if (isTimeQuestion(command)) {
       const t = dateFormat('en-US', { timeZone: config.timezone, hour: 'numeric', minute: '2-digit' }).format(new Date());
       await rm.speaker.speak(fixed(`It's ${t}.`), speakOpts, signal);
@@ -538,7 +538,7 @@ export async function startVoiceStack(
   }
 
   /** "play X", "skip", "pause"...: answered without the model. */
-  async function localMusic(rm: Room, userId: UserId, command: string, signal: AbortSignal): Promise<boolean> {
+  async function localMusic(rm: Room, userId: UserId, command: string, signal: AbortSignal, onWorking?: (on: boolean) => void): Promise<boolean> {
     if (rm.music && PLAY_THAT_LINK.test(command)) return playPastedLink(rm, userId, command, signal);
     const m = classifyMusic(command);
     const music = rm.music;
@@ -558,11 +558,15 @@ export async function startVoiceStack(
       log.info('music request', { user: userId, mode: m.mode, ...(m.source ? { source: m.source } : {}) });
       // The search takes a few seconds: say a quick line if it isn't back in 0.9 s.
       let filler: Promise<unknown> | undefined;
-      const fillerTimer = setTimeout(() => (filler = say(FILLERS[fillerTurn++ % FILLERS.length]!).catch(() => undefined)), 900);
+      const fillerTimer = setTimeout(() => (filler = say('On it.').catch(() => undefined)), 900);
+      onWorking?.(true);
       const r = await music
         .playNamed(m.query, m.mode, signal, m.source)
         .catch((e: Error) => ({ ok: false as const, message: signal.aborted ? '' : (log.warn('music failed', { error: e.message }), "I couldn't play that.") }))
-        .finally(() => clearTimeout(fillerTimer));
+        .finally(() => {
+          clearTimeout(fillerTimer);
+          onWorking?.(false);
+        });
       await filler;
       if (signal.aborted) return true;
       if (!r.ok) {
@@ -571,10 +575,9 @@ export async function startVoiceStack(
       }
       const artist = r.artist ?? (r.started ?? r.queuedAs?.track)?.artist;
       if (artist) taste.played(userId, artist);
-      if (r.queuedAs) await say(`Added ${trackName(r.queuedAs.track)}, number ${r.queuedAs.position} in the queue.`);
-      else if (r.artist && r.started) await say(`Shuffling ${r.artist}, starting with ${r.started.title}.`);
-      else if (r.artist) await say(`Added ${r.added} ${r.artist} songs to the queue.`);
-      else if (r.started) await say(`Playing ${trackName(r.started)}.`);
+      // The music starting is the answer; a queued song has no such signal.
+      if (r.queuedAs) await say(`Added ${trackName(r.queuedAs.track)}.`);
+      else if (r.artist && !r.started) await say(`Added ${r.artist}.`);
       return true;
     }
     switch (m.action) {
@@ -589,7 +592,7 @@ export async function startVoiceStack(
         return true;
       case 'skip': {
         const n = await music.skip().catch(() => undefined);
-        await say(n === false ? "Nothing's playing." : n ? `Next up, ${trackName(n)}.` : "That's the end of the queue.");
+        if (!n) await say(n === false ? "Nothing's playing." : "That's the end of the queue.");
         return true;
       }
       default: {
@@ -626,13 +629,12 @@ export async function startVoiceStack(
     await filler;
     if (signal.aborted) return true;
     if (!r.ok) await say(r.message);
-    else if (r.started) await say(`Playing ${trackName(r.started)}${r.added ? `, and ${r.added} more after it` : ''}.`);
-    else await say(`Added ${r.added === 1 ? 'it' : `${r.added} songs`} to the queue.`);
+    else if (!r.started) await say(`Added ${r.added === 1 ? 'it' : `${r.added} songs`} to the queue.`);
     return true;
   }
 
-  async function respond(rm: Room, userId: UserId, command: string, outer: AbortSignal, followUp = false, onSpeaking?: () => void): Promise<void | 'silent' | 'done'> {
-    if (await local(rm, userId, command, outer)) return 'done';
+  async function respond(rm: Room, userId: UserId, command: string, outer: AbortSignal, followUp = false, onSpeaking?: () => void, onWorking?: (on: boolean) => void): Promise<void | 'silent' | 'done'> {
+    if (await local(rm, userId, command, outer, onWorking)) return 'done';
     // A music or sound request is always for the bot, even without the name.
     const musicish = rm.music !== undefined && MUSICISH.test(command);
     if (musicish) followUp = false;
@@ -672,6 +674,7 @@ export async function startVoiceStack(
         ...(rm.ui ? { desk: true } : {}),
         onSilent: () => (silent = true),
         onActed: () => (acted = true),
+        ...(onWorking ? { onWorking } : {}),
         // A slow tool (music lookup) may take longer than the answer limit: give
         // it its own limit plus time for the model to answer afterwards.
         onTool: (ms) => {
@@ -800,7 +803,7 @@ export async function startVoiceStack(
     respond: async (userId, command, signal, followUp) => {
       rm.ui?.mode('thinking');
       try {
-        return await respond(rm, userId, command, signal, followUp, () => c.speaking(userId));
+        return await respond(rm, userId, command, signal, followUp, () => c.speaking(userId), (on) => c.working(userId, on));
       } finally {
         rm.ui?.mode('idle');
       }

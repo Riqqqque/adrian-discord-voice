@@ -28,9 +28,11 @@ export interface OrchestratorOptions {
   /** Prompt caching (Claude): always send every tool in the same order and
    *  keep them on the last round, so the cached prefix never changes. */
   stablePrefix?: boolean;
+  /** How long a slow tool gets before the filler line (default 0.9 s). */
+  fillerAfterMs?: number;
   /** How the answer is cut into spoken chunks (default: whole sentences). */
   splitter?: SplitterOptions;
-  /** Said before a slow tool runs when nothing has been said yet ("One sec."). */
+  /** Said when a slow tool isn't back soon and nothing has been said yet ("One sec."). */
   filler?: () => string;
   /** Rules that never change between requests (cached with the stable prompt). */
   stableLines?: string[];
@@ -61,13 +63,14 @@ export function stablePrompt(o: OrchestratorOptions, toolNames: string[] = []): 
           `Speech recognition often misspells ${o.creator.name} as ${o.creator.heardAs.join(', ')}. When you see those, the person means ${o.creator.name}; always write it as ${o.creator.name}.`,
         ]
       : []),
-    'Talk like a smart, warm friend who knows a lot: give real, specific answers with the key reason or detail, not vague filler. Match their tone; banter and jokes are welcome when they are joking.',
+    'Talk like a smart, warm friend who knows a lot: give the real, specific answer, not vague filler. Match their tone; banter and jokes are welcome when they are joking.',
     'Sound like a person hanging out in a voice chat, not an assistant: contractions, casual words, an occasional "oh", "yeah", "honestly" or "hmm" where it fits, real reactions and opinions ("ha, that\'s rough", "honestly I\'d go with the second one"). Vary how you start.',
     'Get straight to it. Never open with "Great question", "Sure!", "Absolutely", "As an AI" or by repeating their question, and never end with "Let me know if you need anything", "Hope that helps" or an offer to help more. A quick fact gets a quick answer.',
     'Only answer their latest message. If an earlier answer of yours was cut off, that topic is closed: do not finish it, bring it up again, or apologize for it unless they ask.',
     'What they say comes from speech recognition and may contain misheard words: sound-alikes ("shoes" for "shows", "drape" for "Drake", "gift" for "skip"), names split or merged ("mod drinth" for "Modrinth"). Go by what makes sense in the conversation and what sounds similar, not the literal spelling; if it is truly unclear, ask one short question instead of guessing.',
     'Everything you write is spoken aloud by text-to-speech, so:',
-    '- Usually answer in two to four sentences. Go longer (up to about eight) when the question needs explaining, or when they ask for detail; keep small talk short.',
+    '- Be brief, this is out loud: most answers are under twenty words, a plain fact is just the fact ("Canberra."), and a how or why question gets at most forty words. Go past that only when they ask for detail or a full explanation.',
+    '- Say the one thing that matters, then stop: no fun facts, extra tips, recap, or "if you want", and no question back unless you cannot go on without the answer.',
     '- No markdown, lists, headings, emojis, URLs or code.',
     '- Write numbers, units and symbols the way they are said ("seventy two degrees", "five dollars").',
     "- If you don't know or aren't sure, say so briefly instead of guessing.",
@@ -99,6 +102,15 @@ export function requestPrompt(o: OrchestratorOptions, speaker: string, today: st
   return [`You are talking with ${speaker}. Today is ${today} (${o.timezone}).`, ...extra].join('\n');
 }
 
+/** Did this finish (either way) within the time? */
+async function quickly(run: Promise<unknown>, ms: number): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<boolean>((r) => (timer = setTimeout(() => r(false), ms)));
+  const done = await Promise.race([run.then(() => true, () => true), late]);
+  clearTimeout(timer);
+  return done;
+}
+
 export class ConversationOrchestrator {
   constructor(
     private readonly llm: LlmProvider,
@@ -125,7 +137,7 @@ export class ConversationOrchestrator {
     signal: AbortSignal,
     onUsage?: (u: Usage) => void,
     place?: { guildId?: string; channelId?: string },
-    opts: { followUp?: boolean; onSilent?: () => void; onTool?: (timeoutMs: number) => void; onActed?: () => void; text?: boolean; extra?: string[]; desk?: boolean } = {},
+    opts: { followUp?: boolean; onSilent?: () => void; onTool?: (timeoutMs: number) => void; onWorking?: (on: boolean) => void; onActed?: () => void; text?: boolean; extra?: string[]; desk?: boolean } = {},
   ): AsyncGenerator<string> {
     const ctx: ToolContext = { userId, speaker, ...place };
     const tools = this.o.stablePrefix ? this.tools : (this.o.selectTools?.(text, ctx, this.tools) ?? this.tools);
@@ -270,13 +282,6 @@ export class ConversationOrchestrator {
           }
         }
         usage.toolCalls += calls.length;
-        // A slow lookup (music, search) with nothing said yet: a quick line so
-        // the silence doesn't feel like it didn't hear.
-        if (!spoken && this.o.filler && calls.some((c) => tools.find((t) => t.spec.name === c.name)?.slow)) {
-          const f = this.o.filler();
-          spoken = f;
-          yield f;
-        }
         messages.push({ role: 'assistant', content: roundText, toolCalls: calls });
         let ended = calls.length > 0;
         // Lines the tools say for themselves; null once any tool leaves it to the model.
@@ -292,11 +297,26 @@ export class ConversationOrchestrator {
               const args = c.arguments ? (JSON.parse(c.arguments) as Record<string, unknown>) : {};
               opts.onTool?.(tool.timeoutMs ?? 5_000);
               const ctl = AbortSignal.any([signal, AbortSignal.timeout(tool.timeoutMs ?? 5_000)]);
-              const raw = await tool.run(args, ctl, ctx);
+              const acts = typeof tool.acts === 'function' ? tool.acts(args) : tool.acts;
+              if (acts) opts.onWorking?.(true);
+              let raw: string;
+              try {
+                const run = tool.run(args, ctl, ctx);
+                // A slow lookup (music, search) with nothing said yet: a quick line
+                // so the silence doesn't feel like it didn't hear.
+                if (!spoken && tool.slow && (tool.filler || this.o.filler) && !(await quickly(run, this.o.fillerAfterMs ?? 900))) {
+                  const f = tool.filler ?? this.o.filler!();
+                  spoken = f;
+                  yield f;
+                }
+                raw = await run;
+              } finally {
+                if (acts) opts.onWorking?.(false);
+              }
               result = asUntrustedData(c.name, raw);
-              if (typeof tool.acts === 'function' ? tool.acts(args) : tool.acts) opts.onActed?.();
+              if (acts) opts.onActed?.();
               const line = tool.speak?.(args, raw);
-              if (line && lines) lines.push(line);
+              if (line !== undefined && lines) lines.push(line);
               else lines = null;
             } catch (e) {
               result = `Tool ${c.name} failed: ${(e as Error).message}`;
@@ -310,7 +330,7 @@ export class ConversationOrchestrator {
         // A tool that finishes the answer by itself (a sound played): stop here.
         if (ended) break;
         // Done things that say themselves ("Spotify's open."): no second model call.
-        if (lines?.length) {
+        if (lines) {
           for (const l of lines) {
             const s = this.out(l, opts.text);
             if (s) {

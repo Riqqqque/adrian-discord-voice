@@ -56,10 +56,19 @@ describe('tool rounds', () => {
   });
 
   it('says a filler line before a slow tool, not before a quick one', async () => {
-    const slow = new ConversationOrchestrator(new FakeLlm('play_music'), new SessionMemory(), [tool('play_music', 10, { slow: true })], { ...base, filler: () => 'One sec.' });
+    const slow = new ConversationOrchestrator(new FakeLlm('play_music'), new SessionMemory(), [tool('play_music', 30, { slow: true })], { ...base, filler: () => 'One sec.', fillerAfterMs: 1 });
     expect(await ask(slow)).toEqual(['One sec.', 'Result: done.']);
+    const fast = new ConversationOrchestrator(new FakeLlm('play_music'), new SessionMemory(), [tool('play_music', 1, { slow: true })], { ...base, filler: () => 'One sec.', fillerAfterMs: 200 });
+    expect(await ask(fast)).toEqual(['Result: done.']);
     const quick = new ConversationOrchestrator(new FakeLlm('get_time'), new SessionMemory(), [tool('get_time', 10)], { ...base, filler: () => 'One sec.' });
     expect(await ask(quick)).toEqual(['Result: done.']);
+  });
+
+  it('an empty line from a tool means nothing more is said', async () => {
+    const llm = new FakeLlm('play_music');
+    const o = new ConversationOrchestrator(llm, new SessionMemory(), [tool('play_music', 1, { speak: () => '' })], base);
+    expect(await ask(o)).toEqual([]);
+    expect(llm.seen).toHaveLength(1);
   });
 
   it('gives each tool its own time limit', async () => {

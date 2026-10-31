@@ -37,6 +37,8 @@ interface Data {
 }
 
 const key = (s: string) => s.trim().toLowerCase();
+/** YouTube Music credits everyone on a song: the first name is the artist ("Tyler, The Creator" stays whole). */
+const mainArtist = (s: string) => s.split(/,\s+(?!The\b)/)[0] ?? s;
 const clean = (s: string) => s.trim().replace(/\s+/g, ' ').slice(0, MAX_CHARS);
 const has = (list: string[], s: string) => list.some((x) => key(x) === key(s));
 const without = (list: string[], s: string) => list.filter((x) => key(x) !== key(s));
@@ -68,7 +70,7 @@ export class MusicTaste {
 
   /** They asked to hear this artist. */
   played(userId: UserId, artist: string): void {
-    const name = clean(artist);
+    const name = clean(mainArtist(artist));
     if (!name) return;
     const p = this.person(userId);
     const old = p.played[key(name)];

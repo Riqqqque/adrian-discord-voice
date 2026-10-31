@@ -156,6 +156,13 @@ describe('music taste', () => {
     expect(t.top('u1')).toEqual(['Drake']);
   });
 
+  it('counts a song for its artist, not everyone credited', () => {
+    const t = new MusicTaste(undefined);
+    t.played('u', 'Emmanuel Cortes, Emmanuel Cortes Ruiz');
+    t.played('u', 'Tyler, The Creator');
+    expect(t.top('u')).toEqual(['Emmanuel Cortes', 'Tyler, The Creator']);
+  });
+
   it('her own taste is hers: everyone sees it, and it is not the asker\'s', async () => {
     const t = new MusicTaste(undefined);
     await t.tools()[0]!.run({ who: 'you', what: 'like', name: 'Portishead' }, sig(), ctx);
@@ -168,7 +175,7 @@ describe('music taste', () => {
     const t = new MusicTaste(undefined);
     const { p } = player(known('Drake'));
     const play = musicTools(p, t)[0]!;
-    expect(await play.run({ request_type: 'favorites' }, sig(), ctx)).toContain("don't know what Sam likes");
+    expect(play.speak?.({}, await play.run({ request_type: 'favorites' }, sig(), ctx))).toBe('Who do you want to hear?');
     await play.run({ request_type: 'artist', query: 'drake' }, sig(), ctx);
     expect(t.top('u1')).toEqual(['Drake']);
     expect(await play.run({ request_type: 'favorites' }, sig(), ctx)).toContain('music Sam likes');
@@ -220,6 +227,53 @@ describe('listening after an order', () => {
     expect(r.changes.at(-1)).toBe(DEFAULT_CONTROLLER_OPTIONS.followUpMs);
     await r.tick(DEFAULT_CONTROLLER_OPTIONS.followUpMs + 1);
     expect(r.c.listenLeftMs('a')).toBe(0);
+  });
+
+  it('talk or noise while an order is being carried out changes nothing', async () => {
+    let now = 0;
+    const seen: string[] = [];
+    let cancelled = false;
+    let finish = () => {};
+    const c = new ConversationController(
+      {
+        now: () => now,
+        respond: (_u, command, signal) => {
+          seen.push(command);
+          signal.addEventListener('abort', () => (cancelled = true));
+          return new Promise((r) => (finish = () => r('done')));
+        },
+        say: async () => {},
+        isPriority: () => false,
+      },
+      { ...DEFAULT_CONTROLLER_OPTIONS, bargeInMs: 600 },
+    );
+    c.heard({ userId: 'a', text: 'Adrian play drake', woke: true, command: 'play drake' });
+    await new Promise((r) => setTimeout(r, 0));
+    c.working('a', true);
+    c.speaking('a'); // "On it." is playing
+    now += 2000;
+    c.voiceActivity('a', 700);
+    c.heard({ userId: 'a', text: 'on it', woke: false, command: '' });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(cancelled).toBe(false);
+    expect(seen).toEqual(['play drake']);
+    c.working('a', false);
+    c.voiceActivity('a', 700);
+    expect(cancelled).toBe(true);
+    finish();
+  });
+
+  it('"stop listening" leaves the music on, "stop" does not', async () => {
+    const stops: string[] = [];
+    const c = new ConversationController(
+      { now: () => performance.now(), respond: async () => undefined, say: async () => {}, isPriority: () => false, stopOther: (u) => stops.push(u) },
+      DEFAULT_CONTROLLER_OPTIONS,
+    );
+    c.heard({ userId: 'a', text: 'Adrian stop listening', woke: true, command: 'stop listening' });
+    expect(stops).toEqual([]);
+    expect(c.listeningTo('a')).toBe(false);
+    c.heard({ userId: 'a', text: 'Adrian stop', woke: true, command: 'stop' });
+    expect(stops).toEqual(['a']);
   });
 
   it('"shut up" still works right after an order', async () => {
