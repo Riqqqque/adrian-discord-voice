@@ -20,7 +20,9 @@ MODELS=(
   "smart-turn-v3.2-cpu.onnx|https://huggingface.co/pipecat-ai/smart-turn-v3/resolve/f766f81d3cfdf7737ac64aad813d91bbfd56bf93/smart-turn-v3.2-cpu.onnx|2bb026316b14a660486a75b1733cd3fbab8c2fd0314dc9af7be49f8cca967e4f|file"
   # Music from YouTube (0.10.0). YouTube changes break it every few weeks: bump the
   # version and checksum (from the release's SHA2-256SUMS) and ship a new release.
-  "yt-dlp_linux|https://github.com/yt-dlp/yt-dlp/releases/download/2026.10.26/yt-dlp_linux|767ba9dce7052aa196f8b12652f433d76de128ba168966fa84b6394d5e6c6795|bin"
+  # Play a real song through ffmpeg first: 2026.10.26's default TV client looks up
+  # fine, then its stream URL answers ffmpeg with 403.
+  "yt-dlp_linux|https://github.com/yt-dlp/yt-dlp/releases/download/2026.08.19/yt-dlp_linux|58162f9bfdc27458ea47bfcb311cf47028f17d8154a8bf7d689861d46399230a|bin"
 )
 
 command -v say >/dev/null || say() { printf '==> %s\n' "$*"; }

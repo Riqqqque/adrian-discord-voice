@@ -154,7 +154,7 @@ export class ConversationOrchestrator {
     signal: AbortSignal,
     onUsage?: (u: Usage) => void,
     place?: { guildId?: string; channelId?: string },
-    opts: { followUp?: boolean; onSilent?: () => void; onTool?: (timeoutMs: number) => void; onWorking?: (on: boolean) => void; onActed?: () => void; text?: boolean; extra?: string[]; desk?: boolean } = {},
+    opts: { followUp?: boolean; onSilent?: () => void; onTool?: (timeoutMs: number) => void; onWorking?: (on: boolean) => void; onActed?: () => void; onAsked?: () => void; text?: boolean; extra?: string[]; desk?: boolean } = {},
   ): AsyncGenerator<string> {
     const where = `${userId}:${place?.channelId ?? ''}`;
     const turn = (this.turns.get(where) ?? 0) + 1;
@@ -368,6 +368,7 @@ export class ConversationOrchestrator {
         // A tool that finishes the answer by itself (a sound played): stop here.
         if (ended) break;
         if (asked.length) {
+          opts.onAsked?.();
           lines = [...(lines ?? []), ...asked];
           // Speech outlives this call: cut off while saying it, they may not have
           // heard the question, so their next turn must not count as the one after

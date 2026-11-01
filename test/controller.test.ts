@@ -6,13 +6,13 @@ import { ConversationController, DEFAULT_CONTROLLER_OPTIONS, type ControllerDeps
 function rig(priority: string[] = [], extra: Partial<ControllerDeps> = {}) {
   let now = 0;
   const said: string[] = [];
-  const answers: { user: string; command: string; signal: AbortSignal; finish: (outcome?: 'silent' | 'done') => void }[] = [];
+  const answers: { user: string; command: string; signal: AbortSignal; finish: (outcome?: 'silent' | 'done' | 'asked') => void }[] = [];
   const log: string[] = [];
   const c = new ConversationController(
     {
       now: () => now,
       respond: (user, command, signal) =>
-        new Promise<void | 'silent' | 'done'>((resolve) => {
+        new Promise<void | 'silent' | 'done' | 'asked'>((resolve) => {
           answers.push({ user, command, signal, finish: resolve });
           signal.addEventListener('abort', () => resolve());
         }),
@@ -228,6 +228,40 @@ describe('conversation controller', () => {
     c.heard({ userId: 'a', text: 'lol nice', woke: false, command: '' }); // a later follow-up is judged
     await new Promise((res) => setTimeout(res, 0));
     expect(followUps).toEqual([true]);
+  });
+
+  it('after a tool asks them something, their next words are the answer, only theirs and only in time', async () => {
+    let now = 0;
+    const calls: { user: string; command: string; followUp: boolean | undefined }[] = [];
+    const c = new ConversationController(
+      {
+        now: () => now,
+        respond: async (user, command, _s, followUp) => {
+          calls.push({ user, command, followUp });
+          return command === 'message him about the game' ? 'asked' : undefined;
+        },
+        say: async () => {},
+        isPriority: () => false,
+      },
+      DEFAULT_CONTROLLER_OPTIONS,
+    );
+    const settle = () => new Promise((res) => setTimeout(res, 0));
+    c.heard({ userId: 'a', text: 'Hey Adrian, message him about the game', woke: true, command: 'message him about the game' });
+    await settle();
+    c.heard({ userId: 'b', text: 'Yeah.', woke: false, command: '' });
+    await settle();
+    expect(calls).toHaveLength(1);
+    c.heard({ userId: 'a', text: 'Yeah.', woke: false, command: '' });
+    await settle();
+    expect(calls[1]).toEqual({ user: 'a', command: 'Yeah.', followUp: undefined }); // never judged
+
+    calls.length = 0;
+    c.heard({ userId: 'a', text: 'Hey Adrian, message him about the game', woke: true, command: 'message him about the game' });
+    await settle();
+    now += 20_001;
+    c.heard({ userId: 'a', text: 'Yeah.', woke: false, command: '' });
+    await settle();
+    expect(calls).toHaveLength(1); // the question ran out
   });
 
   it('loose wakes (bare name, mid-sentence) are judged by the model', async () => {
