@@ -127,7 +127,7 @@ replace `ADRIAN.exe` with the older `adrian-pc-app-<version>-windows-x64.exe` fr
 the Releases page, renamed to `ADRIAN.exe`.
 
 **If the app stops starting after an update:** the copy it replaced stays next to
-it as `ADRIAN.old.exe` until the new one has run for 3 minutes. In the app's
+it as `ADRIAN.old.exe` until the new one has reached the server and run for 3 minutes. In the app's
 folder (`%LOCALAPPDATA%\A.D.R.I.A.N` if you used the script), delete `ADRIAN.exe`,
 rename `ADRIAN.old.exe` back to `ADRIAN.exe` and start it. Then turn automatic
 updates off until a fixed version is out.
