@@ -39,7 +39,7 @@ sudo adrian logs -f    # live log
 ## The admin page won't open
 
 - It's loopback-only by default. Use an SSH tunnel (`ssh -L 8790:127.0.0.1:8790 you@server`), or reinstall with `--lan`.
-- **"Unknown host name":** you opened it by a host name. Add the name to `server.allowedHosts`.
+- **"Unknown host name":** you opened it by a host name. Add the name to `server.allowedHosts` by editing `/etc/adrian/config.json`, then run `sudo adrian restart` (see [install.md](install.md#4-install-native)).
 - **Forgot the password:** run `sudo adrian reset-admin`, then `sudo adrian setup-code`.
 - **Blank page after building from source:** restart the service after a web rebuild.
 
@@ -50,7 +50,7 @@ sudo adrian logs -f    # live log
 
 ## High memory use
 
-About 1.5 GB in English. Each extra language's voice adds some once it's used, up to about 3.5 GB in total. The service is capped at 5 GB. Turning off languages (`languages false`) keeps it near the lower number.
+About 3.5 GB by default, because Whisper and the language voices load at every start. Turning off languages (`languages false`) brings it to about 1.5 GB. The service is capped at 5 GB (4 GB in Docker).
 
 ## Updates
 

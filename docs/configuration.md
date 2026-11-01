@@ -1,6 +1,6 @@
 # Configuration
 
-Settings live in `/etc/adrian/config.json`, and keys live in `/etc/adrian/secrets.env`. Change them with the admin page, or by dotted path with the `adrian` command:
+Settings live in `/etc/adrian/config.json`, and keys live in `/etc/adrian/secrets.env`. Change them with the admin page, or by dotted path with the `adrian` command (`server.*` and `allowedGuilds` are the exceptions, see below):
 
 ```bash
 sudo adrian config music.volume            # show a value
@@ -11,13 +11,15 @@ sudo adrian restart                        # most settings apply on restart
 
 `adrian config` validates against the schema and won't save an invalid value. File paths (models, secrets, usage file) belong to the installer and can't be changed this way.
 
+`server.*` and `allowedGuilds` can't be changed with `adrian config` or the admin page. Edit the file by hand with `sudo nano /etc/adrian/config.json`, keep it valid JSON, then run `sudo adrian restart`. `allowedGuilds` is a top-level array of server IDs: `"allowedGuilds": ["123456789012345678"],`.
+
 ## Discord
 
 | Setting | Default | Meaning |
 |---|---|---|
 | `guildId` | (required) | The home server's ID |
 | `channelId` | (required) | The home voice channel's ID; it joins this at start |
-| `allowedGuilds` | `[]` | Servers where `/join` works; empty means any server the bot was invited to |
+| `allowedGuilds` | `[]` | Servers where `/join` works; empty means any server the bot was invited to. Hand edit only (see above). |
 | `priorityRoleIds` | `[]` | Role IDs whose members may interrupt anyone's answer |
 | `owners` | `[]` | User IDs with owner rights (the app owner always has them); max 10 |
 | `timezone` | the installer's system time zone | For "what time is it", timers and the daily spend cap |
@@ -35,8 +37,17 @@ sudo adrian restart                        # most settings apply on restart
 | `listen.asrThreads` | `4` | CPU threads for speech recognition |
 | `listen.wakeName` | `"adrian"` | The name it listens for |
 | `listen.logTranscripts` | `false` | Development only: log what people say. Leave off. |
+| `satellite.enabled` | `false` | The endpoint PCs connect to (see [pc-app.md](pc-app.md)) |
+| `satellite.bind` | `"0.0.0.0"` | Address that endpoint listens on |
+| `satellite.port` | `8791` | Port that endpoint listens on |
+| `satellite.logTranscripts` | `false` | For fixing misunderstandings: log what PCs hear and what she answers. Leave off otherwise. |
 | `satellite.recordDays` | `0` | Keep recordings of requests made at a PC (never side talk) for this many days, in `<state>/pc-recordings`, to test speech-to-text on your own voice. 0 = off. |
 | `satellite.unfinishedWaitMs` | `1200` | At a PC, when a pause sounds mid-sentence (the Smart Turn model), wait this much longer before answering, in ms. 0 = off (only the plain silence wait). |
+| `cloudStt.enabled` | `false` | A second, more accurate listen on Groq for speech meant for her. The local model still does the listening and decides what's meant for her. |
+| `cloudStt.apiKeySecret` | `"GROQ_API_KEY"` | Name of the key in `secrets.env` |
+| `cloudStt.model` | `"whisper-large-v3-turbo"` | Groq speech model |
+| `cloudStt.rooms` | `"pc"` | `pc`: PCs, and anyone in the call with a PC connected. `all`: everyone in the call too |
+| `cloudStt.timeoutMs` | `1500` | Longest wait before using the local words, 300 to 5000 ms |
 
 ## Language model
 
@@ -115,7 +126,7 @@ With Claude, the bot uses prompt caching. The rules, the tool descriptions and e
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `voice.voice` | `"af_heart"` | Built-in voice, one of 54 (`adrian voice` lists the English ones) |
+| `voice.voice` | `"af_heart"` | Built-in voice, one of 54 (the admin page's Voice step lists the English ones; `adrian voice` shows the current one) |
 | `voice.speed` | `1.0` | 0.7 to 1.4 in the CLI and admin page |
 | `voice.threads` | `4` | CPU threads for the voice |
 | `cloudVoice.enabled` | `true` when the block exists | Cloud voice for English replies |
@@ -167,6 +178,8 @@ At a cap, it says once that it's paused and stops calling the paid model. Things
 
 ## Admin page
 
+These are hand edits to `config.json` (see the top of this page).
+
 | Setting | Default | Meaning |
 |---|---|---|
 | `server.host` | `127.0.0.1` | `0.0.0.0` with `--lan` |
@@ -179,7 +192,7 @@ At a cap, it says once that it's paused and stops calling the paid model. Things
 | Name | Used for |
 |---|---|
 | `DISCORD_TOKEN` | The bot token (required) |
-| `ANTHROPIC_API_KEY`, `GROQ_API_KEY`, `GEMINI_API_KEY`, `LLM_API_KEY` | Language models (whichever `brain.apiKeySecret` names) |
+| `ANTHROPIC_API_KEY`, `GROQ_API_KEY`, `GEMINI_API_KEY`, `LLM_API_KEY` | Language models (whichever `brain.apiKeySecret` names). `GROQ_API_KEY` is also the default for `cloudStt`. |
 | `TAVILY_API_KEY` | Web search |
 | `SPEECHIFY_API_KEY` | Cloud voice |
 | `PLEX_TOKEN`, `SONARR_API_KEY`, `RADARR_API_KEY` | Media (read-only) |

@@ -65,7 +65,7 @@ This is one module of the A.D.R.I.A.N. household assistant suite. Every module f
 |---|---|---|
 | OS | Linux x86_64 with systemd and glibc (Ubuntu 24.04 and Debian 12 are tested) | Ubuntu 24.04 |
 | CPU | 4 cores | 8 threads, recent desktop or server CPU |
-| Memory | 3 GB free (about 1.5 GB used in English, up to about 3.5 GB with every language voice loaded) | 8 GB+ |
+| Memory | 4 GB free (about 3.5 GB once the language voices load, which happens at every start; about 1.5 GB with `languages` set to false) | 8 GB+ |
 | Disk | 3 GB free (models are about 1.5 GB) | |
 | Other | `ffmpeg` for music (`sudo apt install ffmpeg`) | |
 
@@ -80,10 +80,12 @@ Docker is supported as an alternative to the native install (see [docs/install.m
 The full walkthrough, including creating the Discord bot and getting each key, is in **[docs/install.md](docs/install.md)**. The short version:
 
 ```bash
-# 1. Download a release bundle and its checksum (Releases page of this repo)
-VER=0.13.4
-curl -LO https://github.com/Riqqqque/adrian-discord-voice/releases/download/v$VER/adrian-voice-$VER-linux-x64.tar.gz
-curl -LO https://github.com/Riqqqque/adrian-discord-voice/releases/download/v$VER/adrian-voice-$VER-linux-x64.tar.gz.sha256
+# 1. Find the newest release and download its bundle and checksum
+#    (to install a particular version, set VER=x.y.z yourself instead)
+VER=$(curl -fsSL https://api.github.com/repos/Riqqqque/adrian-discord-voice/releases/latest | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p')
+echo "Newest release: ${VER:?could not read it from GitHub, set VER by hand from the Releases page}"
+curl -fLO https://github.com/Riqqqque/adrian-discord-voice/releases/download/v$VER/adrian-voice-$VER-linux-x64.tar.gz
+curl -fLO https://github.com/Riqqqque/adrian-discord-voice/releases/download/v$VER/adrian-voice-$VER-linux-x64.tar.gz.sha256
 sha256sum -c adrian-voice-$VER-linux-x64.tar.gz.sha256
 
 # 2. Unpack the installer and run it
@@ -129,7 +131,7 @@ All commands: [docs/install.md#the-adrian-command](docs/install.md#the-adrian-co
 
 ## Configuration
 
-Most settings are in the admin page. Everything else is one command away, for example:
+The main settings are in the admin page. Almost everything else is one command away, for example:
 
 ```bash
 sudo adrian config owners '["123456789012345678"]'
@@ -142,8 +144,8 @@ Every setting, with its default, is listed in **[docs/configuration.md](docs/con
 
 ## Privacy and security
 
-- **Stays on your machine:** speech recognition and the built-in voices. Audio is never stored or uploaded.
-- **Leaves your machine:** the transcribed question and recent conversation go to your language model, which also writes the short per-person memory notes. Web searches go to Tavily if enabled. English replies go to Speechify if you turn on the cloud voice.
+- **Stays on your machine:** speech recognition and the built-in voices. By default audio is never stored or uploaded. Two options change that: `cloudStt` sends speech meant for her to Groq for a second transcription, and `satellite.recordDays` keeps recordings of PC requests.
+- **Leaves your machine:** the transcribed question and recent conversation go to your language model, which also writes the short per-person memory notes. Web searches go to Tavily if enabled. English replies go to Speechify if you turn on the cloud voice. Music searches go to YouTube. Artist names and plain "play X" requests also go to Deezer for top songs (`music.topSongs`, on by default).
 - **Keys:** kept in `/etc/adrian/secrets.env` (mode 0600). The admin page can set keys but never shows them, and each setting can only use a key meant for its own job.
 - **The service:** runs as an unprivileged user under strict systemd sandboxing. The admin page is loopback-only by default, with argon2id passwords, CSRF protection, rate limiting, a strict CSP and a DNS-rebinding guard.
 - **Other services:** Plex, Sonarr, Radarr and the game-server checks are read-only.

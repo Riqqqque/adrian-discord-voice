@@ -63,13 +63,15 @@ A.D.R.I.A.N. listens to a voice channel anyone in your server can join, holds AP
 - **Release bundles** are protected by SHA-256 checksums, not signatures. Download them from this repository's Releases page over HTTPS.
 - **Backups** (`adrian backup`) contain your keys. Store them like passwords.
 - **`listen.logTranscripts`** writes what people say into the log. It's for debugging only; leave it off.
+- **`satellite.logTranscripts`** writes what PCs hear, side talk included, and what she answers into the log. With `cloudStt` on, it also logs what PC owners say to her in a Discord call. It's for fixing misunderstandings; leave it off otherwise.
 - **`satellite.recordDays`** saves the audio of requests made at a PC (only speech already judged as meant for her) with what each listener heard, in the state folder, deleted after that many days. Off by default.
+- **`cloudStt`** sends audio to Groq for a second transcription, so that audio leaves your server. It covers speech already judged as meant for her: at a PC, from anyone in the call with a PC connected, and from everyone in the call with `cloudStt.rooms` set to `all`. Off by default.
 - **Channel context** (text chat with Message Content on) sends a channel's recent messages, written by people who never addressed the bot, to your language-model provider whenever it answers there. Nothing is stored. Use `textChat.readChannels false` or `allowedGuilds` if that doesn't fit a server.
 - **Server lookups and messaging.** server_info shows only channels the asker can see. message_member always names the sender, pings only the one recipient, refuses channels the sender can't post in, and is rate limited per sender and per recipient. People can still use it to annoy each other within those limits; turn off `messaging.enabled` if that's a problem in your server.
 - **Mature mode** depends on the language model following its instructions. It isn't a content filter.
 - **Music taste** (`music-taste.json` in the state folder) keeps which artists each person asks for and any likes or dislikes they state. A person's taste only goes into their own prompts. Her own taste goes into everyone's.
-- **Top songs** (`music.topSongs`) sends the artist's name to Deezer's public API, with no account or key. Turn it off if you'd rather not.
-- **YouTube playback** uses yt-dlp, which isn't sanctioned by YouTube's terms of service. You decide whether to keep `music.enabled` on.
+- **Top songs** (`music.topSongs`) sends the artist's name to Deezer's public API, with no account or key. A plain "play X" sends X, to find out whether it's an artist. Turn it off if you'd rather not.
+- **YouTube playback** sends music searches to YouTube through yt-dlp, which isn't sanctioned by YouTube's terms of service. You decide whether to keep `music.enabled` on.
 
 ## Reporting a vulnerability
 
