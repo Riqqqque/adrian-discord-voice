@@ -22,7 +22,7 @@ import type { UsageLedger } from '../limits/usage-ledger.js';
 import { KOKORO_VOICES } from '../speech/voices.js';
 import type { AdminAuth, Session } from './auth.js';
 import { checkDiscordToken, checkHardware, checkLlm, checkTavily, LLM_PRESETS, listVoiceChannels } from './checks.js';
-import { SECRET_NAME, type SecretsFile, writeJsonFile } from './secrets-file.js';
+import { SECRET_NAME, type SecretsFile, writeConfigFile } from './secrets-file.js';
 import { applySettings, CustomLlmSchema, type InstallPaths, SettingsPatchSchema, settingsView } from './settings.js';
 
 export interface WebDeps {
@@ -233,6 +233,22 @@ export function createAdminServer(d: WebDeps): Server {
     const path = url.pathname;
     const method = req.method ?? 'GET';
     const s = d.stack;
+    // A config file that can't be read is for the admin to fix, so say why
+    // instead of a bare 500.
+    const savedConfig = (): Record<string, unknown> => {
+      try {
+        return s.rawConfig();
+      } catch (e) {
+        throw new HttpError(409, (e as Error).message);
+      }
+    };
+    const setupProblems = (): string[] => {
+      try {
+        return s.problems();
+      } catch (e) {
+        return [(e as Error).message];
+      }
+    };
 
     if (path === '/api/status' && method === 'GET') {
       const ans = s.current?.answers() ?? [];
@@ -243,7 +259,7 @@ export function createAdminServer(d: WebDeps): Server {
         version: d.version,
         state: s.state,
         error: s.error ?? null,
-        problems: s.state === 'setup' ? s.problems() : [],
+        problems: s.state === 'setup' ? setupProblems() : [],
         voiceReady: s.current?.voiceReady() ?? false,
         botTag: s.current?.botTag() ?? null,
         uptimeS: s.uptimeS,
@@ -253,13 +269,13 @@ export function createAdminServer(d: WebDeps): Server {
       });
     }
     if (path === '/api/settings' && method === 'GET') {
-      return json(res, 200, { settings: settingsView(s.rawConfig()), presets: LLM_PRESETS, voices: KOKORO_VOICES });
+      return json(res, 200, { settings: settingsView(savedConfig()), presets: LLM_PRESETS, voices: KOKORO_VOICES });
     }
     if (path === '/api/settings' && method === 'PUT') {
       const parsed = SettingsPatchSchema.safeParse(await body(req));
       if (!parsed.success) throw new HttpError(400, parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; '));
-      const next = applySettings(s.rawConfig(), parsed.data, d.paths);
-      writeJsonFile(d.paths.configFile, next, 0o640);
+      const next = applySettings(savedConfig(), parsed.data, d.paths);
+      writeConfigFile(d.paths.configFile, next);
       d.log.info('settings changed', { by: session.username, keys: Object.keys(parsed.data) });
       return json(res, 200, { ok: true, settings: settingsView(next), problems: s.problems() });
     }
@@ -366,7 +382,7 @@ export function createAdminServer(d: WebDeps): Server {
     if (path === '/api/restart' && method === 'POST') {
       d.log.info('restart requested', { by: session.username });
       const state = await s.restart();
-      return json(res, 200, { state, error: s.error ?? null, problems: state === 'setup' ? s.problems() : [] });
+      return json(res, 200, { state, error: s.error ?? null, problems: state === 'setup' ? setupProblems() : [] });
     }
     if (path === '/api/logs' && method === 'GET') {
       return json(res, 200, { lines: recentLogLines().slice(-200) });

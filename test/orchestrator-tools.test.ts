@@ -1,13 +1,18 @@
 import { describe, expect, it } from 'vitest';
-import { ConversationOrchestrator } from '../src/brain/orchestrator.js';
+import { ConversationOrchestrator, type Usage } from '../src/brain/orchestrator.js';
+import { LlmHttpError } from '../src/brain/openai-compatible.js';
 import { SessionMemory } from '../src/brain/sessions.js';
 import type { ChatMessage, LlmEvent, LlmProvider, Tool, ToolSpec } from '../src/core/interfaces.js';
+import { Reminders } from '../src/features/reminders.js';
 
 /** Round 1 calls `toolName`; round 2 answers with the tool's result. */
 class FakeLlm implements LlmProvider {
   readonly model = 'fake';
   seen: { tools?: string[]; toolChoice?: string; system: { content: string; cache?: boolean }[]; firstUser?: string; cachedHistory?: boolean }[] = [];
-  constructor(private readonly toolName: string) {}
+  constructor(
+    private readonly toolName: string,
+    private readonly args = '{}',
+  ) {}
   async *stream(messages: ChatMessage[], opts: { tools?: ToolSpec[]; toolChoice?: 'none' }): AsyncIterable<LlmEvent> {
     this.seen.push({
       ...(opts.tools ? { tools: opts.tools.map((t) => t.name) } : {}),
@@ -21,7 +26,7 @@ class FakeLlm implements LlmProvider {
       yield { type: 'text', delta: `Result: ${last.content.includes('done') ? 'done' : 'failed'}.` };
       return;
     }
-    yield { type: 'toolCalls', calls: [{ id: 't1', name: this.toolName, arguments: '{}' }] };
+    yield { type: 'toolCalls', calls: [{ id: 't1', name: this.toolName, arguments: this.args }] };
   }
 }
 
@@ -53,6 +58,29 @@ describe('tool rounds', () => {
     const asks = new ConversationOrchestrator(llm2, new SessionMemory(), [tool('pc_info', 5, { speak: () => undefined })], base);
     expect(await ask(asks)).toEqual(['Result: done.']);
     expect(llm2.seen).toHaveLength(2);
+  });
+
+  it('passes the asker to speak', async () => {
+    let who: string | undefined;
+    const speak: Tool['speak'] = (_a, _r, ctx) => {
+      who = ctx.userId;
+      return 'Done.';
+    };
+    await ask(new ConversationOrchestrator(new FakeLlm('pc_apps'), new SessionMemory(), [tool('pc_apps', 1, { speak })], base));
+    expect(who).toBe('u');
+  });
+
+  it('a timer confirms itself; a refused one goes back to the model', async () => {
+    const tools = () => new Reminders(undefined, 'UTC', () => {}).tools();
+    const ok = new FakeLlm('set_timer', '{"minutes":5}');
+    expect(await ask(new ConversationOrchestrator(ok, new SessionMemory(), tools(), base))).toEqual(['Timer set for 5 minutes.']);
+    expect(ok.seen).toHaveLength(1);
+    const refused = new FakeLlm('set_timer');
+    await ask(new ConversationOrchestrator(refused, new SessionMemory(), tools(), base));
+    expect(refused.seen).toHaveLength(2);
+    const other = new FakeLlm('set_timer', '{"minutes":5}');
+    await ask(new ConversationOrchestrator(other, new SessionMemory(), new Reminders(undefined, 'UTC', () => {}).tools(() => false), base));
+    expect(other.seen).toHaveLength(2); // only the model can say it in their language
   });
 
   it('says a filler line before a slow tool, not before a quick one', async () => {
@@ -122,5 +150,130 @@ describe('tools that end the turn', () => {
   it('if it failed, the model still answers', async () => {
     const o = new ConversationOrchestrator(new FakeLlm('play_sound'), new SessionMemory(), [tool('play_sound', 200, { endsTurn: true, timeoutMs: 20 })], base);
     expect(await ask(o)).toEqual(['Result: failed.']);
+  });
+});
+
+describe('a stop', () => {
+  /** Round 1 asks for each named tool; later rounds answer. */
+  class Scripted implements LlmProvider {
+    readonly model = 'fake';
+    calls = 0;
+    constructor(private readonly names: string[]) {}
+    async *stream(): AsyncIterable<LlmEvent> {
+      if (++this.calls > 1) {
+        yield { type: 'text', delta: 'Answer.' };
+        return;
+      }
+      yield { type: 'toolCalls', calls: this.names.map((name, i) => ({ id: `t${i}`, name, arguments: '{}' })) };
+      yield { type: 'usage', inputTokens: 1000, cachedTokens: 0, outputTokens: 100 };
+    }
+  }
+  const run = async (o: ConversationOrchestrator, signal: AbortSignal, onUsage?: (u: Usage) => void) => {
+    for await (const _ of o.ask('u', 'Sean', 'do both', signal, onUsage));
+  };
+
+  it('during a tool ends the answer: no next tool, no next model call', async () => {
+    const llm = new Scripted(['first', 'second']);
+    let second = 0;
+    const o = new ConversationOrchestrator(llm, new SessionMemory(), [tool('first', 1000), { ...tool('second', 1), run: async () => (second++, 'done') }], base);
+    const ctl = new AbortController();
+    setTimeout(() => ctl.abort(), 30);
+    await expect(run(o, ctl.signal)).rejects.toThrow('cancelled');
+    expect(llm.calls).toBe(1);
+    expect(second).toBe(0);
+  });
+
+  it('during the wait before a retry sends nothing more', async () => {
+    let calls = 0;
+    const llm: LlmProvider = {
+      model: 'fake',
+      async *stream() {
+        calls++;
+        throw new LlmHttpError(503, 'busy');
+      },
+    };
+    const ctl = new AbortController();
+    setTimeout(() => ctl.abort(), 30);
+    await expect(run(new ConversationOrchestrator(llm, new SessionMemory(), [], base), ctl.signal)).rejects.toThrow('cancelled');
+    expect(calls).toBe(1);
+  });
+
+  it("doesn't wait for a tool that ignores it, and still reports the round already paid for", async () => {
+    let release!: (v: string) => void;
+    const stuck = new Promise<string>((r) => (release = r));
+    const o = new ConversationOrchestrator(new Scripted(['pc_info']), new SessionMemory(), [{ ...tool('pc_info', 1), run: () => stuck }], base);
+    const ctl = new AbortController();
+    setTimeout(() => ctl.abort(), 30);
+    let usage: Usage | undefined;
+    await expect(run(o, ctl.signal, (u) => (usage = u))).rejects.toThrow('cancelled');
+    release('done'); // the answer ended while the tool was still out
+    expect(usage).toMatchObject({ inputTokens: 1000, outputTokens: 100 });
+  });
+
+  /** Says `said`, then hangs until stopped; `before` is a round that comes first. */
+  const cutOff = (said: string, before?: LlmEvent[]): LlmProvider => ({
+    model: 'fake',
+    async *stream(_m, opts) {
+      if (before) {
+        const events = before;
+        before = undefined;
+        yield* events;
+        return;
+      }
+      yield { type: 'text', delta: said };
+      await new Promise((_, rej) => opts.signal!.addEventListener('abort', () => rej(new Error('aborted')), { once: true }));
+    },
+  });
+
+  it('partway through a stream counts an estimate, since usage never arrives', async () => {
+    const o = new ConversationOrchestrator(cutOff('x'.repeat(400)), new SessionMemory(), [], base);
+    const ctl = new AbortController();
+    setTimeout(() => ctl.abort(), 30);
+    let usage: Usage | undefined;
+    await expect(run(o, ctl.signal, (u) => (usage = u))).rejects.toThrow();
+    expect(usage!.outputTokens).toBe(100); // about four characters a token
+    expect(usage!.inputTokens).toBeGreaterThan(100); // the prompt itself
+  });
+
+  it('adds that estimate to what the rounds before it really cost', async () => {
+    const round: LlmEvent[] = [
+      { type: 'toolCalls', calls: [{ id: 't1', name: 'lookup', arguments: '{}' }] },
+      { type: 'usage', inputTokens: 1000, cachedTokens: 0, outputTokens: 100 },
+    ];
+    const o = new ConversationOrchestrator(cutOff('x'.repeat(40), round), new SessionMemory(), [tool('lookup', 1)], base);
+    const ctl = new AbortController();
+    setTimeout(() => ctl.abort(), 30);
+    let usage: Usage | undefined;
+    await expect(run(o, ctl.signal, (u) => (usage = u))).rejects.toThrow();
+    expect(usage!.outputTokens).toBe(110);
+    expect(usage!.inputTokens).toBeGreaterThan(1000);
+  });
+
+  it("doesn't estimate a round that already reported its usage", async () => {
+    const llm: LlmProvider = {
+      model: 'fake',
+      async *stream(_m, opts) {
+        yield { type: 'text', delta: 'x'.repeat(400) };
+        yield { type: 'usage', inputTokens: 1000, cachedTokens: 0, outputTokens: 100 };
+        await new Promise((_, rej) => opts.signal!.addEventListener('abort', () => rej(new Error('aborted')), { once: true }));
+      },
+    };
+    const ctl = new AbortController();
+    setTimeout(() => ctl.abort(), 30);
+    let usage: Usage | undefined;
+    await expect(run(new ConversationOrchestrator(llm, new SessionMemory(), [], base), ctl.signal, (u) => (usage = u))).rejects.toThrow();
+    expect(usage).toMatchObject({ inputTokens: 1000, outputTokens: 100 });
+  });
+
+  it("estimates nothing for a model error: that wasn't a stop, and it isn't charged", async () => {
+    const llm: LlmProvider = {
+      model: 'fake',
+      async *stream() {
+        throw new LlmHttpError(400, 'bad request');
+      },
+    };
+    let usage: Usage | undefined;
+    await expect(run(new ConversationOrchestrator(llm, new SessionMemory(), [], base), new AbortController().signal, (u) => (usage = u))).rejects.toThrow('bad request');
+    expect(usage).toMatchObject({ inputTokens: 0, outputTokens: 0 });
   });
 });

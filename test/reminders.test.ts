@@ -52,4 +52,46 @@ describe('timers and reminders', () => {
       'Sean, reminder: stretch. Sorry, this is 10 minutes late; I was offline.',
     );
   });
+
+  describe('saying it was done', () => {
+    const signal = AbortSignal.timeout(1000);
+    const now = () => Date.UTC(2026, 9, 16, 12);
+    /** What the tool says for itself after this call. */
+    const said = async (r: Reminders, name: string, args: Record<string, unknown>) => {
+      const t = r.tools().find((x) => x.spec.name === name)!;
+      return t.speak!(args, await t.run(args, signal, ctx), ctx);
+    };
+
+    it('confirms in a few words', async () => {
+      const r = new Reminders(undefined, 'UTC', () => {}, now);
+      expect(await said(r, 'set_timer', { minutes: 5 })).toBe('Timer set for 5 minutes.');
+      expect(await said(r, 'set_timer', { hours: 1, minutes: 30, label: 'pizza' })).toBe('Timer set for 1 hour 30 minutes.');
+      expect(await said(r, 'set_reminder', { text: 'stretch', in_minutes: 60 })).toBe('Reminder set, in 1 hour.');
+      expect(await said(r, 'set_reminder', { text: 'call mom', at: '2026-10-16T18:00' })).toBe('Reminder set, in 6 hours.');
+      expect(await said(r, 'cancel_timer', { which: 'pizza' })).toBe('Cancelled.');
+    });
+
+    it('is not fooled by what the timer is for', async () => {
+      const r = new Reminders(undefined, 'UTC', () => {}, now);
+      expect(await said(r, 'set_timer', { minutes: 5, label: 'tea (in 2 cups).' })).toBe('Timer set for 5 minutes.');
+    });
+
+    it('leaves anything that went wrong to the model', async () => {
+      const r = new Reminders(undefined, 'UTC', () => {}, now);
+      expect(await said(r, 'set_timer', {})).toBeUndefined();
+      expect(await said(r, 'set_reminder', { text: '' })).toBeUndefined();
+      expect(await said(r, 'set_reminder', { text: 'x' })).toBeUndefined();
+      expect(await said(r, 'set_reminder', { text: 'x', at: '2026-10-16T11:00' })).toBeUndefined();
+      expect(await said(r, 'cancel_timer', { which: 'nothing like this' })).toBeUndefined();
+    });
+
+    it('leaves the words to the model for someone speaking another language', async () => {
+      const r = new Reminders(undefined, 'UTC', () => {}, now);
+      const tools = r.tools((id) => id !== ctx.userId);
+      for (const [name, args] of [['set_timer', { minutes: 5 }], ['set_reminder', { text: 'x', in_minutes: 5 }], ['cancel_timer', { which: 'x' }]] as const) {
+        const t = tools.find((x) => x.spec.name === name)!;
+        expect(t.speak!(args, await t.run(args, signal, ctx), ctx)).toBeUndefined();
+      }
+    });
+  });
 });

@@ -121,9 +121,24 @@ describe('session memory', () => {
   });
 
   it('caps the number of turns', () => {
-    const m = new SessionMemory(2);
-    for (const c of ['1', '2', '3']) m.append('a', { role: 'user', content: c });
-    expect(m.history('a').map((t) => t.content)).toEqual(['2', '3']);
+    const m = new SessionMemory(4);
+    for (const c of ['1', '2', '3', '4', '5']) m.append('a', { role: 'user', content: c });
+    expect(m.history('a').map((t) => t.content)).toEqual(['4', '5']);
+  });
+
+  it('drops old turns in a block, so the start of the history stays the same for the next calls', () => {
+    const m = new SessionMemory(16);
+    const say = (n: number) => m.append('a', { role: n % 2 ? 'assistant' : 'user', content: `${n}` });
+    for (let n = 0; n < 17; n++) say(n); // one past the cap
+    expect(m.history('a').map((t) => t.content)).toEqual(['9', '10', '11', '12', '13', '14', '15', '16']);
+    const prefix = m.history('a');
+    for (let n = 17; n < 25; n++) {
+      say(n);
+      expect(m.history('a').slice(0, prefix.length)).toEqual(prefix); // a cached prefix keeps matching
+    }
+    expect(m.history('a')).toHaveLength(16);
+    say(25);
+    expect(m.history('a')).toHaveLength(8); // the next block
   });
 });
 

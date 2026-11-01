@@ -6,5 +6,8 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 ExecStart=/usr/local/bin/adrian update --auto
+# A backstop: downloads.sh already gives up on a stalled connection within minutes.
+# This one has to outlast a whole set of new models coming down a slow line.
+TimeoutStartSec=2h
 Nice=10
 IOSchedulingClass=idle

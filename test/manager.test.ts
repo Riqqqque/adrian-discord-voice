@@ -1,8 +1,42 @@
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { configProblems } from '../src/app/manager.js';
+import { configProblems, StackManager } from '../src/app/manager.js';
+import { createLogger } from '../src/core/logger.js';
+import { UsageLedger } from '../src/limits/usage-ledger.js';
+import { SecretsFile } from '../src/web/secrets-file.js';
 import { applySettings } from '../src/web/settings.js';
 
 const paths = { secretsFile: '/etc/adrian/secrets.env', stateDir: '/var/lib/adrian', modelsDir: '/var/lib/adrian/models' };
+
+function manager(configFile: string): StackManager {
+  const ledger = new UsageLedger(undefined, { perUserPerHour: 30, dailyUsd: 1, monthlyUsd: 10 }, 'UTC');
+  return new StackManager(configFile, new SecretsFile(`${configFile}.secrets`), ledger, createLogger('error', () => undefined), paths);
+}
+
+describe('starting from the config file', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'adrian-manager-'));
+
+  it('fails with the reason when the file does not parse, and leaves it alone', async () => {
+    const configFile = join(dir, 'config.json');
+    const broken = '{\n  "guildId": "100000000000000010",\n}\n';
+    writeFileSync(configFile, broken);
+    const m = manager(configFile);
+    await expect(m.restart()).resolves.toBe('failed');
+    expect(m.error).toContain('config.json');
+    expect(m.error).toContain('line 3');
+    expect(() => m.rawConfig()).toThrow(/config\.json/);
+    expect(readFileSync(configFile, 'utf8')).toBe(broken);
+  });
+
+  it('is plain setup mode when there is no file yet', async () => {
+    const m = manager(join(dir, 'none.json'));
+    await expect(m.restart()).resolves.toBe('setup');
+    expect(m.error).toBeUndefined();
+    expect(m.rawConfig().secretsFile).toBeDefined();
+  });
+});
 
 describe('setup readiness', () => {
   it('lists what is missing in plain words', () => {

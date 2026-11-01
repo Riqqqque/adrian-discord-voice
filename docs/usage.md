@@ -18,7 +18,7 @@ Speech recognition spells unusual names oddly, so it tolerates misspellings like
 
 - **One answer at a time.** Up to 2 more requests wait in line; requests that wait too long are dropped with "Sorry, I missed that."
 - **Interrupting:** the person being answered can interrupt by talking for about 2.5 seconds, or by saying the name. Laughs and short reactions don't cut it off.
-- **"Stop", "shut up", "be quiet", "never mind", "stfu":** from anyone, these stop the current answer immediately.
+- **"Stop", "shut up", "be quiet", "never mind", "stfu":** from anyone, these stop the current answer immediately. "Shut up", "be quiet" and "stfu" also count at the start of a short remark (up to 8 words, not a question), like "bro, shut up" or "can you be quiet". Anywhere else in a sentence they don't, so "I told her to shut up" changes nothing.
 - **Everyday words:** "done", "quiet", "enough" and "that's it" only stop it when the person being answered says them, or when they come with the name ("Adrian, quiet").
 - **Owners** can stop anyone's answer and go to the front of the line.
 - **Priority roles** (`priorityRoleIds`) can interrupt anyone's answer.
@@ -49,8 +49,8 @@ Everything else goes to the language model.
 | "Play 10 hours of rain sounds" | Any YouTube video's audio, any length. |
 | "Play Sicko Mode next" / "add Humble to the queue" | Adds to the queue (up to 25). |
 | "Play Thriller from Plex" | Uses your Plex music library. |
-| "Skip", "pause", "keep playing", "stop the music" | Controls. |
-| "Shuffle", "clear the queue", "what's playing?", "what's next?" | Queue control and status. |
+| "Skip", "pause", "keep playing", "stop the music", "clear the queue" | Controls. Said just like that, "clear the queue" also stops the current song. |
+| "Shuffle", "what's playing?", "what's next?" | Queue control and status. |
 | "Turn off autoplay" | Stop adding similar songs when the queue ends. |
 
 - **Volume:** music sits under the voice and drops further whenever someone says the name or the bot talks. Noise and talking to other people leave it alone.
@@ -172,4 +172,4 @@ It can look things up about the server it's in, by voice or text: "who's online?
 | `/join` | Joins the voice channel you're in. It won't leave a call that still has people in it unless an owner asks. When it isn't in its home channel, it leaves after 10 minutes alone. |
 | `/leave` | Leaves voice. Use `/join` to bring it back. |
 
-After a restart or update, it goes back to its home channel. To limit which servers `/join` works in, set `allowedGuilds`.
+After a restart or update, it goes back to its home channel. To limit which servers `/join` works in, set `allowedGuilds` by editing the config file (see [configuration.md](configuration.md)).
