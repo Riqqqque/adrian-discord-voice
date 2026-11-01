@@ -5,9 +5,12 @@
 // Frames are written against the wall clock with a small lead (160 ms), so
 // speech written now is heard about now (the encoder would otherwise buffer
 // music seconds ahead), and a stalled event loop is made up right after
-// instead of leaving the buffer short for the rest of the song. When neither
-// channel has anything to play, the playback ends, so Discord doesn't show
-// the bot as talking all the time.
+// instead of leaving the buffer short for the rest of the song. The full lead
+// goes in with the first audio: a new playback opens with just a few silent
+// frames, so that silence isn't what the listener waits through, but sound
+// itself only ever runs on the full lead. When neither channel has anything to
+// play, the playback ends, so Discord doesn't show the bot as talking all the
+// time.
 
 import { PassThrough, type Readable } from 'node:stream';
 import type { PlaybackHandle } from '../core/interfaces.js';
@@ -18,6 +21,10 @@ const FRAME_MS = 20;
 /** Frames kept ahead of the player: covers event-loop hiccups, yet low
  *  enough that speech and ducking still feel immediate. */
 export const LEAD_FRAMES = 8;
+/** Silence ahead of a playback's first sound: paused PC speakers may need it to wake up. */
+export const START_LEAD_FRAMES = 3;
+/** How long a first chunk too small to fill the lead waits for the rest, ms. */
+const START_WAIT_MS = FRAME_MS;
 /** After a stall longer than this, skip ahead instead of bursting. */
 const MAX_CATCH_UP = 50;
 /** Downstream isn't reading (player paused): stop writing past this. */
@@ -129,10 +136,17 @@ export class Mixer {
   /** Current music gain, ramped toward its target to avoid clicks. */
   private gain = 1;
   private duckedUntil = 0;
+  /** When the latest duckFor() came. */
+  private duckedAt = 0;
   private holds = 0;
   /** Clock start of the current playback, and frames written since. */
   private startAt = 0;
   private written = 0;
+  /** The frame the current playback's audio starts at, once that's decided:
+   *  nothing is taken from a source before it. */
+  private audioAt: number | undefined;
+  /** When a source first held audio too short to start on. */
+  private waitingSince: number | undefined;
   /** Since the last takeStats(): frames the music source was empty, frames made up after stalls, longest stall. */
   private stats = { musicGaps: 0, madeUp: 0, longestStallMs: 0 };
   private lastTick = 0;
@@ -191,7 +205,15 @@ export class Mixer {
 
   /** Turn music down for a while (someone woke the bot). */
   duckFor(ms: number): void {
+    this.duckedAt = this.now();
     this.duckedUntil = Math.max(this.duckedUntil, this.now() + ms);
+  }
+
+  /** Bring music back up early (the track someone asked for is starting),
+   *  unless a newer wake came after `since`, a time on the mixer's clock
+   *  (performance.now()). Speech and holds still duck it. */
+  endDuck(since: number): void {
+    if (this.duckedAt <= since) this.duckedUntil = 0;
   }
 
   /** Keep music down until the returned function is called. */
@@ -226,6 +248,24 @@ export class Mixer {
     return this.speech.some((s) => s.buffered > 0 || !s.ended);
   }
 
+  /** Decide where the first audio goes. It goes next if it can fill the lead:
+   *  a source holds enough, or that's all there is, or it played before. A
+   *  first chunk can be small, and silence behind it would be heard as a
+   *  dropout, as would a stall on the short lead. So a small one gets a moment
+   *  to collect the rest, then the lead is made up with silence ahead of it. */
+  private placeAudio(): boolean {
+    const waiting = [...this.speech, ...(this.music && !this.paused ? [this.music] : [])].filter((c) => c.buffered > 0);
+    if (!waiting.length) return false;
+    if (waiting.some((c) => c.buffered >= FRAME_BYTES * LEAD_FRAMES || c.ended || c.started)) {
+      this.audioAt = this.written;
+      return true;
+    }
+    this.waitingSince ??= this.now();
+    if (this.now() - this.waitingSince < START_WAIT_MS) return false;
+    this.audioAt = this.written + LEAD_FRAMES - START_LEAD_FRAMES;
+    return true;
+  }
+
   private wake(): void {
     if (this.timer || !(this.speech.length || (this.music && !this.paused))) return;
     this.out = new PassThrough({ highWaterMark: FRAME_BYTES * LEAD_FRAMES });
@@ -238,6 +278,8 @@ export class Mixer {
     });
     this.startAt = this.now();
     this.written = 0;
+    this.audioAt = undefined;
+    this.waitingSince = undefined;
     const si = this.o.setInterval ?? ((f: () => void, ms: number) => setInterval(f, ms));
     this.timer = si(() => this.tick(), FRAME_MS / 2);
     this.tick();
@@ -263,12 +305,15 @@ export class Mixer {
   /** Write every frame that is due by now (plus the lead). Public for tests. */
   tick(): void {
     if (!this.out) return;
-    const due = Math.floor((this.now() - this.startAt) / FRAME_MS) + LEAD_FRAMES;
+    // Filling the lead with the first audio is not catching up on a stall.
+    const first = this.audioAt === undefined && this.placeAudio();
+    const lead = this.audioAt === undefined ? START_LEAD_FRAMES : LEAD_FRAMES;
+    const due = Math.floor((this.now() - this.startAt) / FRAME_MS) + lead;
     const t = this.now();
     if (this.lastTick) this.stats.longestStallMs = Math.max(this.stats.longestStallMs, Math.round(t - this.lastTick));
     this.lastTick = t;
-    if (due - this.written > 1) this.stats.madeUp += due - this.written - 1;
-    if (due - this.written > MAX_CATCH_UP) this.written = due - LEAD_FRAMES; // long stall: drop the gap
+    if (!first && due - this.written > 1) this.stats.madeUp += due - this.written - 1;
+    if (due - this.written > MAX_CATCH_UP) this.written = due - lead; // long stall: drop the gap
     while (this.out && this.written < due) {
       if (this.out.writableLength > MAX_UNREAD) return; // the player isn't reading
       this.mixFrame();
@@ -279,18 +324,19 @@ export class Mixer {
   private mixFrame(): void {
     const out = this.out;
     if (!out) return;
+    const audio = this.audioAt !== undefined && this.written >= this.audioAt;
 
     // Speech: the oldest channel with audio plays; finished ones resolve.
     while (this.speech.length && this.speech[0]!.drained) this.speech.shift()!.finish('finished');
     const sp = this.speech[0];
-    const sFrame = sp?.take();
+    const sFrame = audio ? sp?.take() : undefined;
 
     const m = this.music;
     if (m?.drained) {
       m.finish('finished');
       this.music = undefined;
     }
-    const mFrame = this.paused ? undefined : this.music?.take();
+    const mFrame = !audio || this.paused ? undefined : this.music?.take();
     if (this.music && !this.paused && !mFrame && this.music.started && !this.music.ended) this.stats.musicGaps++;
 
     this.setVoice(!!sFrame || this.speaking);

@@ -15,6 +15,11 @@ const RATE = 24_000;
 /** Lines up to this long are cached in memory. */
 const SHORT = 40;
 const CALIBRATION = "Sure, here's what I found. It's seventy two degrees and clear right now. The capital of Australia is Canberra.";
+/** After this long without a call the next sentence may stall. */
+const WARM_IDLE_MS = 30 * 60_000;
+const WARM_TIMEOUT_MS = 4_000;
+/** All a warm-up says: every character counts toward the month. */
+const WARM_TEXT = 'Hi.';
 
 export class SpeechifyError extends Error {
   constructor(
@@ -24,6 +29,10 @@ export class SpeechifyError extends Error {
     super(`speechify HTTP ${status}${detail ? `: ${detail}` : ''}`);
   }
 }
+
+/** fetch reports a broken connection as a TypeError caused by the socket
+ *  error. Timeouts and aborts are DOMExceptions; a bad request has no cause. */
+const connectionBroke = (e: unknown) => e instanceof TypeError && e.cause !== undefined;
 
 /** Characters spoken per calendar month (household timezone), persisted. */
 export class CharBudget {
@@ -108,6 +117,8 @@ export class SpeechifyTts implements TextToSpeech {
   /** After a failure, skip the API until this time. */
   private pausedUntil = 0;
   private budgetNoted = false;
+  /** When raw() last went to the API. */
+  private lastCall = -Infinity;
   private readonly short = new Map<string, Float32Array>();
 
   constructor(
@@ -132,9 +143,8 @@ export class SpeechifyTts implements TextToSpeech {
     return true;
   }
 
-  private async raw(text: string, speed: number, signal?: AbortSignal) {
-    const t0 = performance.now();
-    const timeout = AbortSignal.timeout(this.o.timeoutMs);
+  /** One try at the API: the raw PCM bytes. */
+  private async post(text: string, speed: number, signal: AbortSignal): Promise<Buffer> {
     const r = await (this.o.fetch ?? fetch)(API, {
       method: 'POST',
       headers: { Authorization: `Bearer ${this.o.apiKey}`, 'Content-Type': 'application/json' },
@@ -147,13 +157,41 @@ export class SpeechifyTts implements TextToSpeech {
         // Off by default on the stream endpoint; reads digits, times and units.
         options: { text_normalization: true },
       }),
-      signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+      signal,
     });
     if (!r.ok) throw new SpeechifyError(r.status, (await r.text().catch(() => '')).slice(0, 160));
-    const samples = pcm16ToFloat(Buffer.from(await r.arrayBuffer()));
+    return Buffer.from(await r.arrayBuffer());
+  }
+
+  private async raw(text: string, speed: number, signal?: AbortSignal, timeoutMs = this.o.timeoutMs) {
+    const t0 = performance.now();
+    this.lastCall = this.now();
+    const timeout = AbortSignal.timeout(timeoutMs);
+    const limit = signal ? AbortSignal.any([signal, timeout]) : timeout;
+    const bytes = await this.post(text, speed, limit).catch((e: Error) => {
+      // A reused socket can die without warning. That says nothing about the
+      // API, so one more try at once; only a second failure pauses the voice.
+      if (limit.aborted || !connectionBroke(e)) throw e;
+      this.o.log.info('cloud voice connection broke; trying again', { error: (e.cause as Error).message });
+      return this.post(text, speed, limit);
+    });
+    const samples = pcm16ToFloat(bytes);
     if (!samples.length) throw new Error('speechify returned no audio');
     this.o.budget.add(text.length);
     return { samples, sampleRate: RATE, synthMs: Math.round(performance.now() - t0) };
+  }
+
+  /** Long idles are when sentences stall, so a few characters go out ahead of
+   *  the next one when someone starts talking. A failure costs nothing more
+   *  than the stall would have: it's never thrown and never pauses the voice. */
+  async warmIfIdle(): Promise<void> {
+    if (this.now() - this.lastCall <= WARM_IDLE_MS || !this.available(WARM_TEXT.length)) return;
+    try {
+      const a = await this.raw(WARM_TEXT, 1, undefined, WARM_TIMEOUT_MS);
+      this.o.log.info('cloud voice warmed', { ms: a.synthMs });
+    } catch (e) {
+      this.o.log.info('cloud voice warm-up failed', { error: (e as Error).message });
+    }
   }
 
   /** Gain that brings this voice to the target loudness, measured once. */
