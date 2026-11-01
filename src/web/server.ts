@@ -7,8 +7,9 @@
 //   (Secure when served over TLS), 12 h idle / 7 day max.
 // - CSRF: every non-GET request must come from this origin (Origin or
 //   Sec-Fetch-Site) and, once logged in, carry the session's X-CSRF-Token.
-// - Secrets are write-only: the API reports names, never values.
-// - Login and setup-code attempts are rate limited.
+// - Secrets are write-only: the API reports names, never values, and a stored
+//   key only goes to a preset's address or one the config already pairs it with.
+// - Login, setup-code and password-change attempts are rate limited.
 
 import { readFileSync } from 'node:fs';
 import { createServer as createHttp, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
@@ -20,10 +21,10 @@ import type { Logger } from '../core/interfaces.js';
 import { recentLogLines } from '../core/logger.js';
 import type { UsageLedger } from '../limits/usage-ledger.js';
 import { KOKORO_VOICES } from '../speech/voices.js';
-import type { AdminAuth, Session } from './auth.js';
+import { type AdminAuth, LIMIT_WINDOW_MS, type Session } from './auth.js';
 import { checkDiscordToken, checkHardware, checkLlm, checkTavily, LLM_PRESETS, listVoiceChannels } from './checks.js';
 import { SECRET_NAME, type SecretsFile, writeConfigFile } from './secrets-file.js';
-import { applySettings, CustomLlmSchema, type InstallPaths, SettingsPatchSchema, settingsView } from './settings.js';
+import { applySettings, CustomLlmSchema, type InstallPaths, keyRouteProblem, SettingsPatchSchema, settingsView } from './settings.js';
 
 export interface WebDeps {
   /** Host names (besides IP addresses and localhost) the UI answers to. */
@@ -43,6 +44,9 @@ export interface WebDeps {
 
 const COOKIE = 'adrian_session';
 const MAX_BODY = 64 * 1024;
+// Pipelined requests on one socket all run in one pass of the event loop,
+// which the mixer clock and Discord heartbeats share. Past this Node answers 503.
+const MAX_REQUESTS_PER_SOCKET = 100;
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
@@ -64,7 +68,9 @@ function cookies(req: IncomingMessage): Record<string, string> {
   const out: Record<string, string> = {};
   for (const part of (req.headers.cookie ?? '').split(';')) {
     const i = part.indexOf('=');
-    if (i > 0) out[part.slice(0, i).trim()] = decodeURIComponent(part.slice(i + 1).trim());
+    // Not decoded: session tokens are base64url, and a cookie from another
+    // port on this host can hold anything, such as a bare % that would throw.
+    if (i > 0) out[part.slice(0, i).trim()] = part.slice(i + 1).trim();
   }
   return out;
 }
@@ -162,6 +168,18 @@ export function createAdminServer(d: WebDeps): Server {
 
   const clientIp = (req: IncomingMessage) => req.socket.remoteAddress ?? 'unknown';
 
+  /** Log a refused login or setup claim. A 429 only logs once per limit
+   *  window, so a burst can't push everything else out of the dashboard log. */
+  let limitLoggedAt = -Infinity;
+  const logRefused = (msg: string, status: number) => {
+    if (status === 429) {
+      const now = Date.now();
+      if (now - limitLoggedAt < LIMIT_WINDOW_MS) return;
+      limitLoggedAt = now;
+    }
+    d.log.warn(msg, { status });
+  };
+
   async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const url = new URL(req.url ?? '/', 'http://x');
     const path = url.pathname;
@@ -200,7 +218,7 @@ export function createAdminServer(d: WebDeps): Server {
       const b = await body(req);
       const r = await d.auth.claim(clientIp(req), b.code, b.username, b.password);
       if (!r.ok) {
-        if (r.status !== 404) d.log.warn('setup claim refused', { status: r.status });
+        if (r.status !== 404) logRefused('setup claim refused', r.status);
         throw new HttpError(r.status, r.error);
       }
       d.log.info('admin account created', { username: r.session.username });
@@ -211,7 +229,7 @@ export function createAdminServer(d: WebDeps): Server {
       const b = await body(req);
       const r = await d.auth.login(clientIp(req), b.username, b.password);
       if (!r.ok) {
-        d.log.warn('login failed', { status: r.status });
+        logRefused('login failed', r.status);
         throw new HttpError(r.status, r.error);
       }
       setCookie(res, r.token, 7 * 24 * 3600);
@@ -274,7 +292,10 @@ export function createAdminServer(d: WebDeps): Server {
     if (path === '/api/settings' && method === 'PUT') {
       const parsed = SettingsPatchSchema.safeParse(await body(req));
       if (!parsed.success) throw new HttpError(400, parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; '));
-      const next = applySettings(savedConfig(), parsed.data, d.paths);
+      const saved = savedConfig();
+      const refused = keyRouteProblem(saved, parsed.data);
+      if (refused) throw new HttpError(400, refused);
+      const next = applySettings(saved, parsed.data, d.paths);
       writeConfigFile(d.paths.configFile, next);
       d.log.info('settings changed', { by: session.username, keys: Object.keys(parsed.data) });
       return json(res, 200, { ok: true, settings: settingsView(next), problems: s.problems() });
@@ -326,7 +347,9 @@ export function createAdminServer(d: WebDeps): Server {
       }
     }
     if (path === '/api/check/llm' && method === 'POST') {
-      // Test a provider with a pasted key (saved only if it works) or the stored one.
+      // Test a provider with a pasted key (saved only if it works) or the stored
+      // one. A custom endpoint only ever gets a pasted key: its address comes from
+      // this request, so a stored key would go wherever a session pointed it.
       const b = await body(req);
       const preset = LLM_PRESETS.find((p) => p.id === b.preset);
       const custom = b.preset === 'custom' ? CustomLlmSchema.safeParse({ ...b, key: undefined }) : undefined;
@@ -334,7 +357,7 @@ export function createAdminServer(d: WebDeps): Server {
       const c = custom?.success ? custom.data : undefined;
       const keySecret = preset?.keySecret ?? c!.keySecret;
       const given = typeof b.key === 'string' ? b.key.trim() : '';
-      const key = given || (keySecret ? d.secrets.read().get(keySecret) : undefined);
+      const key = given || (preset ? d.secrets.read().get(keySecret) : undefined);
       const r = await checkLlm(
         {
           ...(preset?.provider ? { provider: preset.provider } : {}),
@@ -390,12 +413,16 @@ export function createAdminServer(d: WebDeps): Server {
     if (path === '/api/password' && method === 'POST') {
       const b = await body(req);
       const err = await d.auth.changePassword(session.username, b.current, b.next);
-      if (err) throw new HttpError(400, err);
+      if (err) throw new HttpError(err.status, err.error);
       d.log.info('password changed', { by: session.username });
       return json(res, 200, { ok: true });
     }
     throw new HttpError(404, 'not found');
   }
+
+  // The page's files only change with a release, which restarts the service.
+  // Only real files under web/ get in, so this can't grow past that folder.
+  const staticFiles = new Map<string, Buffer>();
 
   function serveStatic(path: string, res: ServerResponse): void {
     const rel = path === '/' ? 'index.html' : path.slice(1);
@@ -405,16 +432,21 @@ export function createAdminServer(d: WebDeps): Server {
       res.writeHead(404, { 'Content-Type': 'text/plain' }).end('not found');
       return;
     }
-    let data: Buffer;
-    try {
-      data = readFileSync(file);
-    } catch {
-      res.writeHead(404, { 'Content-Type': 'text/plain' }).end('not found');
-      return;
+    let data = staticFiles.get(file);
+    if (!data) {
+      try {
+        data = readFileSync(file);
+      } catch {
+        res.writeHead(404, { 'Content-Type': 'text/plain' }).end('not found');
+        return;
+      }
+      staticFiles.set(file, data);
     }
     res.writeHead(200, { 'Content-Type': MIME[extname(file)]!, 'Content-Length': data.length, 'Cache-Control': 'no-cache' });
     res.end(data);
   }
 
-  return tls ? createHttps({ cert: readFileSync(d.tls!.cert), key: readFileSync(d.tls!.key) }, handler) : createHttp(handler);
+  const server = tls ? createHttps({ cert: readFileSync(d.tls!.cert), key: readFileSync(d.tls!.key) }, handler) : createHttp(handler);
+  server.maxRequestsPerSocket = MAX_REQUESTS_PER_SOCKET;
+  return server;
 }

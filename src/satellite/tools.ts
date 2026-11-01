@@ -1,7 +1,8 @@
 // The model's PC tools. Each one goes to the asker's own connected PC (never
 // one named in the arguments), which checks it against its own settings.
 
-import type { Tool, ToolContext } from '../core/interfaces.js';
+import { PendingYes } from '../brain/tools.js';
+import type { Tool, ToolContext, UserId } from '../core/interfaces.js';
 import type { SatelliteConnection } from './connection.js';
 
 export interface PcToolDeps {
@@ -13,15 +14,57 @@ export interface PcToolDeps {
   findUrl?(query: string, signal: AbortSignal): Promise<string | undefined>;
   /** Every action sent to a PC (for the optional transcript log). */
   onCall?(name: string, args: Record<string, unknown>, result: string): void;
+  /** The PC took a restart or shutdown: it can be called off for 30 seconds. */
+  onPowerDown?(userId: UserId): void;
+  /** Clock for the wait on a yes. */
+  now?(): number;
 }
 
 const NAMES = ['pc_apps', 'pc_open', 'pc_media', 'pc_volume', 'pc_system', 'pc_info'] as const;
 
+/** pc_system actions that need the person's own yes: the question, and what
+ *  a yes may say about it ("yes restart it"). */
+const NEEDS_YES = new Map([
+  ['sleep', { ask: 'Put the PC to sleep?', about: ['sleep', 'put', 'to', 'the', 'pc', 'computer'] }],
+  ['restart', { ask: 'Restart the PC?', about: ['restart', 'reboot', 'the', 'pc', 'computer'] }],
+  ['shutdown', { ask: 'Shut down the PC?', about: ['shut', 'down', 'shutdown', 'turn', 'off', 'the', 'pc', 'computer'] }],
+]);
+const QUESTIONS = new Set([...NEEDS_YES.values()].map((n) => n.ask));
+
+/** How long a restart or shutdown waits on the PC (system.rs). */
+const POWER_DOWN_MS = 30_000;
+
+/** Who has a restart or shutdown counting down, so a plain "cancel" reaches it:
+ *  that's a stop phrase, which never gets as far as the model. */
+export class PowerDownWindow {
+  private readonly until = new Map<UserId, number>();
+
+  constructor(
+    private readonly pcFor: (userId: UserId) => SatelliteConnection | undefined,
+    private readonly now: () => number = Date.now,
+  ) {}
+
+  started(userId: UserId): void {
+    this.until.set(userId, this.now() + POWER_DOWN_MS);
+  }
+
+  /** Call theirs off if it's still counting down. True if it was. */
+  async cancel(userId: UserId): Promise<boolean> {
+    const until = this.until.get(userId);
+    if (until === undefined) return false;
+    this.until.delete(userId);
+    if (this.now() >= until) return false;
+    const r = await this.pcFor(userId)?.action('pc_system', { action: 'cancel_shutdown' });
+    return r?.ok ?? false;
+  }
+}
+
 /** Prompt line: when to use them. */
 export const PC_RULE =
-  "If the person has their PC connected (the PC satellite), you can control it with the pc_ tools: open, close or switch to apps and games, open websites, YouTube and folders, control what's playing, set volume (also per app), lock it, turn the screens off, sleep, restart or shut it down, and check CPU, memory and disk. When someone talks to you through their PC, short orders are about that PC: \"pause\", \"skip\", \"what's playing\", \"turn it down\" mean pc_media and pc_volume, unless your own music is the thing playing (see Music now). Act right away, then confirm in a few words (\"Done.\", \"Spotify's open.\", \"Down to 30.\"); don't describe how you did it and don't offer more help. Do every part of a combined order. For sleep, restart and shutdown, ask a one-line yes/no question first and only call with confirmed true after they say yes. If a tool says no PC is connected, tell them.";
+  "If the person has their PC connected (the PC satellite), you can control it with the pc_ tools: open, close or switch to apps and games, open websites, YouTube and folders, control what's playing, set volume (also per app), lock it, turn the screens off, sleep, restart or shut it down, and check CPU, memory and disk. When someone talks to you through their PC, short orders are about that PC: \"pause\", \"skip\", \"what's playing\", \"turn it down\" mean pc_media and pc_volume, unless your own music is the thing playing (see Music now). Act right away, then confirm in a few words (\"Done.\", \"Spotify's open.\", \"Down to 30.\"); don't describe how you did it and don't offer more help. Do every part of a combined order. For sleep, restart and shutdown, just call pc_system: it asks them itself, so don't ask first. If they answer yes, call it again with the same action. If a tool says no PC is connected, tell them.";
 
 export function pcTools(d: PcToolDeps): Tool[] {
+  const yes = new PendingYes<string>(d.now);
   const specs: Record<(typeof NAMES)[number], { description: string; properties: Record<string, unknown>; required: string[] }> = {
     pc_apps: {
       description:
@@ -65,10 +108,9 @@ export function pcTools(d: PcToolDeps): Tool[] {
     },
     pc_system: {
       description:
-        'lock, screen_off, sleep, restart, shutdown, cancel_shutdown. sleep, restart and shutdown need confirmed true, which you send only after they said yes to your question. Restart and shutdown wait 30 seconds and can be cancelled.',
+        'lock, screen_off, sleep, restart, shutdown, cancel_shutdown. sleep, restart and shutdown ask the person first by themselves: call again with the same action once they say yes. Restart and shutdown wait 30 seconds and can be cancelled.',
       properties: {
         action: { type: 'string', enum: ['lock', 'screen_off', 'sleep', 'restart', 'shutdown', 'cancel_shutdown'] },
-        confirmed: { type: 'boolean' },
       },
       required: ['action'],
     },
@@ -90,6 +132,12 @@ export function pcTools(d: PcToolDeps): Tool[] {
       const pc = d.pcFor(ctx);
       if (!pc) return `No PC is connected for ${ctx.speaker}. Their A.D.R.I.A.N. satellite app has to be running on it.`;
       const args: Record<string, unknown> = { ...a };
+      delete args.confirmed; // only their own yes sets it, below
+      const need = name === 'pc_system' ? NEEDS_YES.get(String(a.action ?? '')) : undefined;
+      if (need) {
+        if (yes.take(ctx) !== a.action) return yes.hold(ctx, a.action as string, need.about) ? need.ask : `${NOT_DONE}a question is already waiting for their answer.`;
+        args.confirmed = true;
+      }
       if (name === 'pc_open' && a.play === true && typeof a.youtube === 'string' && d.findVideo) {
         const id = await d.findVideo(a.youtube, signal).catch(() => undefined);
         if (id) {
@@ -102,14 +150,19 @@ export function pcTools(d: PcToolDeps): Tool[] {
         const found = d.findUrl ? await d.findUrl(a.search, signal).catch(() => undefined) : undefined;
         args.url = found ?? `https://www.google.com/search?q=${encodeURIComponent(a.search)}`;
         delete args.search;
+        // `a` is what speak reads: she names the page that really opens.
+        a.url = args.url;
+        delete a.search;
       }
       delete args.play;
       const r = await pc.action(name, args);
       const result = r.ok ? r.result : `${NOT_DONE}${r.result}`;
       d.onCall?.(name, args, result);
+      if (r.ok && name === 'pc_system' && (a.action === 'restart' || a.action === 'shutdown')) d.onPowerDown?.(ctx.userId);
       return result;
     },
     speak: (a, result) => confirmation(name, a, result),
+    asks: (result) => name === 'pc_system' && QUESTIONS.has(result),
     acts: (a) => !LOOKUPS.has(`${name}.${String(a.action ?? '')}`) && name !== 'pc_info',
   }));
 }
@@ -120,6 +173,15 @@ const LOOKUPS = new Set(['pc_apps.running', 'pc_apps.list', 'pc_media.status', '
 
 /** Say it in words: "40%" → "40 percent". */
 const spoken = (s: string) => s.replace(/(\d+)\s?%/g, '$1 percent');
+
+/** The host a browser really goes to (past any user@ part), without www. */
+function hostOf(url: string): string | undefined {
+  try {
+    return new URL(url).hostname.replace(/^www\./i, '') || undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 /**
  * What to say when a PC action worked, without asking the model again.
@@ -137,10 +199,9 @@ export function confirmation(name: string, a: Record<string, unknown>, result: s
       return undefined; // running, list: worth an answer
     case 'pc_open':
       if (typeof a.url === 'string' && a.url) {
-        const host = /^https?:\/\/(?:www\.)?([^/:?#]+)/i.exec(a.url)?.[1];
+        const host = hostOf(a.url);
         return host ? `Opening ${host}.` : 'Opening it.';
       }
-      if (typeof a.search === 'string' && a.search) return 'Here it is.';
       if (typeof a.folder === 'string' && a.folder) return `Opening ${a.folder}.`;
       if (a.video_id) return 'Opening it on YouTube.';
       if (typeof a.youtube === 'string' && a.youtube) return `Here's YouTube for ${a.youtube}.`;

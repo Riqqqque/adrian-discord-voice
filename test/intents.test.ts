@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { classify } from '../src/conversation/intents.js';
+import { afterBareVerb, bareMusicVerb, classify, classifyMusic } from '../src/conversation/intents.js';
 
 const kind = (t: string) => classify(t)?.kind;
 
@@ -137,5 +137,81 @@ describe('stop phrases inside short utterances', () => {
     for (const t of ['wait', 'wait wait', 'hold on', 'hold up', 'hold on a sec', 'hold on a second', 'wait a sec', 'wait a second', 'one sec', 'one second', 'hang on', 'hang on a sec'])
       expect(classify(t), t).toEqual({ kind: 'stop', hold: true, weak: true });
     for (const t of ['wait stop', 'stop for a sec', 'stop for a second']) expect(classify(t), t).toEqual({ kind: 'stop', hold: true });
+  });
+});
+
+describe('a pause after "play"', () => {
+  it.each([
+    ['play', 'play'],
+    ['Play.', 'play'],
+    ['play...', 'play'],
+    ['Play…', 'play'],
+    ['Hey Adrian, play.', 'play'],
+    ['Adrian, play', 'play'],
+    ['can you play', 'play'],
+    ['please put on', 'put on'],
+    ['Throw on?', 'throw on'],
+    ['blast', 'blast'],
+    ['bump.', 'bump'],
+    ['queue', 'queue'],
+    ['queue up...', 'queue up'],
+  ])('%s is a verb waiting for its name', (said, verb) => {
+    expect(bareMusicVerb(said)).toBe(verb);
+  });
+
+  it.each(['play Drake', 'playing', 'play the piano', 'pause', 'skip', 'add', 'what should I play', 'stop', ''])('%s is not', (said) => {
+    expect(bareMusicVerb(said)).toBeUndefined();
+  });
+
+  it.each([
+    ['play... Ella Langley.', 'Ella Langley'],
+    ['Play, Ella Langley', 'Ella Langley'],
+    ['Hey Adrian, play… Ella Langley', 'Ella Langley'],
+    ['play.. Get Lucky', 'Get Lucky'],
+    ['put on... Daft Punk', 'Daft Punk'],
+    ['queue... Daft Punk', 'Daft Punk'],
+    ['queue up, Daft Punk', 'Daft Punk'],
+  ])('the name after a pause is still the order: %s', (said, query) => {
+    expect(classifyMusic(said)).toMatchObject({ kind: 'play', query });
+  });
+
+  it('a song with a stop in its name, after a pause, is a song and not a stop', () => {
+    expect(classify('play... Shut Up and Dance')).toBeUndefined();
+    expect(classifyMusic('play... Shut Up and Dance')).toMatchObject({ kind: 'play', query: 'Shut Up and Dance' });
+  });
+
+  it('the punctuation inside a name stays', () => {
+    expect(classifyMusic('play Mr. Brightside')).toMatchObject({ query: 'Mr. Brightside' });
+  });
+
+  describe('the words after "Who do you want to hear?"', () => {
+    const waiting = { verb: 'play', until: 20_000 };
+
+    it('finish the order', () => {
+      expect(afterBareVerb(waiting, 'Ella Langley.', 10_000)).toBe('play Ella Langley.');
+      expect(classifyMusic(afterBareVerb(waiting, 'Ella Langley.', 10_000))).toMatchObject({ kind: 'play', query: 'Ella Langley', mode: 'now' });
+      expect(classifyMusic(afterBareVerb({ verb: 'queue up', until: 20_000 }, 'Drake', 10_000))).toMatchObject({ kind: 'play', query: 'Drake', mode: 'queue' });
+    });
+
+    it('stay as they are with nothing waiting, or once the wait is over', () => {
+      expect(afterBareVerb(undefined, 'Ella Langley', 10_000)).toBe('Ella Langley');
+      expect(afterBareVerb(waiting, 'Ella Langley', 20_000)).toBe('Ella Langley');
+    });
+
+    it('stay as they are when they called it off', () => {
+      expect(afterBareVerb(waiting, 'never mind', 10_000)).toBe('never mind');
+      expect(afterBareVerb(waiting, 'stop', 10_000)).toBe('stop');
+    });
+
+    it('stay as they are when they are an order of their own', () => {
+      expect(afterBareVerb(waiting, 'play Drake', 10_000)).toBe('play Drake');
+      expect(afterBareVerb(waiting, 'skip', 10_000)).toBe('skip');
+      expect(afterBareVerb(waiting, 'what time is it', 10_000)).toBe('what time is it');
+      expect(afterBareVerb(waiting, 'what do you recommend?', 10_000)).toBe('what do you recommend?');
+    });
+
+    it('a name that happens to be an everyday word is still a name', () => {
+      expect(afterBareVerb(waiting, 'Perfect', 10_000)).toBe('play Perfect');
+    });
   });
 });

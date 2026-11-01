@@ -136,6 +136,9 @@ export class ConversationOrchestrator {
   }
 
   private readonly sayAs: [string, string][];
+  /** Turns so far, per person and place (ToolContext.turn). A turn that was cut
+   *  off counts twice, which voids anything it asked. */
+  private readonly turns = new Map<string, number>();
 
   /** A chunk as it goes out: rewritten for speech, or as written for a text chat. */
   private out(chunk: string, text?: boolean): string {
@@ -153,7 +156,10 @@ export class ConversationOrchestrator {
     place?: { guildId?: string; channelId?: string },
     opts: { followUp?: boolean; onSilent?: () => void; onTool?: (timeoutMs: number) => void; onWorking?: (on: boolean) => void; onActed?: () => void; text?: boolean; extra?: string[]; desk?: boolean } = {},
   ): AsyncGenerator<string> {
-    const ctx: ToolContext = { userId, speaker, ...place };
+    const where = `${userId}:${place?.channelId ?? ''}`;
+    const turn = (this.turns.get(where) ?? 0) + 1;
+    this.turns.set(where, turn);
+    const ctx: ToolContext = { userId, speaker, said: text, turn, ...place };
     const tools = this.o.stablePrefix ? this.tools : (this.o.selectTools?.(text, ctx, this.tools) ?? this.tools);
     const today = dateFormat('en-US', {
       timeZone: this.o.timezone,
@@ -313,6 +319,8 @@ export class ConversationOrchestrator {
         let ended = calls.length > 0;
         // Lines the tools say for themselves; null once any tool leaves it to the model.
         let lines: string[] | null = calls.length > 0 ? [] : null;
+        // Questions only the person can answer: said as written, and the turn ends.
+        const asked: string[] = [];
         for (const c of calls) {
           if (signal.aborted) throw new Error('cancelled');
           const tool = tools.find((t) => t.spec.name === c.name);
@@ -344,10 +352,12 @@ export class ConversationOrchestrator {
               result = asUntrustedData(c.name, raw);
               if (acts) opts.onActed?.();
               const line = tool.speak?.(args, raw, ctx);
-              if (line !== undefined && lines) lines.push(line);
+              if (line !== undefined && tool.asks?.(raw)) asked.push(line);
+              else if (line !== undefined && lines) lines.push(line);
               else lines = null;
             } catch (e) {
-              result = `Tool ${c.name} failed: ${(e as Error).message}`;
+              // An error can carry a page's or a service's own words.
+              result = asUntrustedData(c.name, `Tool ${c.name} failed: ${(e as Error).message}`);
               ended = false;
               lines = null;
             }
@@ -357,9 +367,22 @@ export class ConversationOrchestrator {
         }
         // A tool that finishes the answer by itself (a sound played): stop here.
         if (ended) break;
+        if (asked.length) {
+          lines = [...(lines ?? []), ...asked];
+          // Speech outlives this call: cut off while saying it, they may not have
+          // heard the question, so their next turn must not count as the one after
+          // it. A text reply goes out whole, and its time limit runs out by itself.
+          if (!opts.text) {
+            const unheard = () => this.turns.set(where, (this.turns.get(where) ?? 0) + 1);
+            if (signal.aborted) unheard(); // stopped during another tool in the round
+            else signal.addEventListener('abort', unheard, { once: true });
+          }
+        }
         // Done things that say themselves ("Spotify's open."): no second model call.
+        // What the model left without a sentence end goes first: a question must be
+        // the last thing they hear, or the yes could be to words of the model's.
         if (lines) {
-          for (const l of lines) {
+          for (const l of [...splitter.flush(), ...lines]) {
             const s = this.out(l, opts.text);
             if (s) {
               spoken += (spoken ? ' ' : '') + s;

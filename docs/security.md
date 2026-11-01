@@ -9,7 +9,8 @@ A.D.R.I.A.N. listens to a voice channel anyone in your server can join, holds AP
 - Never passed in program arguments or the environment of child processes.
 - Never logged. Log lines and admin-page errors go through a redactor for tokens and keys.
 - The admin page can set keys but never reads them back.
-- Each setting may only reference keys meant for its own purpose. A language-model endpoint can't be pointed at `DISCORD_TOKEN` or `PLEX_TOKEN`, from the admin page, the CLI or a hand-edited config, so a hijacked admin session can't send those keys anywhere.
+- Each setting may only reference keys meant for its own purpose. A language-model endpoint can't be pointed at `DISCORD_TOKEN` or `PLEX_TOKEN`, from the admin page, the CLI or a hand-edited config.
+- The admin page can't send a stored key anywhere new, so a hijacked admin session can't collect one. Provider tests use a stored key only with a built-in provider's own address; a custom endpoint gets only a key pasted for that test. A custom endpoint that uses a stored key can only be saved from the admin page if the config already pairs that address with that key. Otherwise set it with `sudo adrian config`.
 - Plex, Sonarr, Radarr and Tavily keys travel in request headers only, never in URLs.
 
 **Your server**
@@ -30,12 +31,15 @@ A.D.R.I.A.N. listens to a voice channel anyone in your server can join, holds AP
 - Listens on loopback by default.
 - Logins:
   - argon2id password hashing (OWASP parameters).
-  - A 50-bit one-time setup code that expires after an hour and burns after 10 wrong tries.
-  - Timing-safe comparisons and rate limiting.
+  - A 50-bit one-time setup code that expires after an hour. Ten wrong tries from one address burn it and block that address for 15 minutes. `sudo adrian setup-code --new` always gets a fresh start.
+  - Timing-safe comparisons.
+  - Rate limiting: 5 tries per address and 30 overall in 15 minutes, counted before the password is checked, so a burst of requests can't get ahead of the limit. A good login doesn't count.
+  - Past that limit one try every 10 seconds still gets through, shared by everyone, so failing on purpose can't keep you out for long. It does mean up to 6 guesses a minute for as long as someone keeps trying, so use a strong password. If a flood takes every one of those tries, `sudo adrian restart` clears the counters.
 - Sessions: HttpOnly, SameSite=Strict cookies (Secure under TLS), CSRF tokens plus an Origin check.
+- Changing the password takes the current one, with 5 wrong tries allowed in 15 minutes. It ends every session, and a login still being checked at that moment fails.
 - Requests and responses:
   - A strict Content-Security-Policy, and no `innerHTML` in the page.
-  - Request bodies capped at 64 KB, and static files served from a fixed set of types.
+  - Request bodies capped at 64 KB, at most 100 requests on one connection, and static files served from a fixed set of types.
 - **DNS rebinding:** requests whose `Host` isn't an IP, `localhost` or a name in `server.allowedHosts` get refused.
 
 **Voice input from anyone in the call**
@@ -43,6 +47,7 @@ A.D.R.I.A.N. listens to a voice channel anyone in your server can join, holds AP
 - ffmpeg may only open `http`/`https` streams (`-protocol_whitelist`), never local files.
 - Plex track paths must stay on the Plex server and under `/library/parts/`.
 - Tool results and web content are marked as untrusted data in the prompt.
+- Text in the prompt can't approve anything. Sleep, restart and shutdown need the person's own yes to a fixed question, judged on their words and not on anything the model says. message_member needs the asker to have said who it's for ("tell Sam"); otherwise it reads the message back and waits for the same yes.
 - Notes are keyed by Discord user ID and only used when that person is speaking, so nobody can talk the bot into revealing someone else's notes.
 - Owner rights are checked by Discord ID, never by display name. A member named like the creator is flagged as not the creator.
 - Integrations (Plex, Sonarr, Radarr, game servers) are read-only.

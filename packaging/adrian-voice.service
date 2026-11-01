@@ -18,8 +18,8 @@ RestartSec=5
 TimeoutStopSec=20
 
 # Resources: at most 4 cores, low priority next to other services, hard
-# memory ceiling (about 1.5 GiB in English; up to ~3.5 GiB with every
-# language voice loaded).
+# memory ceiling (about 3.5 GiB by default, because every language voice
+# loads at start; about 1.5 GiB with `languages` set to false).
 CPUQuota=400%
 CPUWeight=50
 IOWeight=50

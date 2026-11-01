@@ -144,6 +144,11 @@ export interface ToolContext {
   speaker: string;
   guildId?: string;
   channelId?: string;
+  /** The person's own words this turn: the model can't write these. */
+  said?: string;
+  /** Counts this person's turns in this place, so a tool can tell their next
+   *  turn from a later one, even if it wasn't called in between. */
+  turn?: number;
 }
 
 export interface Tool {
@@ -165,6 +170,11 @@ export interface Tool {
    *  undefined to let the model answer. Used when every tool in the round
    *  gives one; saves a model call. */
   speak?(args: Record<string, unknown>, result: string, ctx: ToolContext): string | undefined;
+  /** This result is a question only the person can answer. Its `speak` line
+   *  goes out word for word and the turn ends there, whatever else the round
+   *  did: a yes only counts for the question they really heard, so the model
+   *  never gets to put it in its own words. */
+  asks?(result: string): boolean;
   /** Does something (plays music, sets a timer, opens an app) rather than
    *  looking something up. An answer that did that ends the conversation:
    *  she stops listening for follow-ups, unless she asked a question. */

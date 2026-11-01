@@ -14,6 +14,12 @@ const ARGON = { memoryCost: 19_456, timeCost: 2, parallelism: 1 } as const;
 export const SETUP_CODE_TTL_MS = 60 * 60_000;
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no 0/O, 1/I
 
+/** How long a try counts against the limits below. */
+export const LIMIT_WINDOW_MS = 15 * 60_000;
+/** Past the login limit, one try still gets through this often, shared by
+ *  everyone, so nobody can lock the owner out by failing on purpose. */
+const LOGIN_TRICKLE_MS = 10_000;
+
 interface AdminRecord {
   username: string;
   hash: string;
@@ -58,8 +64,15 @@ class Window {
     h.push(now);
     this.hits.set(key, h);
   }
+  /** Take back the newest hit. */
+  release(key: string): void {
+    this.hits.get(key)?.pop();
+  }
   clear(key: string): void {
     this.hits.delete(key);
+  }
+  clearAll(): void {
+    this.hits.clear();
   }
 }
 
@@ -67,9 +80,17 @@ export class AdminAuth {
   private readonly adminFile: string;
   private readonly codeFile: string;
   private readonly sessions = new Map<string, Session>();
-  private readonly perIp = new Window(5, 15 * 60_000);
-  private readonly global = new Window(30, 15 * 60_000);
-  private readonly codeTries = new Window(10, 15 * 60_000);
+  private readonly perIp = new Window(5, LIMIT_WINDOW_MS);
+  private readonly global = new Window(30, LIMIT_WINDOW_MS);
+  private readonly codeTries = new Window(10, LIMIT_WINDOW_MS);
+  private readonly pwTries = new Window(5, LIMIT_WINDOW_MS);
+  /** When a login last reached the password check. */
+  private lastLoginTry = 0;
+  /** The setup code the tries in codeTries were made against. */
+  private countedCode: string | undefined;
+  /** Bumped by every password change, so a login checked against the old
+   *  password can tell. */
+  private passwordEpoch = 0;
 
   constructor(
     stateDir: string,
@@ -99,6 +120,7 @@ export class AdminAuth {
     for (let i = 0; i < 10; i++) s += CODE_ALPHABET[randomInt(CODE_ALPHABET.length)];
     const code = `${s.slice(0, 5)}-${s.slice(5)}`;
     writeJsonFile(this.codeFile, { code, expiresAt: this.now() + SETUP_CODE_TTL_MS });
+    this.countedCode = code;
     return code;
   }
 
@@ -111,12 +133,18 @@ export class AdminAuth {
   ): Promise<{ ok: true; token: string; session: Session } | { ok: false; status: number; error: string }> {
     const now = this.now();
     if (this.hasAdmin()) return { ok: false, status: 404, error: 'not found' };
-    if (this.codeTries.blocked('setup', now)) return { ok: false, status: 429, error: 'too many attempts; try again later' };
     const cur = readJsonFile<{ code: string; expiresAt: number }>(this.codeFile);
+    // A code this process didn't write came from `adrian setup-code`, which
+    // takes root, so whoever ran it starts clean.
+    if (cur && cur.code !== this.countedCode) {
+      this.codeTries.clearAll();
+      this.countedCode = cur.code;
+    }
+    if (this.codeTries.blocked(ip, now)) return { ok: false, status: 429, error: 'too many attempts; try again later, or make a new code with `sudo adrian setup-code --new`' };
     const given = typeof code === 'string' ? code.trim().toUpperCase() : '';
     if (!cur || cur.expiresAt <= now || !sameText(given, cur.code)) {
-      this.codeTries.hit('setup', now);
-      if (this.codeTries.blocked('setup', now)) this.newSetupCode(); // burn the code
+      this.codeTries.hit(ip, now);
+      if (this.codeTries.blocked(ip, now)) this.newSetupCode(); // burn the code
       return { ok: false, status: 403, error: 'setup code is wrong or expired' };
     }
     if (!validUsername(username)) return { ok: false, status: 400, error: 'username: 2-32 letters, digits, . _ -' };
@@ -124,7 +152,6 @@ export class AdminAuth {
     const rec: AdminRecord = { username, hash: await hash(password, ARGON), createdAt: new Date(now).toISOString() };
     writeJsonFile(this.adminFile, rec);
     if (existsSync(this.codeFile)) unlinkSync(this.codeFile);
-    void ip;
     return { ok: true, ...this.createSession(username) };
   }
 
@@ -134,9 +161,15 @@ export class AdminAuth {
     password: unknown,
   ): Promise<{ ok: true; token: string; session: Session } | { ok: false; status: number; error: string }> {
     const now = this.now();
-    if (this.perIp.blocked(ip, now) || this.global.blocked('all', now)) {
-      return { ok: false, status: 429, error: 'too many failed logins; try again in 15 minutes' };
+    if ((this.perIp.blocked(ip, now) || this.global.blocked('all', now)) && now - this.lastLoginTry < LOGIN_TRICKLE_MS) {
+      return { ok: false, status: 429, error: 'too many failed logins; try again in a minute' };
     }
+    // Count the try before the first await, or a burst all passes the check
+    // above before any of it has failed. A good login gives it back below.
+    this.lastLoginTry = now;
+    this.perIp.hit(ip, now);
+    this.global.hit('all', now);
+    const epoch = this.passwordEpoch;
     const rec = readJsonFile<AdminRecord>(this.adminFile);
     let good = false;
     if (rec && typeof username === 'string' && typeof password === 'string' && password.length <= 256) {
@@ -144,21 +177,23 @@ export class AdminAuth {
       const pwOk = await verify(rec.hash, password).catch(() => false);
       good = pwOk && sameText(username, rec.username);
     }
-    if (!good) {
-      this.perIp.hit(ip, now);
-      this.global.hit('all', now);
-      return { ok: false, status: 401, error: 'wrong username or password' };
-    }
+    if (!good || epoch !== this.passwordEpoch) return { ok: false, status: 401, error: 'wrong username or password' };
     this.perIp.clear(ip);
+    this.global.release('all');
     return { ok: true, ...this.createSession(rec!.username) };
   }
 
-  async changePassword(username: string, current: unknown, next: unknown): Promise<string | undefined> {
+  async changePassword(username: string, current: unknown, next: unknown): Promise<{ status: number; error: string } | undefined> {
     const rec = readJsonFile<AdminRecord>(this.adminFile);
-    if (!rec || rec.username !== username || typeof current !== 'string') return 'not allowed';
-    if (!(await verify(rec.hash, current).catch(() => false))) return 'current password is wrong';
-    if (!validPassword(next)) return 'password: at least 10 characters';
+    if (!rec || rec.username !== username || typeof current !== 'string') return { status: 400, error: 'not allowed' };
+    const now = this.now();
+    if (this.pwTries.blocked(username, now)) return { status: 429, error: 'too many wrong passwords; try again in 15 minutes' };
+    this.pwTries.hit(username, now); // before the await, as in login()
+    if (current.length > 256 || !(await verify(rec.hash, current).catch(() => false))) return { status: 400, error: 'current password is wrong' };
+    this.pwTries.clear(username);
+    if (!validPassword(next)) return { status: 400, error: 'password: at least 10 characters' };
     writeJsonFile(this.adminFile, { ...rec, hash: await hash(next, ARGON) });
+    this.passwordEpoch++;
     this.sessions.clear();
     return undefined;
   }

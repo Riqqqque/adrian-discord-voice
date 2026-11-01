@@ -35,8 +35,13 @@ import type {
 } from '../core/interfaces.js';
 
 const SAMPLE_RATE = 48_000;
-/** Give up on a lost connection after this many rejoin attempts. */
+/** Quick rejoin attempts on a lost connection, before it reports `failed`. */
 const MAX_REJOINS = 5;
+/** Past that it keeps trying at this pace: an outage must not end voice until a restart. */
+const SLOW_REJOIN_MS = 5 * 60_000;
+/** Left Ready and not back after this long: the library's own reconnect has no
+ *  time limit, and one lost packet leaves it in Signalling or Connecting for good. */
+const STUCK_MS = 30_000;
 
 /** Opus bitrate for everything the bot plays (music and speech). */
 const OPUS_BITRATE = 128_000;
@@ -73,10 +78,13 @@ export class DiscordVoiceTransport extends EventEmitter implements VoiceTranspor
   private readonly streams = new Map<UserId, UserStream>();
   private target: { guildId: string; channelId: string } | undefined;
   private rejoins = 0;
-  private recovering = false;
+  /** The `gen` a recovery is running for: one at a time, but a stale one can't block a newer. */
+  private recovering: number | undefined;
   /** Bumped by connect/disconnect/kick: an older reconnect attempt stops. */
   private gen = 0;
   private closing = false;
+  /** She left the channel herself and isn't back: the gateway's report of that isn't a kick. */
+  private ownLeave = false;
   private readonly onVoiceState = (oldS: VoiceState, newS: VoiceState) => this.voiceStateChanged(oldS, newS);
 
   constructor(opts: DiscordTransportOptions) {
@@ -111,14 +119,20 @@ export class DiscordVoiceTransport extends EventEmitter implements VoiceTranspor
     await this.join();
   }
 
+  /** connect() tries once, so /join can say it failed. This keeps at it in the
+   *  background (the join at startup) until it works or disconnect() is called. */
+  retry(): void {
+    if (this.closing || !this.target || this.connection) return;
+    void this.recover().catch((e: Error) => this.log.warn('voice recovery failed', { error: e.message }));
+  }
+
   async disconnect(): Promise<void> {
     this.gen++;
     this.closing = true;
     this.client.off(Events.VoiceStateUpdate, this.onVoiceState);
     this.player.stop(true);
     this.dropAllStreams();
-    if (this.connection) safeDestroy(this.connection);
-    this.connection = undefined;
+    if (this.connection) this.leave(this.connection);
   }
 
   play(source: string | NodeJS.ReadableStream, opts?: { volume?: number }): PlaybackHandle {
@@ -209,10 +223,13 @@ export class DiscordVoiceTransport extends EventEmitter implements VoiceTranspor
       if (oldS.status !== newS.status) this.log.info('voice state', { from: oldS.status, to: newS.status });
       if (newS.status === VoiceConnectionStatus.Ready) {
         this.rejoins = 0;
+        this.ownLeave = false;
         this.emit('ready');
       }
-      if (newS.status === VoiceConnectionStatus.Disconnected && !this.closing && this.connection === conn) {
-        void this.recover(conn).catch((e: Error) => this.log.warn('voice recovery failed', { error: e.message }));
+      // Out of Ready with no Disconnected: the library is reconnecting by itself.
+      const resuming = oldS.status === VoiceConnectionStatus.Ready && (newS.status === VoiceConnectionStatus.Signalling || newS.status === VoiceConnectionStatus.Connecting);
+      if ((resuming || newS.status === VoiceConnectionStatus.Disconnected) && !this.closing && this.connection === conn) {
+        void this.recover(conn, resuming).catch((e: Error) => this.log.warn('voice recovery failed', { error: e.message }));
       }
     });
     conn.on('transitioned', (id) => this.log.debug('dave transition', { id }));
@@ -223,49 +240,64 @@ export class DiscordVoiceTransport extends EventEmitter implements VoiceTranspor
     } catch (e) {
       // Don't leave a half-open connection behind: the next join would reuse
       // it and stack a second set of listeners on it.
-      safeDestroy(conn);
-      if (this.connection === conn) this.connection = undefined;
+      this.leave(conn);
       throw e;
     }
     this.log.info('voice ready', { guildId: t.guildId, channelId: t.channelId });
     this.emitMembers();
   }
 
+  /** Leave the channel on purpose. Skipping the leave (`destroy(false)`) isn't an
+   *  option: she'd rejoin a channel she's still in, and Discord seems to ignore that. */
+  private leave(conn: VoiceConnection): void {
+    if (conn.state.status !== VoiceConnectionStatus.Destroyed) this.ownLeave = true;
+    safeDestroy(conn);
+    if (this.connection === conn) this.connection = undefined;
+  }
+
   /** Discord's documented recovery: a disconnect followed by Signalling or
    *  Connecting within 5 s is a channel move or a resumable drop; otherwise
-   *  rejoin from scratch, with backoff. */
-  private async recover(conn: VoiceConnection): Promise<void> {
-    if (this.recovering) return; // one recovery at a time
-    this.recovering = true;
+   *  rejoin from scratch, with backoff. `resuming`: the library has already
+   *  started. No `conn`: there's nothing to wait for, go straight to rejoining. */
+  private async recover(conn?: VoiceConnection, resuming = false): Promise<void> {
+    const gen = this.gen;
+    if (this.recovering === gen) return; // one recovery at a time
+    this.recovering = gen;
     try {
-      await this.recoverOnce(conn);
+      await this.recoverOnce(conn, resuming);
     } finally {
-      this.recovering = false;
+      if (this.recovering === gen) this.recovering = undefined;
     }
   }
 
-  private async recoverOnce(conn: VoiceConnection): Promise<void> {
+  private async recoverOnce(conn: VoiceConnection | undefined, resuming: boolean): Promise<void> {
     const gen = this.gen;
     const current = () => !this.closing && gen === this.gen; // not kicked, moved or left meanwhile
-    this.emit('disconnected', 'voice connection dropped');
-    try {
-      await Promise.race([
-        entersState(conn, VoiceConnectionStatus.Signalling, 5_000),
-        entersState(conn, VoiceConnectionStatus.Connecting, 5_000),
-      ]);
-      return; // the library is reconnecting by itself
-    } catch {
-      /* fall through to a full rejoin */
+    if (conn) {
+      this.emit('disconnected', 'voice connection dropped');
+      try {
+        if (!resuming) {
+          await Promise.race([
+            entersState(conn, VoiceConnectionStatus.Signalling, 5_000),
+            entersState(conn, VoiceConnectionStatus.Connecting, 5_000),
+          ]);
+        }
+        await entersState(conn, VoiceConnectionStatus.Ready, STUCK_MS);
+        return; // the library reconnected by itself
+      } catch {
+        /* fall through to a full rejoin */
+      }
+      if (!current()) return;
+      this.log.warn('voice stuck, rebuilding', { status: conn.state.status });
+      this.dropAllStreams();
+      this.leave(conn);
     }
-    if (!current()) return;
-    this.dropAllStreams();
-    safeDestroy(conn);
-    if (this.connection === conn) this.connection = undefined;
-    while (current() && this.rejoins < MAX_REJOINS) {
+    while (current()) {
+      if (this.rejoins === MAX_REJOINS) this.emit('failed', `not back after ${MAX_REJOINS} rejoin attempts; still trying`);
       this.rejoins++;
-      const delay = Math.min(30_000, 1_000 * 2 ** (this.rejoins - 1)) + Math.random() * 500;
+      const delay = this.rejoins > MAX_REJOINS ? SLOW_REJOIN_MS : Math.min(30_000, 1_000 * 2 ** (this.rejoins - 1)) + Math.random() * 500;
       this.log.warn('rejoining voice', { attempt: this.rejoins, delayMs: Math.round(delay) });
-      await new Promise((r) => setTimeout(r, delay));
+      await new Promise<void>((r) => void setTimeout(r, delay).unref());
       if (!current()) return;
       try {
         await this.join();
@@ -274,7 +306,6 @@ export class DiscordVoiceTransport extends EventEmitter implements VoiceTranspor
         this.log.warn('rejoin failed', { error: (e as Error).message });
       }
     }
-    if (current()) this.emit('failed', `gave up after ${MAX_REJOINS} rejoin attempts`);
   }
 
   // --- per-user receive ---------------------------------------------------
@@ -323,16 +354,19 @@ export class DiscordVoiceTransport extends EventEmitter implements VoiceTranspor
   // --- channel membership ------------------------------------------------
 
   private voiceStateChanged(oldS: VoiceState, newS: VoiceState): void {
+    const me = newS.id === this.client.user?.id;
+    // Back in a channel: a leave from here on isn't one of hers.
+    if (me && newS.channelId && newS.channelId !== oldS.channelId) this.ownLeave = false;
     const ch = this.target?.channelId;
     if (!ch || (oldS.channelId !== ch && newS.channelId !== ch)) return;
-    if (newS.id === this.client.user?.id && newS.channelId !== ch && !this.closing) {
+    if (me && newS.channelId !== ch && !this.closing) {
       if (newS.channelId && this.target) {
         // Dragged into another channel: that's where it is now.
         this.log.info('moved to another channel', { channelId: newS.channelId });
         this.target = { ...this.target, channelId: newS.channelId };
         this.dropAllStreams();
         this.emit('moved', this.target.guildId, newS.channelId);
-      } else {
+      } else if (!this.ownLeave) {
         // Someone disconnected it (or the channel is gone). Respect that: no
         // fighting back in; /join brings it back.
         this.log.info('disconnected from voice by someone; staying out until /join');

@@ -90,7 +90,7 @@ a running game.
 | `pc_open` | `url`, `youtube` (query or video), `folder` (downloads, documents, desktop, pictures, music, videos) | Opens in the default browser or Explorer. Only `http`/`https` URLs. |
 | `pc_media` | `play_pause`, `next`, `previous`, `stop`, `status` | Through Windows media sessions (Spotify, browsers, players). `status` says what's playing. |
 | `pc_volume` | `get`, `set` (`level` 0-100), `up`, `down`, `mute`, `unmute`; optional `app` | Master volume, or one app's volume ("mute Discord"). |
-| `pc_system` | `lock`, `screen_off`, `sleep`, `restart`, `shutdown`, `cancel_shutdown`; `confirmed` | `sleep`, `restart` and `shutdown` need `confirmed: true`, which the model sends only after the person said yes. Restart and shutdown wait 30 seconds and can be cancelled. Each can be turned off on the PC. |
+| `pc_system` | `lock`, `screen_off`, `sleep`, `restart`, `shutdown`, `cancel_shutdown`; `confirmed` | `sleep`, `restart` and `shutdown` need `confirmed: true`. The server never takes that from the model: it sets it only when the person's very next turn, in the same place and within 20 seconds, is a plain yes to the fixed question. Restart and shutdown wait 30 seconds and can be cancelled. Each can be turned off on the PC. |
 | `pc_info` | `summary`, `processes` | CPU, memory, disk space, uptime, battery; the busiest programs. |
 
 The satellite's settings list which tools are on, which power actions are

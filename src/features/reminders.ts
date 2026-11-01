@@ -1,5 +1,6 @@
-// Timers and reminders. Saved to disk so they survive restarts; when one is
-// due the stack announces it in the call (or by DM if the person isn't there).
+// Timers and reminders. Saved to disk so they survive restarts, and kept there
+// until delivered; when one is due the stack announces it in the call, at the
+// PC it was set at, or by DM (see reminderRoute).
 
 import { readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
@@ -16,10 +17,18 @@ export interface Reminder {
   dueAt: number; // epoch ms
   createdAt: number;
   guildId?: string;
+  /** The PC it was set at (`sat:<device id>`). */
+  room?: string;
 }
 
 const MAX_PER_USER = 20;
 const MAX_AHEAD_MS = 31 * 24 * 3_600_000;
+/** A delivery that failed goes again after this long... */
+const RETRY_MS = 60_000;
+/** ...for about a day. Closed DMs never work, and must not try for ever. */
+const MAX_TRIES = 24 * 60;
+/** From this far ahead a weekday alone could mean the wrong week. */
+const WEEK_MS = 7 * 24 * 3_600_000;
 
 /** Offset of `tz` from UTC at instant `ms`, in ms. */
 function tzOffset(ms: number, tz: string): number {
@@ -53,14 +62,41 @@ export function spokenDuration(ms: number): string {
   return parts.join(' ') || 'a moment';
 }
 
+/** What she says when a timer or reminder is set: what she understood, so a
+ *  misheard "fifty" gets noticed. Anything else (a refusal) is left to the model. */
+function setLine(raw: string): string | undefined {
+  const m = /^(Timer|Reminder) set: .* due (.+?) \(in (.+)\)\.$/s.exec(raw);
+  return m ? (m[1] === 'Timer' ? `Timer set for ${m[3]}.` : `Reminder set for ${m[2]}.`) : undefined;
+}
+
+export interface ReminderRoute {
+  /** Where she says it, if anywhere. */
+  speak?: 'call' | 'pc';
+  dm: boolean;
+}
+
+/** Where a due reminder goes. Someone audible in her call hears it there. Else
+ *  the PC it was set at says it, with a DM as well: that PC can be on with
+ *  nobody at it, and spoken words leave no record. Else her call, for someone
+ *  who's in it but muted. Else a DM. */
+export function reminderRoute(w: { audibleInCall: boolean; inChannel: boolean; pcUp: boolean }): ReminderRoute {
+  if (w.audibleInCall) return { speak: 'call', dm: false };
+  if (w.pcUp) return { speak: 'pc', dm: true };
+  return w.inChannel ? { speak: 'call', dm: false } : { dm: true };
+}
+
 export class Reminders {
   private list: Reminder[] = [];
   private timer: NodeJS.Timeout | undefined;
+  /** Due ones on their way out: how many tries, and when the next one may start. */
+  private readonly sending = new Map<string, { tries: number; nextAt: number }>();
 
   constructor(
     private readonly file: string | undefined,
     private readonly timezone: string,
-    private readonly onDue: (r: Reminder, lateMs: number) => void,
+    /** Return a promise if delivery takes time: it stays on disk until that's
+     *  done, and goes again if it rejects. */
+    private readonly onDue: (r: Reminder, lateMs: number) => void | Promise<unknown>,
     private readonly now: () => number = Date.now,
   ) {
     if (file) {
@@ -86,15 +122,38 @@ export class Reminders {
 
   tick(): void {
     const now = this.now();
-    const due = this.list.filter((r) => r.dueAt <= now);
-    if (!due.length) return;
-    this.list = this.list.filter((r) => r.dueAt > now);
-    this.save();
-    for (const r of due) this.onDue(r, now - r.dueAt);
+    for (const r of this.list) {
+      if (r.dueAt <= now && (this.sending.get(r.id)?.nextAt ?? 0) <= now) this.deliver(r, now - r.dueAt);
+    }
+  }
+
+  /** It leaves the file only once it's out: a crash, a restart or a failed DM
+   *  in the meantime must not lose it. A crash can mean hearing it twice. */
+  private deliver(r: Reminder, lateMs: number): void {
+    const s = this.sending.get(r.id) ?? { tries: 0, nextAt: 0 };
+    s.tries++;
+    s.nextAt = Infinity; // nothing new until this try is over
+    this.sending.set(r.id, s);
+    const done = () => {
+      this.sending.delete(r.id);
+      this.list = this.list.filter((x) => x.id !== r.id);
+      this.save();
+    };
+    const failed = () => {
+      if (s.tries >= MAX_TRIES) done();
+      else s.nextAt = this.now() + RETRY_MS;
+    };
+    try {
+      const sent = this.onDue(r, lateMs);
+      if (sent instanceof Promise) void sent.then(done, failed);
+      else done();
+    } catch {
+      failed();
+    }
   }
 
   forUser(userId: UserId): Reminder[] {
-    return this.list.filter((r) => r.userId === userId).sort((a, b) => a.dueAt - b.dueAt);
+    return this.list.filter((r) => r.userId === userId && !this.sending.has(r.id)).sort((a, b) => a.dueAt - b.dueAt);
   }
 
   add(ctx: ToolContext, kind: Reminder['kind'], text: string, dueAt: number): Reminder | string {
@@ -111,6 +170,7 @@ export class Reminders {
       dueAt,
       createdAt: now,
       ...(ctx.guildId ? { guildId: ctx.guildId } : {}),
+      ...(ctx.channelId?.startsWith('sat:') ? { room: ctx.channelId } : {}),
     };
     this.list.push(r);
     this.save();
@@ -144,16 +204,20 @@ export class Reminders {
 
   describe(r: Reminder): string {
     const left = spokenDuration(r.dueAt - this.now());
-    const at = new Intl.DateTimeFormat('en-US', { timeZone: this.timezone, weekday: 'short', hour: 'numeric', minute: '2-digit' }).format(r.dueAt);
-    return `${r.kind} "${r.text}" due ${at} (in ${left})`;
+    const p = Object.fromEntries(
+      new Intl.DateTimeFormat('en-US', { timeZone: this.timezone, weekday: 'long', month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+        .formatToParts(r.dueAt)
+        .map((x) => [x.type, x.value]),
+    ) as Record<string, string>;
+    const date = r.dueAt - this.now() >= WEEK_MS ? `, ${p.month} ${p.day}` : '';
+    const clock = p.minute === '00' ? p.hour : `${p.hour}:${p.minute}`;
+    return `${r.kind} "${r.text}" due ${p.weekday}${date} at ${clock} ${p.dayPeriod} (in ${left})`;
   }
 
   /** `english`: does this person speak English to her? The tools' short
    *  confirmations are in English, so for anyone else the model says them. */
   tools(english: (userId: UserId) => boolean = () => true): Tool[] {
     const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : 0);
-    /** How long until it fires, from a "... (in 5 minutes)." result. */
-    const left = (raw: string) => /\(in ([^()]+)\)\.$/.exec(raw)?.[1];
     return [
       {
         spec: {
@@ -178,7 +242,7 @@ export class Reminders {
           const r = this.add(ctx, 'timer', label, this.now() + ms);
           return typeof r === 'string' ? r : `Timer set: ${this.describe(r)}.`;
         },
-        speak: (_a, raw, ctx) => (english(ctx.userId) && raw.startsWith('Timer set:') ? `Timer set for ${left(raw)}.` : undefined),
+        speak: (_a, raw, ctx) => (english(ctx.userId) ? setLine(raw) : undefined),
       },
       {
         spec: {
@@ -207,7 +271,7 @@ export class Reminders {
           const r = this.add(ctx, 'reminder', text, due);
           return typeof r === 'string' ? r : `Reminder set: ${this.describe(r)}.`;
         },
-        speak: (_a, raw, ctx) => (english(ctx.userId) && raw.startsWith('Reminder set:') ? `Reminder set, in ${left(raw)}.` : undefined),
+        speak: (_a, raw, ctx) => (english(ctx.userId) ? setLine(raw) : undefined),
       },
       {
         spec: {

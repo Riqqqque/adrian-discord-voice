@@ -2,8 +2,8 @@
 # Sourced, not run. Every file is checked against its SHA-256 before use.
 # Set ADRIAN_DOWNLOAD_CACHE=/dir to reuse files already downloaded there.
 
-NODE_VERSION=22.23.3
-NODE_SHA256=df450af89261115ef9f9e3830c3eeb2cc9213b63c720b1af623cb5dcbe2e02de
+NODE_VERSION=22.23.4
+NODE_SHA256=1805bcd35e6815559bd2eb97db438d3fdb0eb3a5e6a977b7c1badca76337e9ce
 NODE_URL="https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz"
 SHERPA=https://github.com/k2-fsa/sherpa-onnx/releases/download
 # name|url|sha256|kind (file; bin = executable file; or tar.bz2 that unpacks to a directory of the same name)|files to drop after unpacking
@@ -20,7 +20,7 @@ MODELS=(
   "smart-turn-v3.2-cpu.onnx|https://huggingface.co/pipecat-ai/smart-turn-v3/resolve/f766f81d3cfdf7737ac64aad813d91bbfd56bf93/smart-turn-v3.2-cpu.onnx|2bb026316b14a660486a75b1733cd3fbab8c2fd0314dc9af7be49f8cca967e4f|file"
   # Music from YouTube (0.10.0). YouTube changes break it every few weeks: bump the
   # version and checksum (from the release's SHA2-256SUMS) and ship a new release.
-  "yt-dlp_linux|https://github.com/yt-dlp/yt-dlp/releases/download/2026.08.19/yt-dlp_linux|58162f9bfdc27458ea47bfcb311cf47028f17d8154a8bf7d689861d46399230a|bin"
+  "yt-dlp_linux|https://github.com/yt-dlp/yt-dlp/releases/download/2026.10.26/yt-dlp_linux|767ba9dce7052aa196f8b12652f433d76de128ba168966fa84b6394d5e6c6795|bin"
 )
 
 command -v say >/dev/null || say() { printf '==> %s\n' "$*"; }
@@ -51,6 +51,26 @@ fetch() { # fetch url sha256 dest
   # Limits on a stall, not on total time: a big model on a slow line is fine.
   curl -fL --retry 3 --connect-timeout 30 --speed-time 60 --speed-limit 1024 --proto '=https' --tlsv1.2 -o "$dest" "$url"
   echo "$sha  $dest" | sha256sum -c --status || die "checksum mismatch for $name"
+}
+
+install_node() { # install_node <opt dir> <scratch dir>
+  local opt=$1 tmp=$2 dir=node-v$NODE_VERSION old d
+  if [ ! -x "$opt/$dir/bin/node" ]; then
+    fetch "$NODE_URL" "$NODE_SHA256" "$tmp/node.tar.xz"
+    rm -rf "${opt:?}/$dir.new"
+    mkdir -p "$opt/$dir.new"
+    tar -xJf "$tmp/node.tar.xz" -C "$opt/$dir.new" --strip-components=1 --no-same-owner
+    "$opt/$dir.new/bin/node" --version >/dev/null || { rm -rf "${opt:?}/$dir.new"; die "Node $NODE_VERSION does not run on this system"; }
+    rm -rf "${opt:?}/$dir"
+    mv -T "$opt/$dir.new" "$opt/$dir"
+    rm -f "$tmp/node.tar.xz"
+  fi
+  # Anything above can fail with the running Node untouched, and this can't stop halfway.
+  old=$(readlink "$opt/node" 2>/dev/null || true)
+  ln -sfn "$dir" "$opt/node.new" && mv -Tf "$opt/node.new" "$opt/node"
+  for d in "$opt"/node-v*; do
+    case ${d##*/} in "$dir"|"$old") ;; *) rm -rf "$d" ;; esac
+  done
 }
 
 install_models() { # install_models <models dir> <scratch dir>

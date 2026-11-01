@@ -223,6 +223,7 @@ Every update:
 - downloads the release and checks it against its `.sha256` file (a mismatch stops it);
 - downloads any new models;
 - updates the service file;
+- moves to the release's Node.js runtime, if it pins a new one;
 - switches over, and rolls back by itself if the bot isn't healthy within 30 seconds.
 
 No internet on the server? Download the bundle and its `.sha256` from the

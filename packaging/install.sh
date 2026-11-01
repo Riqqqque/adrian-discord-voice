@@ -119,7 +119,7 @@ glibc=$(getconf GNU_LIBC_VERSION 2>/dev/null | awk '{print $2}')
 avail_kb=$(df -Pk /opt | awk 'NR==2{print $4}')
 [ "$avail_kb" -gt $((3 * 1024 * 1024)) ] || die "need at least 3 GB free under /opt"
 mem_kb=$(awk '/MemTotal/{print $2}' /proc/meminfo)
-[ "$mem_kb" -gt $((3 * 1024 * 1024)) ] || say "warning: less than 3 GB of memory; speech models need about 2 GB"
+[ "$mem_kb" -gt $((4 * 1024 * 1024)) ] || say "warning: less than 4 GB of memory; she needs about 3.5 GB with the language voices on (the default), about 1.5 GB with them off (sudo adrian config languages false)"
 command -v ffmpeg >/dev/null || say "warning: ffmpeg not found; music stays off until it is installed (Debian/Ubuntu: sudo apt install ffmpeg)"
 CPUS=$(nproc)
 
@@ -153,12 +153,7 @@ refuse_symlinks "$ETC" "$VAR" "$VAR/models"
 install -d -m 0750 -o adrian -g adrian "$ETC" "$VAR" "$VAR/models"
 
 # --- Node.js runtime -----------------------------------------------------------
-if [ ! -x "$OPT/node-v$NODE_VERSION/bin/node" ]; then
-  fetch "$NODE_URL" "$NODE_SHA256" "$TMP/node.tar.xz"
-  mkdir -p "$OPT/node-v$NODE_VERSION"
-  tar -xJf "$TMP/node.tar.xz" -C "$OPT/node-v$NODE_VERSION" --strip-components=1 --no-same-owner
-fi
-ln -sfn "node-v$NODE_VERSION" "$OPT/node"
+install_node "$OPT" "$TMP"
 
 # --- app release ---------------------------------------------------------------
 say "Unpacking the app"

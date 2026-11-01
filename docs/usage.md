@@ -154,7 +154,8 @@ It can look things up about the server it's in, by voice or text: "who's online?
 
 - By default it DMs them: "**Alex** (in Game Night) asked me to tell you: dinner's ready."
 - Ask for a channel, or it's a text chat, and it posts there with an @mention of that person only.
-- It always says who the message is from. Each person can send 10 an hour and each person can get 5 an hour (`messaging.perUserPerHour`, `messaging.perTargetPerHour`); owners skip the limit.
+- It always says who the message is from. Each person can send 10 an hour and each person can get 5 an hour (`messaging.perUserPerHour`, `messaging.perTargetPerHour`); owners can send 30, and at most 3 go out per request.
+- It goes straight out when you say who it's for ("tell Sam", "message Sam", "let Sam know"). Otherwise it reads the message back and waits for your yes.
 - It won't post in a channel you can't post in yourself.
 - Turn it off with `messaging.enabled false`, and the lookups with `serverInfo.enabled false`.
 

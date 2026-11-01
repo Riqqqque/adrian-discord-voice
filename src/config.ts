@@ -138,7 +138,7 @@ export const PocConfigSchema = z.object({
       enabled: z.boolean().default(false),
       apiKeySecret: keyName('llm').default('GROQ_API_KEY'),
       model: z.string().min(1).default('whisper-large-v3-turbo'),
-      /** pc: only speech at a PC satellite; all: Discord calls too. */
+      /** pc: PCs, and anyone in the call with a PC connected; all: everyone in the call too. */
       rooms: z.enum(['pc', 'all']).default('pc'),
       /** Longest wait before using the local transcript instead. */
       timeoutMs: z.number().int().min(300).max(5000).default(1500),
@@ -242,7 +242,8 @@ export const PocConfigSchema = z.object({
       maxQueue: z.number().int().min(1).max(100).default(25),
       /** When the queue runs out, keep playing similar songs. */
       autoplay: z.boolean().default(true),
-      /** Artist requests shuffle the artist's top songs (ranked by Deezer's free public API; only the artist's name is sent). */
+      /** Artist requests shuffle the artist's top songs (ranked by Deezer's free public API).
+       *  Deezer gets the artist's name, and X from a plain "play X", to find out whether it's an artist. */
       topSongs: z.boolean().default(true),
     })
     .default({ enabled: true, ffmpeg: 'ffmpeg', plexBackup: true, volume: 0.5, duckLevel: 0.2, maxQueue: 25, autoplay: true, topSongs: true }),
