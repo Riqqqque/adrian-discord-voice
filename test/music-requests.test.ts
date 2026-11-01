@@ -165,7 +165,7 @@ describe('music requests', () => {
     const lines = musicPromptLines(r.p).join(' ');
     expect(lines).toContain('call play_music right away');
     expect(lines).toContain('Never say you can');
-    expect(lines).toContain(`playing Title ${id('song')} by Artist`);
+    expect(lines).toContain(`playing "Title ${id('song')}" by "Artist"`);
   });
 });
 

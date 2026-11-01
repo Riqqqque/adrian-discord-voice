@@ -82,6 +82,11 @@ fetch_release() { # fetch_release VERSION DIR: download the bundle and its check
   (cd "$2" && sha256sum -c --status "$name.sha256") || { echo "checksum mismatch for $name" >&2; return 1; }
   echo "$2/$name"
 }
+config_broken() { # why config.json can't be loaded, if it can't; unfinished setup (3) is fine
+  local why rc=0
+  why=$(tool check 2>&1 >/dev/null) || rc=$?
+  [ "$rc" = 1 ] && echo "${why%%$'\n'*}"
+}
 previous_version() { # the release that was current before the last switch
   [ -L "$OPT/previous" ] && basename "$(readlink -f "$OPT/previous")"
 }
@@ -193,6 +198,9 @@ case "$cmd" in
         auto=0; [ "$b" = --auto ] && auto=1
         v=$(latest_release) || { [ $auto = 1 ] && { echo "update check: couldn't reach GitHub"; exit 0; }; die "couldn't reach GitHub"; }
         if ! newer "$v" "$(current_version)"; then [ $auto = 1 ] || echo "Up to date ($(current_version))."; exit 0; fi
+        # No version gets healthy on a config.json that won't load: don't download,
+        # restart twice and roll back every hour until someone fixes it.
+        if [ $auto = 1 ] && why=$(config_broken); then echo "update $v waits: $why"; exit 0; fi
         # Never restart her mid-call or mid-song: try again next hour.
         if [ $auto = 1 ] && h=$(health 5 2>/dev/null) && grep -q '"busy":true' <<<"$h"; then
           echo "update $v waits: someone is in her call or music is playing"; exit 0
@@ -215,7 +223,7 @@ case "$cmd" in
     chown -R root:root "$OPT/releases/$new"; chmod -R go-w "$OPT/releases/$new"; chmod 0755 "$OPT/releases/$new"
     # The NEW release knows which models and service file it needs.
     if [ -f "$OPT/releases/$new/packaging/upgrade-prep.sh" ]; then
-      bash "$OPT/releases/$new/packaging/upgrade-prep.sh" || { rm -rf "${OPT:?}/releases/$new"; die "could not prepare $new (models or service file); nothing was switched"; }
+      bash "$OPT/releases/$new/packaging/upgrade-prep.sh" || { rm -rf "${OPT:?}/releases/$new"; die "could not prepare $new (models, service file or Node); nothing was switched"; }
     fi
     echo "Switching $old -> $new"
     switch_to "$new"

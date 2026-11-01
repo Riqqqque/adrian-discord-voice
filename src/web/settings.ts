@@ -84,6 +84,22 @@ function brainFor(c: Llm): Raw {
   };
 }
 
+/** Why a patch can't be saved, if it would send a stored key to an address the
+ *  config doesn't already pair it with. A session could otherwise collect any
+ *  model key at its own endpoint; `adrian config` takes root. */
+export function keyRouteProblem(raw: Raw, patch: SettingsPatch): string | undefined {
+  const brain = (raw.brain as Raw | undefined) ?? {};
+  const saved = [brain, (brain.fallback as Raw | undefined) ?? {}];
+  for (const c of [patch.llm, patch.fallback]) {
+    if (c?.preset !== 'custom') continue;
+    const { baseUrl, keySecret } = c as Extract<Llm, { preset: 'custom' }>;
+    if (keySecret && !saved.some((s) => s.baseUrl === baseUrl && s.apiKeySecret === keySecret)) {
+      return 'A custom endpoint that uses a saved key has to be set with `sudo adrian config`.';
+    }
+  }
+  return undefined;
+}
+
 /** The installer-owned parts every config has. */
 export function baseConfig(paths: InstallPaths, raw: Raw): Raw {
   const m = paths.modelsDir;

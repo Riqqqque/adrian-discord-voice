@@ -9,7 +9,7 @@ import { WebSocket } from 'ws';
 import type { SatelliteConnection } from '../src/satellite/connection.js';
 import { SatelliteDevices } from '../src/satellite/devices.js';
 import { startSatelliteServer } from '../src/satellite/server.js';
-import { pcTools } from '../src/satellite/tools.js';
+import { PC_RULE, pcTools, PowerDownWindow } from '../src/satellite/tools.js';
 
 const quiet = { debug() {}, info() {}, warn() {}, error() {} };
 const OWNER = '123456789012345678';
@@ -292,5 +292,211 @@ describe('PC confirmations', () => {
     expect(confirmation('pc_info', { action: 'summary' }, 'CPU 12%.')).toBeUndefined();
     expect(confirmation('pc_apps', { action: 'open', name: 'minecraft' }, "Didn't happen: Several match")).toBeUndefined();
     expect(confirmation('pc_system', { action: 'shutdown' }, "Didn't happen: Not done: shutdown needs")).toBeUndefined();
+  });
+
+  it('name the host a browser would really go to', async () => {
+    const { confirmation } = await import('../src/satellite/tools.js');
+    expect(confirmation('pc_open', { url: 'https://good.example@evil.example/x' }, 'Opened the page.')).toBe('Opening evil.example.');
+    expect(confirmation('pc_open', { url: 'https://good.example:pw@evil.example:8443/x' }, 'Opened the page.')).toBe('Opening evil.example.');
+    expect(confirmation('pc_open', { url: 'not a url' }, 'Opened the page.')).toBe('Opening it.');
+  });
+});
+
+describe('pc_open with a search', () => {
+  it('says the host that really opened, and sends it to the PC as the address', async () => {
+    const sent: Record<string, unknown>[] = [];
+    const pc = { action: async (_n: string, args: Record<string, unknown>) => (sent.push(args), { ok: true, result: 'Opened the page.' }) };
+    const open = pcTools({ pcFor: () => pc as never, findUrl: async () => 'https://www.evil.example/x' }).find((t) => t.spec.name === 'pc_open')!;
+    // The orchestrator hands run and speak the same object.
+    const args: Record<string, unknown> = { search: 'steam login' };
+    const raw = await open.run(args, AbortSignal.timeout(1000), { userId: OWNER, speaker: 'Rique' });
+    expect(sent).toEqual([{ url: 'https://www.evil.example/x' }]);
+    expect(open.speak?.(args, raw, { userId: OWNER, speaker: 'Rique' })).toBe('Opening evil.example.');
+  });
+
+  it('says the search page when no search service finds one', async () => {
+    const pc = { action: async () => ({ ok: true, result: 'Opened the page.' }) };
+    const open = pcTools({ pcFor: () => pc as never }).find((t) => t.spec.name === 'pc_open')!;
+    const args: Record<string, unknown> = { search: 'jei mod' };
+    const raw = await open.run(args, AbortSignal.timeout(1000), { userId: OWNER, speaker: 'Rique' });
+    expect(open.speak?.(args, raw, { userId: OWNER, speaker: 'Rique' })).toBe('Opening google.com.');
+  });
+});
+
+describe('power actions need their own yes', () => {
+  function rig(result: { ok: boolean; result: string } = { ok: true, result: 'Restarting in 30 seconds.' }) {
+    let now = 0;
+    let turn = 0;
+    const sent: { name: string; args: Record<string, unknown> }[] = [];
+    const down: string[] = [];
+    const pc = { action: async (name: string, args: Record<string, unknown>) => (sent.push({ name, args }), result) };
+    const tools = pcTools({ pcFor: (c) => (c.userId === OWNER ? (pc as never) : undefined), now: () => now, onPowerDown: (id) => down.push(id) });
+    const sys = tools.find((t) => t.spec.name === 'pc_system')!;
+    const ctx = (said: string, o: Record<string, unknown> = {}) => ({ userId: OWNER, speaker: 'Rique', channelId: 'c1', said, turn: ++turn, ...o });
+    const say = (a: Record<string, unknown>, said: string, o: Record<string, unknown> = {}) => sys.run(a, AbortSignal.timeout(1000), ctx(said, o));
+    return { sys, sent, down, ctx, say, tick: (ms: number) => (now += ms) };
+  }
+  const restart = { name: 'pc_system', args: { action: 'restart', confirmed: true } };
+
+  it("doesn't take the model's word for it", async () => {
+    const r = rig();
+    expect(await r.say({ action: 'restart', confirmed: true }, 'lol')).toBe('Restart the PC?');
+    expect(r.sent).toEqual([]);
+  });
+
+  it('goes through on the next turn when they say yes', async () => {
+    const r = rig();
+    await r.say({ action: 'restart' }, 'restart the pc');
+    expect(await r.say({ action: 'restart' }, 'yes')).toBe('Restarting in 30 seconds.');
+    expect(r.sent).toEqual([restart]);
+  });
+
+  it.each(['yeah do it', 'go ahead', 'yes restart it', 'Yes, restart the PC.'])('takes "%s"', async (said) => {
+    const r = rig();
+    await r.say({ action: 'restart' }, 'restart the pc');
+    await r.say({ action: 'restart' }, said);
+    expect(r.sent).toEqual([restart]);
+  });
+
+  it.each(['no', 'lol', 'yes but wait', 'not yet', 'restart it', 'yes shut it down', 'yes I was thinking we could do it later'])('asks again after "%s"', async (said) => {
+    const r = rig();
+    await r.say({ action: 'restart' }, 'restart the pc');
+    expect(await r.say({ action: 'restart' }, said)).toBe('Restart the PC?');
+    expect(r.sent).toEqual([]);
+  });
+
+  it('asks again after 20 seconds', async () => {
+    const r = rig();
+    await r.say({ action: 'restart' }, 'restart the pc');
+    r.tick(21_000);
+    expect(await r.say({ action: 'restart' }, 'yes')).toBe('Restart the PC?');
+    expect(r.sent).toEqual([]);
+  });
+
+  it('takes no yes from somewhere else', async () => {
+    const r = rig();
+    await r.say({ action: 'restart' }, 'restart the pc');
+    await r.say({ action: 'restart' }, 'yes', { channelId: 'c2' });
+    expect(r.sent).toEqual([]);
+  });
+
+  it("takes no yes from someone else's turn", async () => {
+    const r = rig();
+    await r.say({ action: 'restart' }, 'restart the pc');
+    expect(await r.say({ action: 'restart' }, 'yes', { userId: '999999999999999999' })).toMatch(/No PC/);
+    expect(r.sent).toEqual([]);
+  });
+
+  it('never confirms inside the turn that asked', async () => {
+    const r = rig();
+    const turn = r.ctx('yes'); // a yes meant for something else, and the same call twice
+    await r.sys.run({ action: 'restart' }, AbortSignal.timeout(1000), turn);
+    await r.sys.run({ action: 'restart' }, AbortSignal.timeout(1000), turn);
+    expect(r.sent).toEqual([]);
+  });
+
+  it('is for the very next turn only', async () => {
+    const r = rig();
+    await r.say({ action: 'restart' }, 'restart the pc');
+    r.ctx('something else'); // a turn with no tool call at all
+    await r.say({ action: 'restart' }, 'yes');
+    expect(r.sent).toEqual([]);
+  });
+
+  it('asks again when the yes turn wants something else', async () => {
+    const r = rig();
+    await r.say({ action: 'restart' }, 'restart the pc');
+    expect(await r.say({ action: 'shutdown' }, 'yes')).toBe('Shut down the PC?');
+    expect(r.sent).toEqual([]);
+  });
+
+  it.each([
+    ['sleep', 'Put the PC to sleep?'],
+    ['restart', 'Restart the PC?'],
+    ['shutdown', 'Shut down the PC?'],
+  ])('%s asks with fixed words the model cannot change', async (action, line) => {
+    const r = rig();
+    const raw = await r.say({ action }, 'hm');
+    expect(raw).toBe(line);
+    expect(r.sys.speak?.({ action }, raw, r.ctx('hm'))).toBe(line);
+    expect(r.sys.asks?.(raw)).toBe(true);
+    expect(r.sys.asks?.('Restarting in 30 seconds.')).toBe(false);
+  });
+
+  it('leaves the rest of pc_system alone, and never passes the flag on', async () => {
+    const r = rig();
+    await r.say({ action: 'lock', confirmed: true }, 'lock it');
+    await r.say({ action: 'cancel_shutdown' }, 'cancel the shutdown');
+    expect(r.sent.map((s) => s.args)).toEqual([{ action: 'lock' }, { action: 'cancel_shutdown' }]);
+  });
+
+  it('offers the model no flag to set', () => {
+    const r = rig();
+    expect(JSON.stringify(r.sys.spec)).not.toContain('confirmed');
+    expect(PC_RULE).not.toContain('confirmed');
+  });
+
+  it('reports a restart or shutdown the PC took, so a spoken cancel can reach it', async () => {
+    const r = rig();
+    await r.say({ action: 'restart' }, 'restart the pc');
+    await r.say({ action: 'restart' }, 'yes');
+    expect(r.down).toEqual([OWNER]);
+    await r.say({ action: 'shutdown' }, 'shut it down');
+    await r.say({ action: 'shutdown' }, 'yes');
+    expect(r.down).toEqual([OWNER, OWNER]);
+  });
+
+  it('reports nothing for sleep, a refusal or a question', async () => {
+    const r = rig();
+    await r.say({ action: 'sleep' }, 'go to sleep');
+    await r.say({ action: 'sleep' }, 'yes');
+    expect(r.down).toEqual([]);
+    const no = rig({ ok: false, result: "Couldn't: access denied" });
+    await no.say({ action: 'restart' }, 'restart the pc');
+    expect(no.down).toEqual([]);
+    await no.say({ action: 'restart' }, 'yes');
+    expect(no.down).toEqual([]);
+  });
+});
+
+describe('calling off a restart or shutdown', () => {
+  function rig() {
+    let now = 0;
+    const sent: { name: string; args: Record<string, unknown> }[] = [];
+    const pc = { action: async (name: string, args: Record<string, unknown>) => (sent.push({ name, args }), { ok: true, result: 'Cancelled.' }) };
+    return { sent, power: new PowerDownWindow((id) => (id === OWNER ? (pc as never) : undefined), () => now), tick: (ms: number) => (now += ms) };
+  }
+  const cancel = [{ name: 'pc_system', args: { action: 'cancel_shutdown' } }];
+
+  it('works once, up to the moment it happens', async () => {
+    const r = rig();
+    r.power.started(OWNER);
+    r.tick(29_000);
+    expect(await r.power.cancel(OWNER)).toBe(true);
+    expect(await r.power.cancel(OWNER)).toBe(false);
+    expect(r.sent).toEqual(cancel);
+  });
+
+  it('does nothing once the time is up', async () => {
+    const r = rig();
+    r.power.started(OWNER);
+    r.tick(31_000);
+    expect(await r.power.cancel(OWNER)).toBe(false);
+    expect(r.sent).toEqual([]);
+  });
+
+  it("does nothing for someone else's words, or with nothing counting down", async () => {
+    const r = rig();
+    expect(await r.power.cancel(OWNER)).toBe(false);
+    r.power.started(OWNER);
+    expect(await r.power.cancel('999999999999999999')).toBe(false);
+    expect(r.sent).toEqual([]);
+    expect(await r.power.cancel(OWNER)).toBe(true);
+  });
+
+  it('says false when the PC has gone away', async () => {
+    const r = rig();
+    r.power.started('999999999999999999');
+    expect(await r.power.cancel('999999999999999999')).toBe(false);
   });
 });

@@ -405,6 +405,66 @@ describe('everyday words vs real stops', () => {
     expect(stopped).toBe(1);
   });
 
+  describe('a plain "stop" while she is listening to you', () => {
+    const rigged = () => {
+      let stopped = 0;
+      const r = rig([], { stopOther: () => void stopped++ });
+      return { ...r, stopped: () => stopped };
+    };
+    /** An answer finished: the follow-up window is open. */
+    const inFollowUp = async (r: ReturnType<typeof rig>) => {
+      r.wake('a', 'what is the time');
+      await r.tick();
+      r.answers[0]!.finish();
+      await r.tick();
+      expect(r.c.listeningTo('a')).toBe(true);
+    };
+
+    it('stops the music during a follow-up', async () => {
+      const r = rigged();
+      await inFollowUp(r);
+      r.plain('a', 'stop');
+      expect(r.stopped()).toBe(1);
+      expect(r.c.listeningTo('a')).toBe(false);
+    });
+
+    it('stops the music after "Yes?"', async () => {
+      const r = rigged();
+      r.c.heard({ userId: 'a', text: 'Hey Adrian', woke: true, command: '' });
+      await r.tick();
+      expect(r.said).toEqual(['Yes?']);
+      r.plain('a', 'stop');
+      expect(r.stopped()).toBe(1);
+    });
+
+    it('goes by when they started saying it, not when the words landed', async () => {
+      const r = rigged();
+      await inFollowUp(r);
+      const startedAt = r.at() + 7_000;
+      await r.tick(DEFAULT_CONTROLLER_OPTIONS.followUpMs + 1_000); // the window closed while it was transcribed
+      r.c.heard({ userId: 'a', text: 'stop', woke: false, command: '', startedAt });
+      expect(r.stopped()).toBe(1);
+    });
+
+    it('still needs the window: from someone she is not listening to, nothing', async () => {
+      const r = rigged();
+      await inFollowUp(r);
+      r.plain('b', 'stop');
+      expect(r.stopped()).toBe(0);
+    });
+
+    it('an everyday word does not stop it, and neither does "stop listening"', async () => {
+      const r = rigged();
+      await inFollowUp(r);
+      r.plain('a', 'done');
+      expect(r.stopped()).toBe(0);
+      const s = rigged();
+      await inFollowUp(s);
+      s.plain('a', 'stop listening');
+      expect(s.stopped()).toBe(0);
+    });
+  });
+
   it('a pause mid-sentence continues the same request instead of replacing it', async () => {
     const r = rig();
     r.wake('a', 'open spotify and');
@@ -936,5 +996,119 @@ describe('end of turn', () => {
     expect(seen).toEqual(['a', 'a']);
     r.c.cancelAll();
     expect(seen).toEqual(['a', 'a', undefined, undefined]);
+  });
+});
+
+describe('her name said again and again', () => {
+  const repeated = { userId: 'a', text: 'Hey Adrian. Hey Adrian. Hey Adrian.', woke: true, command: 'Hey Adrian. Hey Adrian.' };
+
+  it('gets the quick "Yes?", not the model', async () => {
+    const r = rig();
+    r.c.heard(repeated);
+    await r.tick();
+    expect(r.said).toEqual(['Yes?']);
+    expect(r.answers).toHaveLength(0);
+    expect(r.c.listeningTo('a')).toBe(true);
+  });
+
+  it('then the next words are the question', async () => {
+    const r = rig();
+    r.c.heard(repeated);
+    await r.tick();
+    r.plain('a', 'set a timer');
+    await r.tick();
+    expect(r.answers.map((x) => x.command)).toEqual(['set a timer']);
+  });
+
+  it('a name inside a real command is still the command', async () => {
+    const r = rig();
+    r.c.heard({ userId: 'a', text: 'Hey Adrian, is Adrian Peterson still playing', woke: true, command: 'is Adrian Peterson still playing' });
+    await r.tick();
+    expect(r.said).toEqual([]);
+    expect(r.answers.map((x) => x.command)).toEqual(['is Adrian Peterson still playing']);
+  });
+});
+
+describe('an answer that asks something back', () => {
+  it('stays listening, and the next plain words reach her', async () => {
+    const r = rig();
+    r.wake('a', 'play');
+    await r.tick();
+    r.answers[0]!.finish(); // nothing to report: "Who do you want to hear?" was said
+    await r.tick();
+    expect(r.c.listeningTo('a')).toBe(true);
+    r.plain('a', 'Ella Langley');
+    await r.tick();
+    expect(r.answers.map((x) => x.command)).toEqual(['play', 'Ella Langley']);
+  });
+});
+
+describe('how an announcement went', () => {
+  it('said in full', async () => {
+    const r = rig();
+    const said = r.c.announce('a', 'Your timer is up.');
+    await expect(said).resolves.toBe(true);
+    expect(r.said).toEqual(['Your timer is up.']);
+  });
+
+  it('only once it has really been said, not when it joined the queue', async () => {
+    const r = rig();
+    r.wake('b', 'a long question');
+    await r.tick();
+    let settled = false;
+    const said = r.c.announce('a', 'Your timer is up.').finally(() => (settled = true));
+    await r.tick();
+    expect(settled).toBe(false);
+    r.answers[0]!.finish();
+    await expect(said).resolves.toBe(true);
+  });
+
+  it('stopped by them: they heard it, so it is done', async () => {
+    let cut!: () => void;
+    const r = rig([], { say: (_t, signal) => new Promise<void>((res) => { cut = res; signal?.addEventListener('abort', () => res()); }) });
+    const said = r.c.announce('a', 'Your timer is up.');
+    await r.tick();
+    r.plain('a', 'stop');
+    await expect(said).resolves.toBe(true);
+    expect(cut).toBeDefined();
+  });
+
+  it('cut off because she left the call', async () => {
+    const r = rig([], { say: (_t, signal) => new Promise<void>((res) => signal?.addEventListener('abort', () => res())) });
+    const said = r.c.announce('a', 'Your timer is up.');
+    await r.tick();
+    r.c.cancelAll();
+    await expect(said).resolves.toBe(false);
+  });
+
+  it('still waiting in the queue when she left', async () => {
+    const r = rig();
+    r.wake('b', 'a long question');
+    await r.tick();
+    const said = r.c.announce('a', 'Your timer is up.');
+    r.c.cancelAll();
+    await expect(said).resolves.toBe(false);
+  });
+
+  it('cut off by an owner who needed her first', async () => {
+    const r = rig([], { preempts: (u) => u === 'boss', say: (_t, signal) => new Promise<void>((res) => signal?.addEventListener('abort', () => res())) });
+    const said = r.c.announce('a', 'Your timer is up.');
+    await r.tick();
+    r.wake('boss', 'a question');
+    await expect(said).resolves.toBe(false);
+  });
+
+  it('taken out of the queue by their own "never mind"', async () => {
+    const r = rig();
+    r.wake('b', 'a long question');
+    await r.tick();
+    const said = r.c.announce('a', 'Your timer is up.');
+    r.plain('a', 'never mind'); // meant for something else: the timer must not vanish with it
+    await expect(said).resolves.toBe(false);
+  });
+
+  it('the voice failing is not delivered', async () => {
+    const r = rig([], { say: async (t) => { if (t.includes('timer')) throw new Error('no voice'); } });
+    await expect(r.c.announce('a', 'Your timer is up.')).resolves.toBe(false);
   });
 });

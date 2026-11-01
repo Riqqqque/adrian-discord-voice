@@ -1,15 +1,19 @@
 // Drives the real startVoiceStack with fake Discord, listening, satellite server
 // and HTTP. Nothing here touches the network or an audio device.
 import { EventEmitter } from 'node:events';
-import { mkdtempSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Client } from 'discord.js';
+import { ChannelType, Client, Collection, Events } from 'discord.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { startVoiceStack } from '../src/app/stack.js';
 import { PocConfigSchema } from '../src/config.js';
-import { MusicPlayer } from '../src/features/music.js';
+import { MusicPlayer, YoutubeSource } from '../src/features/music.js';
 import { UsageLedger } from '../src/limits/usage-ledger.js';
+import { SmartTurn } from '../src/speech/smart-turn.js';
+import { WhisperStt } from '../src/speech/whisper.js';
+import { Speaker } from '../src/voice/speaker.js';
+import { MODEL_LAYOUT } from '../src/web/checks.js';
 
 const h = vi.hoisted(() => {
   /** Takes audio at once, like a player that never falls behind. */
@@ -23,7 +27,7 @@ const h = vi.hoisted(() => {
     });
     return { done, stop };
   };
-  return { play, pipes: [] as any[], transport: undefined as any, sat: undefined as any, conns: [] as unknown[] };
+  return { play, pipes: [] as any[], transport: undefined as any, sat: undefined as any, conns: [] as unknown[], connecting: undefined as (() => Promise<void>) | undefined };
 });
 
 // Music looks for ffmpeg at startup; nothing here decodes anything.
@@ -41,13 +45,29 @@ vi.mock('../src/listen/pipeline.js', async () => {
 vi.mock('../src/transport/discord.js', async () => {
   const { EventEmitter } = await import('node:events');
   class DiscordVoiceTransport extends EventEmitter {
+    /** The real one reads its connection's state. */
+    up = false;
+    retries = 0;
     constructor() {
       super();
       h.transport = this;
+      this.on('ready', () => (this.up = true));
+      for (const e of ['disconnected', 'failed', 'kicked']) this.on(e, () => (this.up = false));
     }
     playPcm = h.play;
-    async connect() {}
-    async disconnect() {}
+    isReady() {
+      return this.up;
+    }
+    retry() {
+      this.retries++;
+    }
+    async connect() {
+      await h.connecting?.();
+      this.up = true;
+    }
+    async disconnect() {
+      this.up = false;
+    }
   }
   return { DiscordVoiceTransport };
 });
@@ -62,6 +82,9 @@ const GUILD = '100000000000000010';
 const CALL = '100000000000000020';
 const OWNER = '100000000000000030';
 const SAM = '100000000000000040';
+const BOT = '100000000000000050';
+const TEXT_CHANNEL = '100000000000000060';
+const MUSIC = { music: { enabled: true, ffmpeg: 'ffmpeg-stub', ytdlp: process.execPath, topSongs: false } };
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 async function until(ok: () => unknown, what: string, ms = 3000) {
@@ -93,9 +116,9 @@ function sse(parts: unknown[], hang: boolean, signal?: AbortSignal, lingerMs = 0
   );
 }
 
-function fakeConn(owner: string) {
+function fakeConn(owner: string, id: string) {
   const c = Object.assign(new EventEmitter(), {
-    device: { id: 'd1', name: 'Desk', owner },
+    device: { id, name: 'Desk', owner },
     owner,
     lastSeen: Date.now(),
     /** The socket is gone: isReady goes false, as it does on the real connection. */
@@ -103,6 +126,7 @@ function fakeConn(owner: string) {
     isReady: () => c.open,
     transcripts: [] as string[],
     actions: [] as string[],
+    calls: [] as { name: string; args: Record<string, unknown> }[],
     /** Holds PC actions until the test lets go. Like the real ones, they ignore a stop. */
     hold: undefined as Promise<void> | undefined,
     mode() {},
@@ -111,8 +135,9 @@ function fakeConn(owner: string) {
     transcript(who: string, t: string) {
       c.transcripts.push(`${who}: ${t}`);
     },
-    async action(name: string) {
+    async action(name: string, args: Record<string, unknown>) {
       c.actions.push(name);
+      c.calls.push({ name, args });
       await c.hold;
       return { ok: true, result: 'CPU 12%.' };
     },
@@ -121,10 +146,12 @@ function fakeConn(owner: string) {
   return c;
 }
 
-async function rig(over: Record<string, unknown> = {}) {
+async function rig(over: Record<string, unknown> | ((dir: string) => Record<string, unknown>) = {}, o: { prepare?(dir: string): void; login?(client: Client): Promise<string> } = {}) {
   h.pipes.length = 0;
   h.conns = [];
+  h.connecting = undefined;
   const dir = mkdtempSync(join(tmpdir(), 'stack-'));
+  o.prepare?.(dir);
   const config = PocConfigSchema.parse({
     guildId: GUILD,
     channelId: CALL,
@@ -139,7 +166,7 @@ async function rig(over: Record<string, unknown> = {}) {
     textChat: { enabled: false },
     satellite: { enabled: true, port: 40000, unfinishedWaitMs: 0 },
     limits: { perUserPerHour: 0, dailyUsd: 0, monthlyUsd: 0 },
-    ...over,
+    ...(typeof over === 'function' ? over(dir) : over),
   });
   const steps: { parts: unknown[]; hang?: boolean; lingerMs?: number }[] = [];
   const llmBodies: any[] = [];
@@ -176,28 +203,53 @@ async function rig(over: Record<string, unknown> = {}) {
       return { samples: new Float32Array(960).fill(0.1), sampleRate: 48_000, synthMs: 1 };
     },
   };
-  const log = { debug() {}, info() {}, warn() {}, error() {} };
+  const warned: string[] = [];
+  const log = { debug() {}, info() {}, warn: (m: string) => void warned.push(m), error() {} };
   const ledger = new UsageLedger(undefined, { perUserPerHour: 0, dailyUsd: 0, monthlyUsd: 0 }, 'UTC');
   let client: any;
   vi.spyOn(Client.prototype, 'login').mockImplementation(async function (this: unknown) {
     client = this;
-    return 'x';
+    return o.login ? o.login(this as Client) : 'x';
   });
   const secrets = new Map([['DISCORD_TOKEN', 'x'], ['LLM_API_KEY', 'y'], ['GROQ_API_KEY', 'z'], ['TAVILY_API_KEY', 'w']]);
   const stack = await startVoiceStack(config as never, secrets, log as never, ledger, { sttFor: async () => ({}) as never, ttsFor: () => tts as never }, dir);
   client.users.fetch = async () => ({});
+  client.user = { id: BOT, tag: 'bot#0' };
+  const dms = { sent: [] as string[], tries: 0, fail: false };
+  client.users.send = async (_id: string, t: string) => {
+    dms.tries++;
+    if (dms.fail) throw new Error('DMs closed');
+    dms.sent.push(t);
+    return {};
+  };
   const voiceStates = new Map<string, unknown>();
   client.guilds.cache.set(GUILD, { voiceStates: { cache: voiceStates }, members: { cache: new Map() } });
   h.transport.emit('ready');
   const heard = (pipe: EventEmitter, userId: string, t: string, command?: string, audioSeconds = 1) =>
     pipe.emit('heard', { userId, text: t, woke: command !== undefined, command: command ?? '', samples: new Float32Array(16_000), audioSeconds, levelDbfs: -20, sttLatencyMs: 10, segmentClosedAt: performance.now(), decodeMs: 5 });
-  const connect = () => {
-    const conn = fakeConn(OWNER);
-    h.conns = [conn];
+  const connect = (owner = OWNER, id = 'd1') => {
+    const conn = fakeConn(owner, id);
+    h.conns.push(conn);
     h.sat.onConnect(conn);
     return { conn, pipe: h.pipes[h.pipes.length - 1] as EventEmitter };
   };
-  return { stack, ledger, steps, llmBodies, groq, search, tts, transport: h.transport as EventEmitter, discordPipe: h.pipes[0] as EventEmitter, heard, connect, voiceStates };
+  /** The gateway's ready event: joins the call and starts the timers. */
+  const loggedIn = () => client.emit(Events.ClientReady, client);
+  /** A message reaching the text chat. No guild: a DM. */
+  const typed = (userId: string, content: string, guildId?: string) =>
+    client.emit('messageCreate', {
+      author: { id: userId, bot: false, username: 'someone' },
+      system: false,
+      content,
+      embeds: [],
+      guildId: guildId ?? null,
+      guild: null,
+      channelId: guildId ? TEXT_CHANNEL : `dm-${userId}`,
+      channel: { type: guildId ? ChannelType.GuildText : ChannelType.DM },
+      mentions: { users: new Collection(guildId ? [[BOT, {}]] : []), roles: new Collection(), everyone: false },
+      reply: async () => ({}),
+    });
+  return { stack, ledger, steps, llmBodies, groq, search, tts, transport: h.transport as EventEmitter, discordPipe: h.pipes[0] as EventEmitter, heard, connect, voiceStates, loggedIn, typed, dms, dir, warned };
 }
 
 afterEach(() => {
@@ -656,5 +708,895 @@ describe('local music orders', () => {
     await sleep(60);
     expect(skip).toHaveBeenCalledTimes(1);
     await r.stack.stop();
+  });
+});
+
+type Rig = Awaited<ReturnType<typeof rig>>;
+const SILENT = { parts: [text('SILENT'), usage(10, 2)] };
+const TRACK = { title: 'Song', artist: 'Someone', ref: 'x', source: 'youtube' };
+const JUDGE_LINE = 'without using your name';
+const asPrompt = (body: any) => JSON.stringify(body.messages);
+/** Moves the wall clock on. Before the rig: the clocks are taken when it starts. */
+function clockAhead() {
+  const real = Date.now.bind(Date);
+  let ahead = 0;
+  vi.spyOn(Date, 'now').mockImplementation(() => real() + ahead);
+  return (ms: number) => (ahead = ms);
+}
+/** Nothing the music player does may run for real here. */
+function fakeMusic() {
+  return {
+    play: vi.spyOn(MusicPlayer.prototype, 'playNamed').mockResolvedValue({ ok: true } as never),
+    request: vi.spyOn(MusicPlayer.prototype, 'request').mockResolvedValue({ ok: true, added: 1, started: TRACK } as never),
+    skip: vi.spyOn(MusicPlayer.prototype, 'skip').mockResolvedValue(undefined),
+    pause: vi.spyOn(MusicPlayer.prototype, 'pause').mockReturnValue(true),
+    resume: vi.spyOn(MusicPlayer.prototype, 'resume').mockReturnValue(false),
+    stop: vi.spyOn(MusicPlayer.prototype, 'stop').mockReturnValue(true),
+    nudge: vi.spyOn(MusicPlayer.prototype, 'nudgeVolume').mockReturnValue(0.5),
+  };
+}
+/** An answer from the model, which leaves her listening without her name. */
+async function answered(r: Rig, who = SAM, pipe = r.discordPipe, say = 'Canberra.') {
+  const n = r.stack.answers().length;
+  r.steps.push({ parts: [text(say), usage(10, 2)] });
+  r.heard(pipe, who, 'hey adrian capital', 'capital of australia');
+  await until(() => r.stack.answers().length > n, 'the answer');
+  await sleep(20);
+}
+/** Said with her name, then until she has said `line`. */
+async function order(r: Rig, pipe: EventEmitter, who: string, words: string, line: string) {
+  const n = r.tts.calls.length;
+  r.heard(pipe, who, `hey adrian ${words}`, words);
+  await until(() => r.tts.calls.length > n, line);
+  expect(r.tts.calls.at(-1)).toBe(line);
+  await sleep(20);
+}
+
+describe('a follow-up said without her name', () => {
+  it.each(['next', 'skip', 'pause', 'resume', 'play the objective', 'turn it up', 'louder', 'slower', 'say that again', 'what time is it'])('"%s" goes to the judge, who can leave it alone', async (words) => {
+    const r = await rig(MUSIC);
+    const m = fakeMusic();
+    vi.spyOn(MusicPlayer.prototype, 'nowPlaying', 'get').mockReturnValue(TRACK as never);
+    await answered(r);
+    r.steps.push(SILENT);
+    r.heard(r.discordPipe, SAM, words);
+    await until(() => r.llmBodies.length === 2, 'the judge');
+    expect(asPrompt(r.llmBodies[1])).toContain(JUDGE_LINE);
+    await sleep(40);
+    for (const s of Object.values(m)) expect(s).not.toHaveBeenCalled();
+    expect(r.tts.calls).toEqual(['Canberra.']);
+    await r.stack.stop();
+  });
+
+  it('what she does decide is for her still happens', async () => {
+    const r = await rig(MUSIC);
+    const m = fakeMusic();
+    await answered(r);
+    r.steps.push({ parts: [toolCall('music_control', '{"action":"skip"}'), usage(10, 2)] });
+    r.voiceStates.set(SAM, { channelId: CALL, mute: false, deaf: false });
+    r.heard(r.discordPipe, SAM, 'next');
+    await until(() => m.skip.mock.calls.length === 1, 'the skip');
+    await r.stack.stop();
+  });
+
+  it('tells the judge a music order may be just that, without taking the choice away', async () => {
+    const r = await rig(MUSIC);
+    const m = fakeMusic();
+    await answered(r);
+    r.steps.push({ parts: [toolCall('play_music', '{"request_type":"song","query":"get lucky"}'), usage(10, 2)] });
+    r.voiceStates.set(SAM, { channelId: CALL, mute: false, deaf: false });
+    r.heard(r.discordPipe, SAM, 'play get lucky');
+    await until(() => m.request.mock.calls.length === 1, 'the song');
+    expect(asPrompt(r.llmBodies[1])).toContain(JUDGE_LINE);
+    expect(asPrompt(r.llmBodies[1])).toContain('order for your music');
+    await r.stack.stop();
+  });
+
+  it('what the judge leaves alone stays out of the log: it may never have been for her', async () => {
+    const r = await rig(MUSIC);
+    fakeMusic();
+    await answered(r);
+    r.steps.push(SILENT);
+    r.heard(r.discordPipe, SAM, 'play the objective');
+    await until(() => r.stack.answers().length === 2, 'the judge');
+    expect(r.warned).not.toContain('music asked but not played');
+    await r.stack.stop();
+  });
+
+  it('a request to her that played nothing is logged, to see why', async () => {
+    const r = await rig(MUSIC);
+    fakeMusic();
+    r.steps.push({ parts: [text('Sure, something chill coming up.'), usage(10, 2)] });
+    r.heard(r.discordPipe, SAM, 'hey adrian play something chill', 'play something chill');
+    await until(() => r.stack.answers().length === 1, 'the answer');
+    expect(r.warned).toContain('music asked but not played');
+    await r.stack.stop();
+  });
+
+  it('says nothing to the judge about music for other words', async () => {
+    const r = await rig(MUSIC);
+    fakeMusic();
+    await answered(r);
+    r.steps.push(SILENT);
+    r.heard(r.discordPipe, SAM, 'grab the diamonds');
+    await until(() => r.llmBodies.length === 2, 'the judge');
+    expect(asPrompt(r.llmBodies[1])).not.toContain('order for your music');
+    await r.stack.stop();
+  });
+
+  it.each([
+    ['okay', 0],
+    ['thanks', 1],
+    ['bye', 1],
+  ])('"%s" changes nothing, so it costs no model call', async (words, spoken) => {
+    const r = await rig(MUSIC);
+    await answered(r);
+    r.heard(r.discordPipe, SAM, words);
+    await sleep(60);
+    expect(r.llmBodies).toHaveLength(1);
+    expect(r.tts.calls).toHaveLength(1 + spoken);
+    await r.stack.stop();
+  });
+
+  it('but "yeah" after a question from her is the answer', async () => {
+    const r = await rig(MUSIC);
+    await answered(r, SAM, r.discordPipe, 'Want the long version?');
+    r.heard(r.discordPipe, SAM, 'yeah');
+    await until(() => r.llmBodies.length === 2, 'the model');
+    await r.stack.stop();
+  });
+
+  it('after "Yes?" the words are an order: they go straight through', async () => {
+    const r = await rig(MUSIC);
+    const m = fakeMusic();
+    r.heard(r.discordPipe, SAM, 'hey adrian', '');
+    await until(() => r.tts.calls.includes('Yes?'), 'her answer');
+    await sleep(20);
+    r.heard(r.discordPipe, SAM, 'next');
+    await until(() => m.skip.mock.calls.length === 1, 'the skip');
+    expect(r.llmBodies).toHaveLength(0);
+    await r.stack.stop();
+  });
+});
+
+describe('phrases answered without the model', () => {
+  it('with her name, a music order needs no model', async () => {
+    const r = await rig(MUSIC);
+    const m = fakeMusic();
+    r.heard(r.discordPipe, SAM, 'hey adrian skip', 'skip');
+    await until(() => m.skip.mock.calls.length === 1, 'the skip');
+    await sleep(20);
+    r.heard(r.discordPipe, SAM, 'hey adrian play get lucky', 'play get lucky');
+    await until(() => m.play.mock.calls.length === 1, 'the song');
+    expect(m.play.mock.calls[0]!.slice(0, 2)).toEqual(['get lucky', 'now']);
+    expect(r.llmBodies).toHaveLength(0);
+    await r.stack.stop();
+  });
+
+  it('at a PC with none of her music on, "pause" means what the PC is playing', async () => {
+    const r = await rig(MUSIC);
+    const m = fakeMusic();
+    const { pipe } = r.connect();
+    r.heard(pipe, OWNER, 'hey adrian pause', 'pause');
+    await until(() => r.llmBodies.length === 1, 'the model');
+    expect(m.pause).not.toHaveBeenCalled();
+    await r.stack.stop();
+  });
+
+  it('at a PC with her music on, it means hers', async () => {
+    const r = await rig(MUSIC);
+    const m = fakeMusic();
+    vi.spyOn(MusicPlayer.prototype, 'nowPlaying', 'get').mockReturnValue(TRACK as never);
+    const { pipe } = r.connect();
+    r.heard(pipe, OWNER, 'hey adrian pause', 'pause');
+    await until(() => m.pause.mock.calls.length === 1, 'the pause');
+    expect(r.llmBodies).toHaveLength(0);
+    await r.stack.stop();
+  });
+
+  it('with music on, "turn it up" is the music, unless it is about her voice', async () => {
+    const r = await rig(MUSIC);
+    const m = fakeMusic();
+    vi.spyOn(MusicPlayer.prototype, 'nowPlaying', 'get').mockReturnValue(TRACK as never);
+    r.heard(r.discordPipe, SAM, 'hey adrian turn it up', 'turn it up');
+    await until(() => m.nudge.mock.calls.length === 1, 'the music');
+    await sleep(20);
+    expect(r.tts.calls).toEqual([]);
+    await order(r, r.discordPipe, SAM, 'talk louder', 'Okay, louder.');
+    expect(m.nudge).toHaveBeenCalledTimes(1);
+    await r.stack.stop();
+  });
+
+  it('volume and speed stop at their limits', async () => {
+    const r = await rig();
+    const p = r.discordPipe;
+    await order(r, p, SAM, 'louder', 'Okay, louder.');
+    await order(r, p, SAM, 'louder', 'Okay, louder.');
+    await order(r, p, SAM, 'louder', "That's as loud as I go.");
+    for (let i = 0; i < 5; i++) await order(r, p, SAM, 'quieter', 'Okay, quieter.');
+    await order(r, p, SAM, 'quieter', "That's as quiet as I go.");
+    await order(r, p, SAM, 'slower', 'Okay, a bit slower.');
+    await order(r, p, SAM, 'slower', 'Okay, a bit slower.');
+    await order(r, p, SAM, 'slower', "That's my limit.");
+    for (let i = 0; i < 5; i++) await order(r, p, SAM, 'faster', 'Okay, a bit faster.');
+    await order(r, p, SAM, 'faster', "That's my limit.");
+    await r.stack.stop();
+  }, 20_000);
+
+  it('over the hourly limit, "play" says so and searches for nothing', async () => {
+    const r = await rig({ ...MUSIC, limits: { perUserPerHour: 1, dailyUsd: 0, monthlyUsd: 0 } });
+    const m = fakeMusic();
+    r.ledger.noteRequest(SAM);
+    r.heard(r.discordPipe, SAM, 'hey adrian play get lucky', 'play get lucky');
+    await until(() => r.tts.calls.length === 1, 'her answer');
+    expect(r.tts.calls[0]).toContain('asked for a lot');
+    expect(m.play).not.toHaveBeenCalled();
+    await r.stack.stop();
+  });
+});
+
+describe('a pause after "play"', () => {
+  const QUESTION = 'Who do you want to hear?';
+  async function asked(r: Rig, pipe = r.discordPipe, who = SAM) {
+    r.heard(pipe, who, 'hey adrian play', 'play');
+    await until(() => r.tts.calls.includes(QUESTION), 'her question');
+    await sleep(20);
+  }
+
+  it('asks who, and the next words finish the order without the model', async () => {
+    const r = await rig(MUSIC);
+    const m = fakeMusic();
+    await asked(r);
+    r.heard(r.discordPipe, SAM, 'Ella Langley');
+    await until(() => m.play.mock.calls.length === 1, 'the song');
+    expect(m.play.mock.calls[0]!.slice(0, 2)).toEqual(['Ella Langley', 'now']);
+    expect(r.llmBodies).toHaveLength(0);
+    await r.stack.stop();
+  });
+
+  it('just carries on if the music was paused', async () => {
+    const r = await rig(MUSIC);
+    const m = fakeMusic();
+    m.resume.mockReturnValue(true);
+    r.heard(r.discordPipe, SAM, 'hey adrian play', 'play');
+    await until(() => m.resume.mock.calls.length === 1, 'the music');
+    await sleep(40);
+    expect(r.tts.calls).toEqual([]);
+    expect(r.llmBodies).toHaveLength(0);
+    await r.stack.stop();
+  });
+
+  it('a new order with her name is its own order, even inside the wait', async () => {
+    const r = await rig(MUSIC);
+    const m = fakeMusic();
+    await asked(r);
+    r.heard(r.discordPipe, SAM, 'never mind');
+    await sleep(40);
+    r.heard(r.discordPipe, SAM, 'hey adrian play drake', 'play drake');
+    await until(() => m.play.mock.calls.length === 1, 'the song');
+    expect(m.play.mock.calls[0]![0]).toBe('drake');
+    await r.stack.stop();
+  });
+
+  it('words with her name are not the answer to the question', async () => {
+    const r = await rig(MUSIC);
+    const m = fakeMusic();
+    await asked(r);
+    r.heard(r.discordPipe, SAM, 'hey adrian tell me a joke', 'tell me a joke');
+    await until(() => r.llmBodies.length === 1, 'the model');
+    expect(r.llmBodies[0].messages.at(-1).content).toBe('tell me a joke');
+    expect(asPrompt(r.llmBodies[0])).not.toContain(JUDGE_LINE);
+    expect(m.play).not.toHaveBeenCalled();
+    await r.stack.stop();
+  });
+
+  it('a question inside the wait stays a question, and still gets judged', async () => {
+    const r = await rig(MUSIC);
+    const m = fakeMusic();
+    await asked(r);
+    r.steps.push(SILENT);
+    r.heard(r.discordPipe, SAM, 'who is that');
+    await until(() => r.llmBodies.length === 1, 'the judge');
+    expect(asPrompt(r.llmBodies[0])).toContain(JUDGE_LINE);
+    expect(r.llmBodies[0].messages.at(-1).content).toBe('who is that');
+    expect(m.play).not.toHaveBeenCalled();
+    await r.stack.stop();
+  });
+
+  it('"play" alone in a follow-up is for the judge, not a reason to ask', async () => {
+    const r = await rig(MUSIC);
+    fakeMusic();
+    await answered(r);
+    r.steps.push(SILENT);
+    r.heard(r.discordPipe, SAM, 'play');
+    await until(() => r.llmBodies.length === 2, 'the judge');
+    await sleep(40);
+    expect(r.tts.calls).not.toContain(QUESTION);
+    await r.stack.stop();
+  });
+
+  it('belongs to the room it was asked in', async () => {
+    const r = await rig(MUSIC);
+    const m = fakeMusic();
+    await answered(r);
+    const { pipe } = r.connect(SAM);
+    await asked(r, pipe);
+    r.steps.push(SILENT);
+    r.heard(r.discordPipe, SAM, 'Ella Langley');
+    await until(() => r.llmBodies.length === 2, 'the judge');
+    await sleep(40);
+    expect(m.play).not.toHaveBeenCalled();
+    await r.stack.stop();
+  });
+});
+
+describe('her voice, room by room', () => {
+  const opts = (s: { mock: { calls: unknown[][] } }) => s.mock.calls.at(-1)![1] as { volume: number; speed: number };
+
+  it('"talk quieter" at a PC leaves the call as it was', async () => {
+    const r = await rig();
+    const { pipe } = r.connect();
+    const speak = vi.spyOn(Speaker.prototype, 'speak');
+    await order(r, pipe, OWNER, 'talk quieter', 'Okay, quieter.');
+    const pc = opts(speak).volume;
+    r.heard(r.discordPipe, SAM, 'hey adrian what time is it', 'what time is it');
+    await until(() => speak.mock.calls.length === 2, 'the call');
+    expect(pc).toBeCloseTo(0.52);
+    expect(opts(speak).volume).toBe(0.7);
+    await r.stack.stop();
+  });
+
+  it('nor does the call change a PC', async () => {
+    const r = await rig();
+    const { pipe } = r.connect();
+    const speak = vi.spyOn(Speaker.prototype, 'speak');
+    await order(r, r.discordPipe, SAM, 'talk faster', 'Okay, a bit faster.');
+    expect(opts(speak).speed).toBeCloseTo(1.1);
+    r.heard(pipe, OWNER, 'hey adrian what time is it', 'what time is it');
+    await until(() => speak.mock.calls.length === 2, 'the PC');
+    expect(opts(speak).speed).toBe(1);
+    await r.stack.stop();
+  });
+
+  it("each room's answers keep its own settings", async () => {
+    const r = await rig();
+    const { pipe } = r.connect();
+    await order(r, pipe, OWNER, 'talk slower', 'Okay, a bit slower.');
+    const speak = vi.spyOn(Speaker.prototype, 'speak');
+    await answered(r, OWNER, pipe);
+    expect(opts(speak).speed).toBeCloseTo(0.9);
+    await answered(r);
+    expect(opts(speak).speed).toBe(1);
+    await r.stack.stop();
+  });
+});
+
+describe("a room's music is for the people in it", () => {
+  const TEXT = { textChat: { enabled: true, dms: true } };
+  const OUT = 'Only people in the voice call';
+  const here = { channelId: CALL, mute: false, deaf: false };
+  const stopIt = (r: Rig) => r.steps.push({ parts: [toolCall('music_control', '{"action":"stop"}'), usage(10, 2)] });
+  const refused = (r: Rig) => asPrompt(r.llmBodies[1]).includes(OUT);
+
+  it('a DM from someone not in the call cannot stop it', async () => {
+    const r = await rig({ ...MUSIC, ...TEXT });
+    const m = fakeMusic();
+    stopIt(r);
+    r.typed(SAM, 'stop the music');
+    await until(() => r.llmBodies.length === 2, 'the refusal');
+    expect(m.stop).not.toHaveBeenCalled();
+    expect(refused(r)).toBe(true);
+    await r.stack.stop();
+  });
+
+  it('nor can a message in a server channel', async () => {
+    const r = await rig({ ...MUSIC, ...TEXT });
+    const m = fakeMusic();
+    stopIt(r);
+    r.typed(SAM, `<@${BOT}> stop the music`, GUILD);
+    await until(() => r.llmBodies.length === 2, 'the refusal');
+    expect(m.stop).not.toHaveBeenCalled();
+    await r.stack.stop();
+  });
+
+  it('being in another voice channel does not count', async () => {
+    const r = await rig({ ...MUSIC, ...TEXT });
+    const m = fakeMusic();
+    r.voiceStates.set(SAM, { ...here, channelId: 'somewhere-else' });
+    stopIt(r);
+    r.typed(SAM, 'stop the music');
+    await until(() => r.llmBodies.length === 2, 'the refusal');
+    expect(m.stop).not.toHaveBeenCalled();
+    await r.stack.stop();
+  });
+
+  it('nobody but an owner is in a call she has left', async () => {
+    const r = await rig({ ...MUSIC, ...TEXT });
+    const m = fakeMusic();
+    r.voiceStates.set(SAM, here);
+    r.transport.emit('kicked');
+    m.stop.mockClear();
+    stopIt(r);
+    r.typed(SAM, 'stop the music');
+    await until(() => r.llmBodies.length === 2, 'the refusal');
+    expect(m.stop).not.toHaveBeenCalled();
+    await r.stack.stop();
+  });
+
+  it('it cannot start anything from outside either: no song, no sound, no lookup', async () => {
+    const r = await rig({ ...MUSIC, ...TEXT });
+    const m = fakeMusic();
+    const look = vi.spyOn(YoutubeSource.prototype, 'soundEffect').mockResolvedValue(undefined);
+    r.steps.push({ parts: [toolCall('play_music', '{"request_type":"song","query":"x"}'), usage(10, 2)] });
+    r.typed(SAM, 'play something');
+    await until(() => r.llmBodies.length === 2, 'the first refusal');
+    await sleep(20);
+    r.steps.push({ parts: [toolCall('play_sound', '{"query":"airhorn"}'), usage(10, 2)] });
+    r.typed(SAM, 'airhorn please');
+    await until(() => r.llmBodies.length === 4, 'the second refusal');
+    expect(m.request).not.toHaveBeenCalled();
+    expect(look).not.toHaveBeenCalled();
+    await r.stack.stop();
+  });
+
+  it.each([
+    ['in the call', here],
+    ['muted in the call', { ...here, mute: true, deaf: true }],
+  ])('someone %s can use it from text chat', async (_who, state) => {
+    const r = await rig({ ...MUSIC, ...TEXT });
+    const m = fakeMusic();
+    r.voiceStates.set(SAM, state);
+    stopIt(r);
+    r.typed(SAM, 'stop the music');
+    await until(() => m.stop.mock.calls.length === 1, 'the stop');
+    await r.stack.stop();
+  });
+
+  it('an owner can from anywhere', async () => {
+    const r = await rig({ ...MUSIC, ...TEXT, owners: [OWNER] });
+    const m = fakeMusic();
+    stopIt(r);
+    r.typed(OWNER, 'stop the music');
+    await until(() => m.stop.mock.calls.length === 1, 'the stop');
+    await r.stack.stop();
+  });
+
+  it("anyone can still ask what's on: that changes nothing", async () => {
+    const r = await rig({ ...MUSIC, ...TEXT });
+    fakeMusic();
+    r.steps.push({ parts: [toolCall('music_control', '{"action":"status"}'), usage(10, 2)] });
+    r.typed(SAM, 'what is playing');
+    await until(() => r.llmBodies.length === 2, 'the answer');
+    expect(refused(r)).toBe(false);
+    expect(asPrompt(r.llmBodies[1])).toContain('Nothing is playing.');
+    await r.stack.stop();
+  });
+
+  it('asked out loud in the call, it just works', async () => {
+    const r = await rig(MUSIC);
+    const m = fakeMusic();
+    r.voiceStates.set(SAM, here);
+    stopIt(r);
+    r.heard(r.discordPipe, SAM, 'hey adrian shut the tunes off', 'shut the tunes off');
+    await until(() => m.stop.mock.calls.length === 1, 'the stop');
+    await r.stack.stop();
+  });
+
+  it("each PC and the call have their own player, and an order only reaches the asker's", async () => {
+    const r = await rig(MUSIC);
+    const m = fakeMusic();
+    const mine = r.connect(OWNER, 'mine');
+    const sams = r.connect(SAM, 'sams');
+    const other = '100000000000000070';
+    r.voiceStates.set(other, here);
+    for (const [who, pipe] of [[OWNER, mine.pipe], [SAM, sams.pipe], [other, r.discordPipe]] as const) {
+      const n = m.stop.mock.calls.length;
+      stopIt(r);
+      r.heard(pipe, who, 'hey adrian shut the tunes off', 'shut the tunes off');
+      await until(() => m.stop.mock.calls.length === n + 1, 'the stop');
+      await sleep(20);
+    }
+    expect(new Set(m.stop.mock.contexts).size).toBe(3);
+    await r.stack.stop();
+  });
+});
+
+describe('whose PC a tool reaches', () => {
+  const info = (r: Rig) => r.steps.push({ parts: [toolCall('pc_info', '{"action":"summary"}'), usage(10, 2)] });
+  const NONE = 'No PC is connected';
+  const askInCall = (r: Rig, who: string) => r.heard(r.discordPipe, who, 'hey adrian how is the pc', 'how is the pc');
+
+  it("someone in the call can't reach either of the owner's PCs", async () => {
+    const r = await rig();
+    const a = r.connect(OWNER, 'a');
+    const b = r.connect(OWNER, 'b');
+    info(r);
+    askInCall(r, SAM);
+    await until(() => r.llmBodies.length === 2, 'the tool answer');
+    expect(a.conn.calls).toEqual([]);
+    expect(b.conn.calls).toEqual([]);
+    expect(asPrompt(r.llmBodies[1])).toContain(NONE);
+    await r.stack.stop();
+  });
+
+  it('nor can a DM, for a lock or anything else', async () => {
+    const r = await rig({ textChat: { enabled: true, dms: true } });
+    const { conn } = r.connect(OWNER);
+    r.steps.push({ parts: [toolCall('pc_system', '{"action":"lock"}'), usage(10, 2)] });
+    r.typed(SAM, 'lock it');
+    await until(() => r.llmBodies.length === 2, 'the tool answer');
+    expect(conn.calls).toEqual([]);
+    expect(asPrompt(r.llmBodies[1])).toContain(NONE);
+    await r.stack.stop();
+  });
+
+  it("the owner reaches their own, from the call too, and someone else's PC stays out of it", async () => {
+    const r = await rig();
+    const mine = r.connect(OWNER, 'mine');
+    const sams = r.connect(SAM, 'sams');
+    info(r);
+    askInCall(r, OWNER);
+    await until(() => mine.conn.calls.length === 1, 'the action');
+    expect(sams.conn.calls).toEqual([]);
+    await r.stack.stop();
+  });
+
+  it('with two PCs, the one they are talking through wins', async () => {
+    const r = await rig();
+    const a = r.connect(OWNER, 'a');
+    const b = r.connect(OWNER, 'b');
+    a.conn.lastSeen = Date.now() - 60_000;
+    info(r);
+    r.heard(a.pipe, OWNER, 'hey adrian how is the pc', 'how is the pc');
+    await until(() => a.conn.calls.length === 1, 'the action');
+    expect(b.conn.calls).toEqual([]);
+    await r.stack.stop();
+  });
+
+  it('from anywhere else, the one used last', async () => {
+    const r = await rig();
+    const a = r.connect(OWNER, 'a');
+    const b = r.connect(OWNER, 'b');
+    a.conn.lastSeen = Date.now() - 60_000;
+    info(r);
+    askInCall(r, OWNER);
+    await until(() => b.conn.calls.length === 1, 'the action');
+    expect(a.conn.calls).toEqual([]);
+    b.conn.lastSeen = Date.now() - 120_000;
+    await sleep(20);
+    info(r);
+    askInCall(r, OWNER);
+    await until(() => a.conn.calls.length === 1, 'the action');
+    expect(b.conn.calls).toHaveLength(1);
+    await r.stack.stop();
+  });
+});
+
+describe('calling off a restart', () => {
+  const asked = (c: { calls: { args: Record<string, unknown> }[] }) => c.calls.filter((x) => x.args.action === 'cancel_shutdown').length;
+  const CANCELLED = 'Cancelled.';
+  /** Asked for and confirmed: two turns, with their own yes. */
+  async function restarting(r: Rig, pipe: EventEmitter, conn: { calls: unknown[] }) {
+    r.steps.push({ parts: [toolCall('pc_system', '{"action":"restart"}'), usage(10, 2)] });
+    r.heard(pipe, OWNER, 'hey adrian restart my pc', 'restart my pc');
+    await until(() => r.tts.calls.includes('Restart the PC?'), 'the question');
+    await sleep(20);
+    r.steps.push({ parts: [toolCall('pc_system', '{"action":"restart"}'), usage(10, 2)] });
+    r.heard(pipe, OWNER, 'yes');
+    await until(() => conn.calls.length === 1, 'the restart');
+    await sleep(20);
+  }
+
+  it('"cancel" inside the 30 seconds reaches the PC, once, and she says so', async () => {
+    const r = await rig();
+    const { conn, pipe } = r.connect();
+    await restarting(r, pipe, conn);
+    r.heard(pipe, OWNER, 'cancel');
+    await until(() => r.tts.calls.includes(CANCELLED), 'her word');
+    expect(asked(conn)).toBe(1);
+    r.heard(pipe, OWNER, 'cancel');
+    await sleep(40);
+    expect(asked(conn)).toBe(1);
+    await r.stack.stop();
+  });
+
+  it('after the 30 seconds it is too late, and she says nothing', async () => {
+    const later = clockAhead();
+    const r = await rig();
+    const { conn, pipe } = r.connect();
+    await restarting(r, pipe, conn);
+    later(31_000);
+    r.heard(pipe, OWNER, 'cancel');
+    await sleep(60);
+    expect(asked(conn)).toBe(0);
+    expect(r.tts.calls).not.toContain(CANCELLED);
+    await r.stack.stop();
+  });
+
+  it("someone else's stop leaves it counting down", async () => {
+    const r = await rig();
+    const { conn, pipe } = r.connect();
+    await restarting(r, pipe, conn);
+    r.heard(r.discordPipe, SAM, 'cancel');
+    await sleep(40);
+    expect(asked(conn)).toBe(0);
+    await r.stack.stop();
+  });
+
+  it('an everyday word from them is not a cancel', async () => {
+    const r = await rig();
+    const { conn, pipe } = r.connect();
+    await restarting(r, pipe, conn);
+    r.heard(pipe, OWNER, 'done');
+    await sleep(40);
+    expect(asked(conn)).toBe(0);
+    await r.stack.stop();
+  });
+
+  it("the PC window's stop button does it too", async () => {
+    const r = await rig();
+    const { conn, pipe } = r.connect();
+    await restarting(r, pipe, conn);
+    conn.emit('stop');
+    await until(() => r.tts.calls.includes(CANCELLED), 'her word');
+    expect(asked(conn)).toBe(1);
+    await r.stack.stop();
+  });
+
+  it('and so does typing it in the window', async () => {
+    const r = await rig();
+    const { conn, pipe } = r.connect();
+    await restarting(r, pipe, conn);
+    conn.emit('text', 'cancel');
+    await until(() => r.tts.calls.includes(CANCELLED), 'her word');
+    expect(asked(conn)).toBe(1);
+    await r.stack.stop();
+  });
+
+  it('the call can do it for a PC, even when both rooms hear the word', async () => {
+    const r = await rig();
+    r.voiceStates.set(OWNER, { channelId: CALL, mute: false, deaf: false });
+    const { conn, pipe } = r.connect();
+    await restarting(r, r.discordPipe, conn);
+    r.heard(pipe, OWNER, 'cancel');
+    r.heard(r.discordPipe, OWNER, 'cancel');
+    await until(() => r.tts.calls.includes(CANCELLED), 'her word');
+    await sleep(40);
+    expect(asked(conn)).toBe(1);
+    await r.stack.stop();
+  });
+
+  it('with two PCs it goes to the one that took the restart, not the one seen last', async () => {
+    const r = await rig();
+    const a = r.connect(OWNER, 'a');
+    const b = r.connect(OWNER, 'b');
+    await restarting(r, a.pipe, a.conn);
+    a.conn.lastSeen = Date.now() - 60_000;
+    b.conn.lastSeen = Date.now();
+    r.heard(a.pipe, OWNER, 'cancel');
+    await until(() => r.tts.calls.includes(CANCELLED), 'her word');
+    expect(asked(a.conn)).toBe(1);
+    expect(asked(b.conn)).toBe(0);
+    await r.stack.stop();
+  });
+
+  it('a PC that went away is forgotten: there is nothing left to call off', async () => {
+    const r = await rig();
+    const { conn, pipe } = r.connect();
+    await restarting(r, pipe, conn);
+    conn.open = false;
+    conn.emit('closed');
+    r.heard(r.discordPipe, OWNER, 'cancel');
+    await sleep(40);
+    expect(asked(conn)).toBe(0);
+    expect(r.tts.calls).not.toContain(CANCELLED);
+    await r.stack.stop();
+  });
+
+  it('with nothing counting down, "cancel" sends the PC nothing', async () => {
+    const r = await rig();
+    const { conn, pipe } = r.connect();
+    r.heard(pipe, OWNER, 'cancel');
+    await sleep(40);
+    expect(conn.calls).toEqual([]);
+    await r.stack.stop();
+  });
+});
+
+describe('her own taste', () => {
+  const likes = () => ({ parts: [toolCall('music_taste', '{"who":"you","what":"like","name":"Frank Ocean"}'), usage(10, 2)] });
+
+  it('an owner can set it', async () => {
+    const r = await rig({ ...MUSIC, owners: [SAM] });
+    r.steps.push(likes());
+    r.heard(r.discordPipe, SAM, 'hey adrian you love frank ocean', 'you love frank ocean');
+    await until(() => r.llmBodies.length === 2, 'the tool answer');
+    expect(asPrompt(r.llmBodies[1])).not.toContain("That's up to me.");
+    expect(readFileSync(join(r.dir, 'music-taste.json'), 'utf8')).toContain('Frank Ocean');
+    await r.stack.stop();
+  });
+
+  it('nobody else can', async () => {
+    const r = await rig(MUSIC);
+    r.steps.push(likes());
+    r.heard(r.discordPipe, SAM, 'hey adrian you love frank ocean', 'you love frank ocean');
+    await until(() => r.llmBodies.length === 2, 'the tool answer');
+    expect(asPrompt(r.llmBodies[1])).toContain("That's up to me.");
+    expect(existsSync(join(r.dir, 'music-taste.json'))).toBe(false);
+    await r.stack.stop();
+  });
+});
+
+describe('startup', () => {
+  /** Everything that loads in the background once it's logged in. */
+  const models = (dir: string) => {
+    mkdirSync(join(dir, MODEL_LAYOUT.whisper), { recursive: true });
+    writeFileSync(join(dir, MODEL_LAYOUT.whisper, 'small-encoder.int8.onnx'), '');
+    writeFileSync(join(dir, MODEL_LAYOUT.smartTurn), '');
+  };
+  const heavy = (dir: string) => ({
+    voice: { modelDir: join(dir, 'kokoro') },
+    languages: true,
+    satellite: { enabled: true, port: 40000, unfinishedWaitMs: 1200 },
+  });
+
+  it('a failed login leaves nothing behind, and its error goes up as it was', async () => {
+    const whisper = vi.spyOn(WhisperStt, 'load').mockResolvedValue({} as never);
+    const turn = vi.spyOn(SmartTurn, 'load').mockResolvedValue({} as never);
+    const down = Object.assign(new Error('getaddrinfo ENOTFOUND discord.com'), { code: 'ENOTFOUND' });
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    try {
+      await expect(
+        rig(heavy, {
+          prepare: models,
+          // As the real one does: its own timers go with it.
+          login: async (client) => {
+            await client.destroy();
+            throw down;
+          },
+        }),
+      ).rejects.toBe(down);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(whisper).not.toHaveBeenCalled();
+    expect(turn).not.toHaveBeenCalled();
+  });
+
+  it('a good one still loads them', async () => {
+    const whisper = vi.spyOn(WhisperStt, 'load').mockResolvedValue({} as never);
+    const turn = vi.spyOn(SmartTurn, 'load').mockResolvedValue({} as never);
+    const r = await rig(heavy, { prepare: models });
+    expect(whisper).toHaveBeenCalledTimes(1);
+    expect(turn).toHaveBeenCalledTimes(1);
+    await r.stack.stop();
+  });
+
+  it('keeps trying when the join at startup fails', async () => {
+    const r = await rig();
+    h.connecting = async () => {
+      throw new Error('no voice');
+    };
+    r.loggedIn();
+    await until(() => h.transport.retries === 1, 'the retry');
+    await r.stack.stop();
+  });
+
+  it('a join that works needs no retry', async () => {
+    const r = await rig();
+    r.loggedIn();
+    await sleep(30);
+    expect(h.transport.retries).toBe(0);
+    await r.stack.stop();
+  });
+
+  it('the voice link counts as down when it is, even if nothing said so', async () => {
+    const r = await rig();
+    r.voiceStates.set(OWNER, { channelId: CALL, mute: false, deaf: false });
+    const { conn, pipe } = r.connect();
+    h.transport.up = false;
+    expect(r.stack.voiceReady()).toBe(false);
+    r.heard(pipe, OWNER, 'hey adrian open spotify', 'open spotify');
+    await until(() => r.llmBodies.length === 1, 'the model');
+    expect(conn.transcripts).not.toContain('her: Answering in the Discord call.');
+    await r.stack.stop();
+  });
+});
+
+describe('a timer coming due', () => {
+  const FILE = 'reminders.json';
+  const due = (room?: string) => (dir: string) =>
+    writeFileSync(join(dir, FILE), JSON.stringify([{ id: 'r1', userId: OWNER, speaker: 'Sam', kind: 'timer', text: 'tea', dueAt: Date.now() - 1_000, createdAt: 0, ...(room ? { room } : {}) }]));
+  const kept = (r: Rig) => (JSON.parse(readFileSync(join(r.dir, FILE), 'utf8')) as unknown[]).length;
+  const CALLED = 'Sam, your tea timer is done.';
+  const PLAIN = 'your tea timer is done.';
+  const inCall = { channelId: CALL, mute: false, deaf: false };
+
+  it('is said in the call to someone who can hear it there, with no DM', async () => {
+    const r = await rig({}, { prepare: due() });
+    r.voiceStates.set(OWNER, inCall);
+    r.loggedIn();
+    await until(() => r.tts.calls.includes(CALLED), 'the call');
+    await until(() => kept(r) === 0, 'the file');
+    expect(r.dms.tries).toBe(0);
+    await r.stack.stop();
+  });
+
+  it('is said at the PC it was set at for someone out of the call, with a DM as the record', async () => {
+    const r = await rig({}, { prepare: due('sat:d1') });
+    const { conn } = r.connect();
+    r.loggedIn();
+    await until(() => r.tts.calls.includes(PLAIN), 'the PC');
+    await until(() => kept(r) === 0, 'the file');
+    expect(r.dms.sent).toEqual([PLAIN]);
+    expect(conn.transcripts).toContain(`her: ${PLAIN}`);
+    expect(r.tts.calls).not.toContain(CALLED);
+    await r.stack.stop();
+  });
+
+  it('counts as delivered if only the PC got it', async () => {
+    const r = await rig({}, { prepare: due('sat:d1') });
+    r.dms.fail = true;
+    r.connect();
+    r.loggedIn();
+    await until(() => r.tts.calls.includes(PLAIN), 'the PC');
+    await until(() => kept(r) === 0, 'the file');
+    await r.stack.stop();
+  });
+
+  it('is said in the call to someone muted there, when there is no PC', async () => {
+    const r = await rig({}, { prepare: due() });
+    r.voiceStates.set(OWNER, { ...inCall, mute: true });
+    r.loggedIn();
+    await until(() => r.tts.calls.includes(CALLED), 'the call');
+    await r.stack.stop();
+  });
+
+  it('goes by DM otherwise', async () => {
+    const r = await rig({}, { prepare: due() });
+    r.loggedIn();
+    await until(() => r.dms.sent.length === 1, 'the DM');
+    expect(r.dms.sent).toEqual([PLAIN]);
+    await until(() => kept(r) === 0, 'the file');
+    await r.stack.stop();
+  });
+
+  it('stays on file when the DM fails, and goes again a minute later', async () => {
+    const later = clockAhead();
+    const r = await rig({}, { prepare: due() });
+    r.dms.fail = true;
+    r.loggedIn();
+    await until(() => r.dms.tries === 1, 'the first try');
+    await sleep(30);
+    expect(kept(r)).toBe(1);
+    r.dms.fail = false;
+    later(61_000);
+    await until(() => r.dms.sent.length === 1, 'the second try');
+    await until(() => kept(r) === 0, 'the file');
+    await r.stack.stop();
+  });
+
+  it('waits for the join at startup, so an overdue one can be said in the call', async () => {
+    const r = await rig({}, { prepare: due() });
+    r.voiceStates.set(OWNER, inCall);
+    h.transport.up = false;
+    r.loggedIn();
+    await until(() => r.tts.calls.includes(CALLED), 'the call');
+    expect(r.dms.tries).toBe(0);
+    await r.stack.stop();
+  });
+
+  it('never starts counting once the stack has stopped', async () => {
+    const r = await rig({}, { prepare: due() });
+    let joined: (() => void) | undefined;
+    h.connecting = () => new Promise<void>((res) => (joined = res));
+    r.loggedIn();
+    await until(() => joined, 'the join');
+    await r.stack.stop();
+    joined!();
+    await sleep(40);
+    expect(r.dms.tries).toBe(0);
+    expect(kept(r)).toBe(1);
   });
 });

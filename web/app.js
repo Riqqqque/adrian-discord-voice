@@ -183,7 +183,7 @@ async function stepCheck({ next }) {
       h('tr', {}, h('th', {}, 'Speech models'), h('td', {}, ok ? h('span', { class: 'badge ok' }, 'installed') : h('span', { class: 'badge bad' }, 'missing'))),
     ),
     hw.warnings.map((w) => h('div', { class: 'msg warn' }, w)),
-    h('p', { class: 'muted small' }, 'Speech recognition and the built-in voices run on this computer, and audio is never saved or sent anywhere. What leaves this computer: the transcribed question and recent conversation (to the language model, which also writes short memory notes about each person), web searches (if you add a search key), and spoken replies if you turn on the optional cloud voice.'),
+    h('p', { class: 'muted small' }, 'Speech recognition and the built-in voices run on this computer. By default audio is never stored or uploaded. Two options change that: cloudStt sends speech meant for her to Groq for a second transcription, and satellite.recordDays keeps recordings of PC requests. What leaves this computer: the transcribed question and recent conversation (to the language model, which also writes short memory notes about each person), web searches (if you add a search key), spoken replies if you turn on the optional cloud voice, music searches (to YouTube), and artist names and plain "play X" requests (to Deezer for top songs, unless you turn off music.topSongs).'),
     h('button', { class: 'primary', onclick: next }, 'Continue'),
   );
 }

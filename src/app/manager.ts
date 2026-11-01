@@ -37,6 +37,29 @@ export class SpeechModels {
   }
 }
 
+/** A start that failed for a passing reason is tried again after this long... */
+const FIRST_RETRY_MS = 30_000;
+/** ...doubling up to this. */
+const MAX_RETRY_MS = 5 * 60_000;
+const NETWORK_CODES = new Set([
+  'ENOTFOUND', 'EAI_AGAIN', 'ECONNREFUSED', 'ECONNRESET', 'ECONNABORTED', 'EPIPE', 'ETIMEDOUT', 'ENETDOWN', 'ENETUNREACH', 'EHOSTDOWN', 'EHOSTUNREACH',
+  'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT', 'UND_ERR_SOCKET',
+]);
+
+/** Could this failed start work later with nothing changed? Only what's known to
+ *  pass by itself counts: no DNS yet after a power cut, Discord having an outage.
+ *  A bad token, a missing model or a broken config stays failed with its reason. */
+export function canRecover(e: unknown): boolean {
+  for (let c = e, depth = 0; c instanceof Error && depth < 5; c = c.cause, depth++) {
+    const { code, status } = c as Error & { code?: unknown; status?: unknown };
+    if (typeof code === 'string' && NETWORK_CODES.has(code)) return true;
+    if (c.name === 'AbortError' || c.name === 'TimeoutError') return true;
+    if (typeof status === 'number' && status >= 500) return true;
+    if (/^Unexpected server response: 5\d\d$/.test(c.message)) return true; // the gateway's handshake
+  }
+  return false;
+}
+
 /** Why the current config can't run yet, or undefined if it can. */
 export function configProblems(raw: Record<string, unknown>, secrets: Map<string, string>): string[] {
   const out: string[] = [];
@@ -65,6 +88,8 @@ export class StackManager {
   private _error: string | undefined;
   private startedAt: number | undefined;
   private chain: Promise<unknown> = Promise.resolve();
+  private retryTimer: NodeJS.Timeout | undefined;
+  private retryMs = FIRST_RETRY_MS;
   readonly models = new SpeechModels();
 
   constructor(
@@ -74,6 +99,7 @@ export class StackManager {
     private readonly log: Logger,
     /** Installer-owned paths (models, state); filled into every config. */
     private readonly paths?: InstallPaths,
+    private readonly start: typeof startVoiceStack = startVoiceStack,
   ) {}
 
   get state(): StackState {
@@ -107,9 +133,13 @@ export class StackManager {
   }
 
   /** Start (or restart) if the config is complete; otherwise setup mode.
-   *  Calls are serialized. */
+   *  Calls are serialized. systemd can't help with a failed start, because the
+   *  process stays up for the admin UI, so one that can recover retries here. */
   restart(): Promise<StackState> {
     const run = async (): Promise<StackState> => {
+      clearTimeout(this.retryTimer);
+      const wait = this.retryMs;
+      this.retryMs = FIRST_RETRY_MS; // only another failure that can recover moves it on
       if (this.stack) {
         const s = this.stack;
         this.stack = undefined;
@@ -131,13 +161,19 @@ export class StackManager {
         this._state = 'starting';
         this._error = undefined;
         const config = this.config()!;
-        this.stack = await startVoiceStack(config, this.secrets.read(), this.log, this.ledger, this.models, this.paths?.stateDir);
+        this.stack = await this.start(config, this.secrets.read(), this.log, this.ledger, this.models, this.paths?.stateDir);
         this.startedAt = Date.now();
         this._state = 'running';
       } catch (e) {
         this._state = 'failed';
         this._error = redact((e as Error).message).slice(0, 300);
         this.log.error('voice stack failed to start', { error: this._error });
+        if (canRecover(e)) {
+          this.log.warn('trying the voice stack again', { inSeconds: wait / 1000 });
+          this.retryMs = Math.min(wait * 2, MAX_RETRY_MS);
+          this.retryTimer = setTimeout(() => void this.restart(), wait);
+          this.retryTimer.unref();
+        }
       }
       return this._state;
     };
@@ -147,7 +183,8 @@ export class StackManager {
   }
 
   async stop(): Promise<void> {
-    await this.chain;
+    await this.chain; // a start still running can leave a retry behind
+    clearTimeout(this.retryTimer);
     const s = this.stack;
     this.stack = undefined;
     this._state = 'stopped';

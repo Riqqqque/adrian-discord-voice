@@ -1,5 +1,5 @@
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
-import type { AddressInfo } from 'node:net';
+import { type AddressInfo, connect } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -18,6 +18,8 @@ const FAKE = {
   GEMINI_API_KEY: 'AIzaTESTtestTESTtestTESTtest12345',
   TAVILY_API_KEY: 'tvly-testtesttesttest1234',
 };
+// An endpoint an attacker with a session might name, with a key they don't have.
+const CUSTOM = { preset: 'custom', baseUrl: 'https://sink.example/v1', model: 'm', keySecret: 'GROQ_API_KEY', priceInPerM: 0, priceOutPerM: 0 };
 
 const dir = mkdtempSync(join(tmpdir(), 'adrian-web-'));
 const stateDir = join(dir, 'state');
@@ -199,6 +201,14 @@ describe('admin web server', () => {
     expect(secrets.read().get('GROQ_API_KEY')).toBe(FAKE.GROQ_API_KEY); // bad key not saved
   });
 
+  it('sends a custom endpoint only a key pasted for the test, never a stored one', async () => {
+    const from = upstream.length;
+    expect((await call('POST', '/api/check/llm', CUSTOM)).status).toBe(200);
+    expect(upstream.slice(from)).toEqual([{ url: 'https://sink.example/v1/chat/completions', auth: null }]);
+    await call('POST', '/api/check/llm', { ...CUSTOM, key: 'pasted-for-this-test' });
+    expect(upstream.at(-1)).toEqual({ url: 'https://sink.example/v1/chat/completions', auth: 'Bearer pasted-for-this-test' });
+  });
+
   it('applies settings without letting the browser set file paths', async () => {
     const bad = await call('PUT', '/api/settings', { voice: { voice: 'am_michael', speed: 1 }, secretsFile: '/etc/shadow' });
     expect(bad.status).toBe(400);
@@ -222,6 +232,25 @@ describe('admin web server', () => {
     expect((await call('PUT', '/api/settings', { timezone: 'Mars/Olympus' })).status).toBe(400);
     expect((await call('POST', '/api/restart', {})).status).toBe(200);
     expect(restarts).toBe(1);
+  });
+
+  it('will not point a stored key at a new address', async () => {
+    const before = readFileSync(configFile, 'utf8');
+    const groq = 'https://api.groq.com/openai/v1';
+    const gemini = 'https://generativelanguage.googleapis.com/v1beta/openai';
+    try {
+      for (const patch of [{ llm: CUSTOM }, { fallback: CUSTOM }, { llm: { ...CUSTOM, baseUrl: gemini } }]) {
+        const r = await call('PUT', '/api/settings', patch);
+        expect(r.status).toBe(400);
+        expect(r.data.error).toContain('sudo adrian config');
+        expect(readFileSync(configFile, 'utf8')).toBe(before);
+      }
+      // A pair the config already has, and a local server that takes no key.
+      expect((await call('PUT', '/api/settings', { llm: { ...CUSTOM, baseUrl: groq } })).status).toBe(200);
+      expect((await call('PUT', '/api/settings', { fallback: { ...CUSTOM, baseUrl: 'http://127.0.0.1:11434/v1', keySecret: '' } })).status).toBe(200);
+    } finally {
+      writeFileSync(configFile, before);
+    }
   });
 
   it('will not save over a config file that does not parse', async () => {
@@ -268,11 +297,62 @@ describe('admin web server', () => {
     expect(logLines.join('\n')).toContain('[redacted]');
   });
 
+  it('is not thrown by a stray cookie from another port on this host', async () => {
+    expect((await call('GET', '/api/session', undefined, { cookie: 'somethingelse=100%' })).status).toBe(200);
+    const mine = await call('GET', '/api/session', undefined, { cookie: `somethingelse=100%; ${cookie}` });
+    expect(mine.status).toBe(200);
+    expect(mine.data.loggedIn).toBe(true);
+  });
+
+  it('keeps a static file in memory once it has been read', async () => {
+    const file = join(webDir, 'kept.css');
+    expect((await call('GET', '/kept.css')).status).toBe(404); // a miss isn't remembered
+    writeFileSync(file, 'a{}');
+    expect((await call('GET', '/kept.css')).text).toBe('a{}');
+    writeFileSync(file, 'b{}');
+    expect((await call('GET', '/kept.css')).text).toBe('a{}');
+  });
+
+  it('answers at most 100 requests on one connection', async () => {
+    const got = await new Promise<string>((resolve, reject) => {
+      let seen = '';
+      const s = connect(Number(host.split(':')[1]), '127.0.0.1', () => s.write(`GET /api/health HTTP/1.1\r\nHost: ${host}\r\n\r\n`.repeat(150)));
+      const end = setTimeout(() => s.destroy(), 1500);
+      s.on('data', (d) => (seen += d.toString('latin1')));
+      s.on('error', reject);
+      s.on('close', () => {
+        clearTimeout(end);
+        resolve(seen);
+      });
+    });
+    expect(got.match(/HTTP\/1\.1 200/g)).toHaveLength(100);
+  });
+
+  it('answers 429 once the guesses at the current password run out', async () => {
+    const wrong = { current: 'wrong password!', next: 'another good password' };
+    for (let i = 0; i < 5; i++) expect((await call('POST', '/api/password', wrong)).status).toBe(400);
+    expect((await call('POST', '/api/password', wrong)).status).toBe(429);
+  });
+
+  it('tells people in the wizard where their words and music requests go', () => {
+    const page = readFileSync(new URL('../web/app.js', import.meta.url), 'utf8');
+    expect(page).not.toContain('never saved or sent anywhere');
+    for (const word of ['cloudStt', 'satellite.recordDays', 'YouTube', 'Deezer']) expect(page).toContain(word);
+  });
+
   it('rate limits failed logins per client', async () => {
     await call('POST', '/api/logout', {});
     cookie = '';
     csrf = '';
     for (let i = 0; i < 5; i++) expect((await call('POST', '/api/login', { username: 'rique', password: 'wrong password!' })).status).toBe(401);
     expect((await call('POST', '/api/login', { username: 'rique', password: 'correct horse battery' })).status).toBe(429);
+  });
+
+  it('logs a run of refused logins once, so it cannot flush the dashboard log', async () => {
+    // The status field: a 401's timestamp can hold those digits too (".429Z").
+    const refused = () => logLines.filter((l) => l.includes('login failed') && l.includes('"status":429')).length;
+    expect(refused()).toBe(1);
+    await Promise.all(Array.from({ length: 20 }, () => call('POST', '/api/login', { username: 'rique', password: 'wrong password!' })));
+    expect(refused()).toBe(1);
   });
 });

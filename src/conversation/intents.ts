@@ -195,15 +195,40 @@ const MUSIC_CONTROL: [RegExp, MusicIntent][] = [
   [/^(whats playing|what is playing|what song is (this|that|playing)|whats this song|what is this song|what song|whats (the|this) song( called)?|what are we listening to|whats up next|what is up next|whats next|whats in the queue|whats queued)$/, { kind: 'control', action: 'status' }],
 ];
 
-/** "play get lucky", "queue up some drake", "put on lofi from plex", "skip". */
-export function classifyMusic(text: string): MusicIntent | undefined {
-  let s = text
+/** The order itself: without the name, "can you", and the politeness at the end. */
+function orderWords(text: string): string {
+  return text
     .trim()
     .replace(/^\W*(hey|hi|ok(ay)?|yo|um+|uh+)?\W*(adri[a-zà-ÿ]*)?[\s,.!:]*/i, '')
     .replace(/^(can|could|would|will) you (please )?|^please |^(go ahead and |just )/i, '')
     .replace(/[.!?]+$/, '')
     .replace(/\s+(please|pls|now|for me|for us|thanks)$/i, '')
     .trim();
+}
+
+/** "Hey Adrian, play..." and then a pause: the verb, if that's all that came. */
+export function bareMusicVerb(text: string): string | undefined {
+  return /^(play|put on|throw on|blast|bump|queue( up)?)[\s.,!?…-]*$/i.exec(orderWords(text))?.[1]?.toLowerCase();
+}
+
+/** A bare verb waiting for its name, after "Who do you want to hear?". */
+export interface PendingPlay {
+  verb: string;
+  until: number;
+}
+
+/** The words that came after a bare verb, as the order they finish: "play" +
+ *  "Ella Langley". Called it off, gave an order of their own, or asked something:
+ *  those stand as they are, and the wait is over either way. */
+export function afterBareVerb(pending: PendingPlay | undefined, command: string, now: number): string {
+  if (!pending || now >= pending.until) return command;
+  if (classify(command)?.kind === 'stop' || classifyMusic(command) || isTimeQuestion(command) || QUESTION_START.test(orderWords(command))) return command;
+  return `${pending.verb} ${command}`;
+}
+
+/** "play get lucky", "queue up some drake", "put on lofi from plex", "skip". */
+export function classifyMusic(text: string): MusicIntent | undefined {
+  const s = orderWords(text).replace(/^(play|put on|throw on|blast|bump|queue( up)?)[.…,]+\s*/i, '$1 '); // a pause after the verb
   const plain = s.toLowerCase().replace(/[’']/g, '');
   for (const [re, intent] of MUSIC_CONTROL) if (re.test(plain)) return intent;
   const m = s.match(/^(play|put on|throw on|blast|bump|queue( up)?|add)\s+(.+)$/i);
