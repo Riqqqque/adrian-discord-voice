@@ -58,10 +58,13 @@ On the Linux machine that will run the bot (x86_64, systemd; Ubuntu 24.04 or Deb
 # Tools the installer uses, and ffmpeg for music
 sudo apt install -y curl xz-utils bzip2 iproute2 ffmpeg
 
+# Find the newest release (to install a particular version, set VER=x.y.z yourself instead)
+VER=$(curl -fsSL https://api.github.com/repos/Riqqqque/adrian-discord-voice/releases/latest | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p')
+echo "Newest release: ${VER:?could not read it from GitHub, set VER by hand from the Releases page}"
+
 # Download the release bundle and its checksum from this repo's Releases page
-VER=0.13.4
-curl -LO https://github.com/Riqqqque/adrian-discord-voice/releases/download/v$VER/adrian-voice-$VER-linux-x64.tar.gz
-curl -LO https://github.com/Riqqqque/adrian-discord-voice/releases/download/v$VER/adrian-voice-$VER-linux-x64.tar.gz.sha256
+curl -fLO https://github.com/Riqqqque/adrian-discord-voice/releases/download/v$VER/adrian-voice-$VER-linux-x64.tar.gz
+curl -fLO https://github.com/Riqqqque/adrian-discord-voice/releases/download/v$VER/adrian-voice-$VER-linux-x64.tar.gz.sha256
 sha256sum -c adrian-voice-$VER-linux-x64.tar.gz.sha256
 
 # Unpack the installer and run it
@@ -98,7 +101,7 @@ ssh -L 8790:127.0.0.1:8790 you@your-server
 # then open http://127.0.0.1:8790 on your computer
 ```
 
-Or install with `--lan` and open `http://<server-ip>:8790`. If you reach it through a host name (`http://homeserver.local:8790`) rather than an IP, add that name to `server.allowedHosts`: `sudo adrian config server.allowedHosts '["homeserver.local"]'`. This blocks DNS-rebinding attacks.
+Or install with `--lan` and open `http://<server-ip>:8790`. If you reach it through a host name (`http://homeserver.local:8790`) rather than an IP, add that name to `server.allowedHosts`. This blocks DNS-rebinding attacks. `adrian config` can't change `server.*`, so edit the file by hand: open it with `sudo nano /etc/adrian/config.json`, add `"allowedHosts": ["homeserver.local"]` inside `"server"` (so it reads `"server": { "host": "0.0.0.0", "port": 8790, "allowedHosts": ["homeserver.local"] },`), then run `sudo adrian restart`.
 
 ## 5. Run the setup wizard
 
@@ -138,16 +141,27 @@ sudo adrian restart
 An alternative to the native install, for machines that already run everything in containers. You build the image from a release bundle:
 
 ```bash
-# from a checkout of this repo, with the bundle in the current directory
-packaging/docker/build.sh adrian-voice-0.13.4-linux-x64.tar.gz
+# From a checkout of this repo: find the newest release (or set VER=x.y.z yourself)
+VER=$(curl -fsSL https://api.github.com/repos/Riqqqque/adrian-discord-voice/releases/latest | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p')
+echo "Newest release: ${VER:?could not read it from GitHub, set VER by hand from the Releases page}"
+
+# Download the bundle and its checksum (build.sh checks it)
+curl -fLO https://github.com/Riqqqque/adrian-discord-voice/releases/download/v$VER/adrian-voice-$VER-linux-x64.tar.gz
+curl -fLO https://github.com/Riqqqque/adrian-discord-voice/releases/download/v$VER/adrian-voice-$VER-linux-x64.tar.gz.sha256
+
+# Build the images and start
+packaging/docker/build.sh adrian-voice-$VER-linux-x64.tar.gz
 cd packaging/docker
-ADRIAN_VERSION=0.13.4 docker compose up -d
+echo "ADRIAN_VERSION=$VER" > .env   # every docker compose command needs this; .env keeps it
+docker compose up -d
 docker compose exec adrian node dist/cli/tool.js setup-code
 ```
 
 - A one-time `models` job downloads the speech models into a volume.
 - The admin page is published on `127.0.0.1:8790` only.
 - The container runs as an unprivileged user, with a read-only root filesystem and no Linux capabilities.
+- Run `docker compose` from `packaging/docker`, where `.env` is.
+- The PC app's port isn't published, and there's no `adrian` command in the container. To use the PC app, follow the Docker steps in [pc-app.md](pc-app.md#1-turn-it-on-in-the-service).
 
 Setting a key in Docker:
 
@@ -156,7 +170,7 @@ printf %s 'the-key-value' | docker compose exec -T adrian node dist/cli/tool.js 
 docker compose restart adrian
 ```
 
-Updating in Docker: build the new image, set `ADRIAN_VERSION` to the new version, and run `docker compose up -d`. Config and state live in volumes and carry over. `update`, `rollback`, `backup` and `doctor` are only in the native `adrian` command.
+Updating in Docker: build the new image, set `ADRIAN_VERSION` in `.env` to the new version, and run `docker compose up -d`. Config and state live in volumes and carry over. `update`, `rollback`, `backup` and `doctor` are only in the native `adrian` command.
 
 ## The `adrian` command
 
@@ -174,7 +188,7 @@ Most commands need `sudo`.
 | `adrian secret delete NAME` / `adrian secret list` | Remove a key / list key names (never values) |
 | `adrian check` | What's still missing before the bot can start |
 | `adrian voice [NAME [SPEED]]` | Show or change the voice (speed 0.7 to 1.4) |
-| `adrian config KEY [VALUE]` | Show or change a setting by dotted path (validated; file paths can't be changed this way) |
+| `adrian config KEY [VALUE]` | Show or change a setting by dotted path (validated; file paths, `server.*` and `allowedGuilds` can't be changed this way) |
 | `adrian doctor` | Full diagnostics: service, permissions, models, ffmpeg, yt-dlp, config |
 | `adrian backup [FILE]` | Config, keys and state (not the models) to a `.tar.gz`. **It contains your keys; keep it private.** |
 | `adrian restore FILE` | Restore a backup |
@@ -220,7 +234,7 @@ itself yet. Update once the old way (download the bundle and `.sha256`, then
 `sudo adrian update FILE`); from then on `sudo adrian update` and auto-update
 work.
 
-`sudo adrian rollback` goes back one version at any time. After an update or restart, the bot rejoins its home channel. Use `/join` to bring it back to another one.
+`sudo adrian rollback` goes back one version at any time. With auto-update on, the newest release comes back within about an hour, as soon as nobody is in her call and nothing is playing, so run `sudo adrian auto-update off` first and turn it on again when a fix is out. After an update or restart, the bot rejoins its home channel. Use `/join` to bring it back to another one.
 
 Back up before big changes: `sudo adrian backup ~/adrian-backup.tar.gz`.
 

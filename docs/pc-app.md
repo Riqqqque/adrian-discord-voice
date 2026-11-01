@@ -38,6 +38,28 @@ It prints a token that starts with `sat_`, once. Keep it for step 3. Everything
 said at that PC counts as that person, so pair each PC to the person who uses
 it. `sudo adrian satellite list` shows the PCs and `remove` takes one away.
 
+**Docker:** the container has no `adrian` command, and compose only publishes
+the admin page. From `packaging/docker`, turn it on with the container's tool:
+
+```sh
+docker compose exec adrian node dist/cli/tool.js config satellite.enabled true
+```
+
+Then add the port to `compose.yaml`, under `ports:` in the `adrian` service.
+Use the server's address on your home network in place of `SERVER_LAN_IP`:
+ports published by Docker go around UFW, so the rule above won't limit them.
+
+```yaml
+      - "SERVER_LAN_IP:8791:8791"
+```
+
+Apply that and pair the PC:
+
+```sh
+docker compose up -d
+docker compose exec adrian node dist/cli/tool.js satellite-add "Desk PC" 123456789012345678
+```
+
 ## 2. Get the app
 
 Download `adrian-pc-app-<version>-windows-x64.zip` from the
@@ -69,6 +91,10 @@ and `-Token` to enter them in the app's settings instead (the gear in the
 window), and add `-NoStartup` if it shouldn't start with Windows. The token is
 stored encrypted for your Windows user only. `-Uninstall` removes the app and
 its shortcuts.
+
+The script only checks that the address and token look right, and stops without
+changing anything if they don't. It can't tell that a token is wrong until the
+app connects: then she shows as not connected, and the settings say why.
 
 ## Using it
 
@@ -111,7 +137,10 @@ PC itself, whatever the server says.
 - `cloudStt`: a more accurate second listen for what's said to her at a PC,
   using Groq's Whisper (free tier, about 20 requests a minute):
   `sudo adrian secret set GROQ_API_KEY`, then
-  `sudo adrian config cloudStt.enabled true` and `sudo adrian restart`.
+  `sudo adrian config cloudStt.enabled true` and `sudo adrian restart`. It also
+  covers what you say to her in a Discord call while your PC is connected, and
+  `sudo adrian config cloudStt.rooms all` adds everyone in the call. That audio
+  goes to Groq.
 - `satellite.unfinishedWaitMs` (default 1200): when you pause mid-sentence,
   she waits up to this much longer for the rest. 0 turns it off.
 - `satellite.recordDays` (default 0): keep recordings of requests made at a PC
