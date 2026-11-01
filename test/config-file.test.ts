@@ -162,6 +162,16 @@ describe('adrian config on a config.json with a typo', () => {
   });
 });
 
+describe('adrian check', () => {
+  // `adrian update` asks a new release this before switching: only 3 means no.
+  it('answers 3, with the reasons, for a config the schema refuses', async () => {
+    writeFileSync(configFile, JSON.stringify({ ...GOOD, music: { volume: 99 } }));
+    const r = await tool('check');
+    expect(r.code).toBe(3);
+    expect(r.out).toContain('Config music.volume');
+  });
+});
+
 describe('adrian config on a good file', () => {
   it('saves the change and keeps everything else', async () => {
     writeFileSync(configFile, JSON.stringify(GOOD));

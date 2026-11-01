@@ -48,8 +48,9 @@ A.D.R.I.A.N. listens to a voice channel anyone in your server can join, holds AP
 - Plex track paths must stay on the Plex server and under `/library/parts/`.
 - Tool results and web content are marked as untrusted data in the prompt.
 - Text in the prompt can't approve anything. Sleep, restart and shutdown need the person's own yes to a fixed question, judged on their words and not on anything the model says. message_member needs the asker to have said who it's for ("tell Sam"); otherwise it reads the message back and waits for the same yes.
-- Notes are keyed by Discord user ID and only used when that person is speaking, so nobody can talk the bot into revealing someone else's notes.
+- Notes are keyed by Discord user ID and only used when that person is speaking, so nobody can talk the bot into revealing someone else's notes. A server's prompt only gets notes told in that server, or ones the person's own words ask about, checked in code against what they said. Anything else counts as private to DMs and their PC, and DM talk stays out of what's said in servers.
 - Owner rights are checked by Discord ID, never by display name. A member named like the creator is flagged as not the creator.
+- A room's music and sounds are for the people in it. Playing, skipping or stopping them takes someone in that voice call (it goes by voice state, so muted counts and typing in the call's text chat from outside doesn't), the PC's owner at a PC, or an owner. Anyone can still ask what's playing.
 - Integrations (Plex, Sonarr, Radarr, game servers) are read-only.
 
 **Cost**
@@ -65,7 +66,7 @@ A.D.R.I.A.N. listens to a voice channel anyone in your server can join, holds AP
 
 ## Things to know
 
-- **Release bundles** are protected by SHA-256 checksums, not signatures. Download them from this repository's Releases page over HTTPS.
+- **Updates trust whoever can publish here.** `sudo adrian update` and auto-update install whatever is published as this repository's latest release, as root on the server, and the PC app does the same as you on your PC. Bundles are protected by SHA-256 checksums, not signatures. The checksum comes from the same release, so it catches corruption, not tampering. A release's own `upgrade-prep.sh` runs as root before any health check, so rolling back is no defense against a hostile one. So anyone who can publish a release on this repository can run code on machines with auto-update on, within about an hour on a server and about six hours on a PC. If that doesn't fit, leave auto-update off (`sudo adrian auto-update off`, and the switch in the PC app's settings), and update by hand after reading the release. Download bundles from this repository's Releases page over HTTPS.
 - **Backups** (`adrian backup`) contain your keys. Store them like passwords.
 - **`listen.logTranscripts`** writes what people say into the log. It's for debugging only; leave it off.
 - **`satellite.logTranscripts`** writes what PCs hear, side talk included, and what she answers into the log. With `cloudStt` on, it also logs what PC owners say to her in a Discord call. It's for fixing misunderstandings; leave it off otherwise.

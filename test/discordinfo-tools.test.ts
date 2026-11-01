@@ -482,7 +482,6 @@ describe('who the asker really named', () => {
     ['let kim and sam know', sam],
     ['tell my sam', sam],
     ['dile a sam que voy tarde', sam],
-    ['tell chris', { ...sam, displayName: 'Christopher' }],
     ['tell jo', { ...sam, displayName: 'Jo', username: 'x' }],
     ['tell jose', { ...sam, displayName: 'José', username: 'x' }],
     ['tell slayer', { ...sam, displayName: 'xX_Slayer_Xx', username: 'x' }],
@@ -523,6 +522,16 @@ describe('who the asker really named', () => {
     expect(namesMember(said, m)).toBe(false);
   });
 
+  // "Sam" could be someone she hasn't seen, or just not who they meant.
+  it.each([
+    ['tell chris', { ...sam, displayName: 'Christopher', username: 'x' }],
+    ['tell sam', { ...sam, displayName: 'Samantha', username: 'x' }],
+    ['tell rob', { ...sam, displayName: 'x', username: 'robert99' }],
+    ['tell ann', { ...sam, displayName: 'Joanna', username: 'x' }],
+  ])('a name that only begins or contains theirs: %j', (said, m) => {
+    expect(namesMember(said, m)).toBe(false);
+  });
+
   it.each([
     ['lol', sam],
     ['tell him dinner is ready', sam],
@@ -541,6 +550,110 @@ describe('who the asker really named', () => {
   it('nothing said names nobody', () => {
     expect(namesMember(undefined, sam)).toBe(false);
     expect(namesMember('', sam)).toBe(false);
+  });
+});
+
+describe('a name that only partly fits', () => {
+  const RILEY = '100000000000000011';
+  const JOANNA = '100000000000000012';
+  /** One more person she has seen. */
+  const seen = (r: ReturnType<typeof rig>, p: Person) => r.guild.members.cache.set(p.id, p as never);
+  const said = (p: Person) => p.send.mock.calls.length;
+
+  it('looks further before settling on the only person she has seen', async () => {
+    const riley = person(OUTSIDER, 'Riley', 'rileyr');
+    const rileyanne = person(RILEY, 'Rileyanne', 'ra');
+    const r = rig({ members: false, searchFinds: [riley] });
+    seen(r, rileyanne);
+    expect(await r.tell({ member: 'Riley', message: 'party is at 8' })).toBe('Sent Riley a DM.');
+    expect(r.search).toHaveBeenCalledWith({ query: 'Riley', limit: 10 });
+    expect(said(riley)).toBe(1);
+    expect(said(rileyanne)).toBe(0);
+  });
+
+  it('sees both when the search finds someone it had cached too', async () => {
+    const rileyanne = person(RILEY, 'Rileyanne', 'ra');
+    const r = rig({ members: false, searchFinds: [rileyanne] });
+    seen(r, rileyanne);
+    expect(await r.tell({ member: 'Riley', message: 'hi' })).toBe('Send Rileyanne: "hi"?');
+    expect(said(rileyanne)).toBe(0);
+  });
+
+  it('asks which when the search turns up a second partial match', async () => {
+    const rileyanne = person(RILEY, 'Rileyanne', 'ra');
+    const rileyson = person(OUTSIDER, 'Rileyson', 'rs');
+    const r = rig({ members: false, searchFinds: [rileyson] });
+    seen(r, rileyanne);
+    expect(await r.tell({ member: 'Riley', message: 'hi' })).toBe('Which one? Rileyanne (@ra), Rileyson (@rs)');
+    expect(said(rileyanne) + said(rileyson)).toBe(0);
+  });
+
+  it('needs no search once someone cached has exactly that name', async () => {
+    const r = rig({ members: false });
+    expect(await r.tell({ member: 'Sam', message: 'hi' })).toBe('Sent Sam a DM.');
+    expect(r.search).not.toHaveBeenCalled();
+  });
+
+  it('falls back on who it has seen when the search fails, and still checks', async () => {
+    const rileyanne = person(RILEY, 'Rileyanne', 'ra');
+    const r = rig({ members: false });
+    seen(r, rileyanne);
+    r.search.mockRejectedValue(new Error('rate limited'));
+    expect(await r.tell({ member: 'Riley', message: 'hi' })).toBe('Send Rileyanne: "hi"?');
+    expect(said(rileyanne)).toBe(0);
+  });
+
+  it('reads back a name that only contains what they said, and sends nothing yet', async () => {
+    const joanna = person(JOANNA, 'Joanna', 'jo99');
+    const r = rig();
+    seen(r, joanna);
+    expect(await r.tell({ member: 'Ann', message: 'surprise party is at 8' })).toBe('Send Joanna: "surprise party is at 8"?');
+    expect(said(joanna)).toBe(0);
+    expect(r.take).not.toHaveBeenCalled();
+    expect(r.search).not.toHaveBeenCalled(); // with the member list there's nobody else to find
+    expect(await r.tell({ member: 'Ann', message: 'surprise party is at 8' }, 'yes')).toBe('Sent Joanna a DM.');
+    expect(said(joanna)).toBe(1);
+  });
+
+  it('reads back a name that only begins with what they said', async () => {
+    const riley = person(RILEY, 'Rileyanne', 'ra');
+    const r = rig();
+    seen(r, riley);
+    expect(await r.tell({ member: 'Riley', message: 'hi' })).toBe('Send Rileyanne: "hi"?');
+    expect(said(riley)).toBe(0);
+  });
+
+  it('will not let the model finish the name for them', async () => {
+    const riley = person(RILEY, 'Rileyanne', 'ra');
+    const r = rig();
+    seen(r, riley);
+    expect(await r.tell({ member: 'Rileyanne', message: 'hi' }, 'tell riley hi')).toBe('Send Rileyanne: "hi"?');
+    expect(said(riley)).toBe(0);
+  });
+
+  it('sends once they say the whole name', async () => {
+    const riley = person(RILEY, 'Rileyanne', 'ra');
+    const r = rig();
+    seen(r, riley);
+    expect(await r.tell({ member: 'Rileyanne', message: 'hi' }, 'tell rileyanne hi')).toBe('Sent Rileyanne a DM.');
+  });
+
+  it('takes one whole word of a longer name as naming them', async () => {
+    const riley = person(RILEY, 'Riley Jones', 'ra');
+    const r = rig();
+    seen(r, riley);
+    expect(await r.tell({ member: 'Riley', message: 'hi' })).toBe('Sent Riley Jones a DM.');
+  });
+
+  it('still sends straight to a ping code for the person they named', async () => {
+    const r = rig();
+    expect(await r.tell({ member: `<@${SAM}>`, message: 'hi' }, 'tell sam hi')).toBe('Sent Sam a DM.');
+  });
+
+  it('still finds partial matches when someone is only asking about a person', async () => {
+    const r = rig();
+    seen(r, person(RILEY, 'Rileyanne', 'ra'));
+    expect(await r.ask({ what: 'members', name: 'riley' })).toContain('Rileyanne');
   });
 });
 

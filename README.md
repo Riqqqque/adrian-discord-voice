@@ -15,7 +15,7 @@ This is one module of the A.D.R.I.A.N. household assistant suite. Every module f
 - Talks like a person in the call: short, specific answers, reactions, no assistant filler. Knows who is in the call and what was said recently, and can refer to it.
 - Handles a busy call: one answer at a time with a short queue, ignores game chatter and side conversations, and lets the person being answered interrupt.
 - Stops instantly on "stop", "shut up", "never mind" (and other languages). Everyday words like "done" or "quiet" only count from the person it's answering or when said with its name.
-- Everyday phrases are handled locally with no model call: thanks, bye, repeat that, louder/quieter, faster/slower, what time is it.
+- Everyday phrases said with its name, or after "Yes?", are handled locally with no model call: thanks, bye, repeat that, louder/quieter, faster/slower, what time is it. Without the name only thanks, bye and okay stay local; the model judges whether the rest was meant for it.
 - Five languages: English, Spanish, Chinese, Japanese and Vietnamese. It answers in the language you speak.
 - Remembers people: "remember that I'm vegetarian", and it also picks up facts on its own. Each person's notes are private to them.
 
@@ -36,7 +36,7 @@ This is one module of the A.D.R.I.A.N. household assistant suite. Every module f
 - "Make an airhorn sound", "give me a drum roll", "what does a cow sound like?": it finds a short sound effect and plays it in the call (up to 15 seconds, over any music).
 
 **Tools**
-- Timers and reminders ("remind me in 20 minutes to check the oven"); announced in the call, or by DM if you left.
+- Timers and reminders ("remind me in 20 minutes to check the oven"); announced in the call if you can hear it, otherwise at the PC you set them at (with a DM as well), or by DM.
 - Web search for anything recent (optional, Tavily).
 - Party games: trivia, dice, coin flips.
 - Minecraft server status: who's online, player counts.
@@ -124,7 +124,7 @@ Run `adrian` on the server for management:
 adrian status          # service state, health, admin page address
 sudo adrian logs -f    # live log (keys are redacted)
 sudo adrian doctor     # full diagnostics
-sudo adrian update adrian-voice-<new>-linux-x64.tar.gz   # rolls back by itself if it doesn't come up
+sudo adrian update adrian-voice-<new>-linux-x64.tar.gz   # rolls back by itself if it does worse than the old one
 ```
 
 All commands: [docs/install.md#the-adrian-command](docs/install.md#the-adrian-command).

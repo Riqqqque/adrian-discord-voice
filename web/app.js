@@ -3,7 +3,9 @@
 // and is inserted as text, never as HTML.
 
 const app = document.getElementById('app');
+const noticeBar = document.getElementById('notice');
 let csrf = '';
+let sessionLost = false;
 
 // --- helpers --------------------------------------------------------------
 
@@ -27,8 +29,20 @@ async function api(method, path, body) {
   if (method !== 'GET' && csrf) headers['X-CSRF-Token'] = csrf;
   const r = await fetch(path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), credentials: 'same-origin' });
   const data = r.headers.get('content-type')?.includes('json') ? await r.json() : {};
-  if (!r.ok) throw new Error(data.error || `request failed (${r.status})`);
+  if (!r.ok) {
+    // A service restart ends every session, and an update restarts the service.
+    // At the login itself a 401 only means the password was wrong.
+    if (r.status === 401 && path !== '/api/login') sessionEnded();
+    throw new Error(data.error || `request failed (${r.status})`);
+  }
   return data;
+}
+
+function sessionEnded() {
+  clearInterval(timer);
+  csrf = '';
+  sessionLost = true;
+  boot();
 }
 
 function msg(el, text, kind = '') {
@@ -36,11 +50,23 @@ function msg(el, text, kind = '') {
   el.className = `msg ${kind}`;
 }
 
-function busy(btn, fn) {
+/** A message for the whole page, for when there's no place beside what failed. */
+function notice(text) {
+  noticeBar.textContent = text;
+}
+
+/** For a click that opens a view: nothing may fail without a word. */
+const reporting = (opening) => opening.catch((e) => notice(e.message));
+
+/** Runs a button's action. A failure shows in `out`, or at the top of the page. */
+function busy(btn, fn, out) {
   return async (...a) => {
     btn.disabled = true;
     try {
       await fn(...a);
+    } catch (e) {
+      if (out) msg(out, e.message, 'bad');
+      else notice(e.message);
     } finally {
       btn.disabled = false;
     }
@@ -51,6 +77,7 @@ const usd = (x) => (x == null ? '–' : `$${Number(x).toFixed(x < 0.1 ? 4 : 2)}`
 const ms = (x) => (x == null ? '–' : `${x} ms`);
 
 function render(...nodes) {
+  notice('');
   app.replaceChildren(...nodes);
   window.scrollTo(0, 0);
 }
@@ -75,10 +102,15 @@ async function start() {
   return s.setupNeeded ? claimView() : loginView();
 }
 
+function boot() {
+  return start().catch((e) => render(h('div', { class: 'card msg bad' }, `Could not reach the server: ${e.message}`)));
+}
+
 async function logout() {
+  clearInterval(timer);
   await api('POST', '/api/logout', {}).catch(() => {});
   csrf = '';
-  start();
+  boot();
 }
 
 function claimView() {
@@ -99,7 +131,7 @@ function claimView() {
         try {
           const r = await api('POST', '/api/setup/claim', { code: code.value, username: user.value, password: pass.value });
           csrf = r.csrf;
-          start();
+          boot();
         } catch (err) {
           msg(out, err.message, 'bad');
         } finally {
@@ -122,6 +154,8 @@ function loginView() {
   const user = h('input', { autocomplete: 'username' });
   const pass = h('input', { type: 'password', autocomplete: 'current-password' });
   const out = h('div', { class: 'msg' });
+  if (sessionLost) msg(out, 'Your session ended. Log in again.', 'warn');
+  sessionLost = false;
   const btn = h('button', { class: 'primary', type: 'submit' }, 'Log in');
   render(
     h('h1', {}, 'Log in'),
@@ -135,7 +169,7 @@ function loginView() {
           try {
             const r = await api('POST', '/api/login', { username: user.value, password: pass.value });
             csrf = r.csrf;
-            start();
+            boot();
           } catch (err) {
             msg(out, err.message, 'bad');
           } finally {
@@ -159,8 +193,8 @@ async function wizard(step) {
   const { secrets } = await api('GET', '/api/secrets');
   const has = (n) => secrets.some((s) => s.name === n);
   const nav = h('ol', { class: 'steps' }, STEPS.map((s, i) => h('li', { class: i === step ? 'on' : i < step ? 'done' : '' }, `${i + 1}. ${s}`)));
-  const next = () => wizard(step + 1);
-  const back = step > 0 ? h('button', { onclick: () => wizard(step - 1) }, 'Back') : null;
+  const next = () => reporting(wizard(step + 1));
+  const back = step > 0 ? h('button', { onclick: () => reporting(wizard(step - 1)) }, 'Back') : null;
   const views = [stepCheck, stepDiscord, stepLlm, stepSearch, stepVoice, stepLimits, stepFinish];
   const body = await views[step]({ settings, presets, voices, has, next, back });
   render(h('h1', {}, 'Setup'), nav, body);
@@ -197,7 +231,7 @@ async function stepDiscord({ settings, has, next, back }) {
   const showGuilds = (r) => {
     const parts = [h('p', {}, 'Signed in as ', h('strong', {}, r.botTag), '.')];
     if (r.publicBot) parts.push(h('div', { class: 'msg warn' }, 'This bot is public: anyone could add it to their server. In the Developer Portal, under Bot, turn Public Bot off.'));
-    parts.push(h('p', { class: 'small' }, 'Add the bot to your server with this link (it asks only for Connect, Speak, Use Voice Activity and View Channels): ', h('a', { href: r.inviteUrl, target: '_blank', rel: 'noopener noreferrer' }, 'Invite A.D.R.I.A.N.')));
+    parts.push(h('p', { class: 'small' }, 'Add the bot to your server with this link (it asks for View Channels, Connect, Speak, Use Voice Activity, Send Messages, Send Messages in Threads and Read Message History): ', h('a', { href: r.inviteUrl, target: '_blank', rel: 'noopener noreferrer' }, 'Invite A.D.R.I.A.N.')));
     const guild = h('select', {}, h('option', { value: '' }, r.guilds.length ? 'Choose a server' : 'The bot is not in any server yet'), r.guilds.map((g) => h('option', { value: g.id, selected: g.id === settings.guildId }, g.name)));
     const channel = h('select', { disabled: true }, h('option', { value: '' }, 'Choose a server first'));
     const chOut = h('div', { class: 'msg' });
@@ -219,7 +253,7 @@ async function stepDiscord({ settings, has, next, back }) {
       if (!guild.value || !channel.value) return msg(chOut, 'Choose a server and a voice channel.', 'bad');
       await api('PUT', '/api/settings', { guildId: guild.value, channelId: channel.value });
       next();
-    }));
+    }, chOut));
     const refresh = h('button', { onclick: () => verifyBtn.click() }, 'I added it, refresh');
     after.replaceChildren(...parts, h('label', {}, 'Server'), guild, h('label', {}, 'Voice channel to join'), channel, chOut, refresh, save);
   };
@@ -251,13 +285,18 @@ async function stepDiscord({ settings, has, next, back }) {
   );
 }
 
-function providerPicker(presets, current, { allowNone = false, has }) {
+function providerPicker(presets, current, { allowNone = false, has, saved }) {
   const wrap = h('div');
   const key = h('input', { type: 'password', autocomplete: 'off' });
   const out = h('div', { class: 'msg' });
   const radios = [];
   const opts = [...presets.map((p) => ({ id: p.id, label: p.label, note: p.note, keySecret: p.keySecret }))];
   if (allowNone) opts.push({ id: 'none', label: 'No fallback', note: 'If the main provider fails, A.D.R.I.A.N. says it could not get an answer.' });
+  // Set with `adrian config`, so it's on no list: leaving it alone is a choice too.
+  if (!opts.some((o) => o.id === current)) {
+    opts.unshift({ id: 'keep', label: `Keep ${saved ?? 'the saved model'}`, note: 'Set outside this page. Saving leaves it as it is.' });
+    current = 'keep';
+  }
   const sel = () => radios.find((r) => r.checked)?.value;
   const update = () => {
     const p = opts.find((o) => o.id === sel());
@@ -270,43 +309,63 @@ function providerPicker(presets, current, { allowNone = false, has }) {
     wrap.append(h('label', { class: 'choice' }, r, h('span', {}, h('strong', {}, allowNone ? o.label.replace(' (Recommended)', '') : o.label), h('br'), h('span', { class: 'muted small' }, o.note))));
   }
   update();
-  const test = h('button', {}, 'Test');
-  test.addEventListener('click', busy(test, async () => {
-    const id = sel();
-    if (!id || id === 'none') return msg(out, 'Nothing to test.', '');
+  /** Asks the model a test question; a pasted key that works is stored. */
+  const check = async () => {
     msg(out, 'Asking the model a test question…');
     try {
-      const r = await api('POST', '/api/check/llm', { preset: id, key: key.value.trim() });
-      if (!r.ok) return msg(out, r.error, 'bad');
+      const r = await api('POST', '/api/check/llm', { preset: sel(), key: key.value.trim() });
+      if (!r.ok) {
+        msg(out, r.error, 'bad');
+        return false;
+      }
       key.value = '';
       update();
       msg(out, `Works: "${r.reply}" in ${r.totalMs} ms. About ${usd(r.estCostPerAnswerUsd)} per answer at paid rates.`, 'ok');
+      return true;
     } catch (e) {
       msg(out, e.message, 'bad');
+      return false;
     }
+  };
+  const test = h('button', {}, 'Test');
+  test.addEventListener('click', busy(test, async () => {
+    const id = sel();
+    if (!id || id === 'none' || id === 'keep') return msg(out, 'Nothing to test.', '');
+    await check();
   }));
   wrap.append(h('label', {}, 'API key'), key, test, out);
-  return { el: wrap, value: sel, tested: () => out.classList.contains('ok') };
+  /** The choice has its key, or needs none. A key pasted but not tested yet is
+   *  tested now: saving alone would drop it. */
+  const keyReady = async () => {
+    const need = opts.find((o) => o.id === sel())?.keySecret;
+    if (!need) return true;
+    if (key.value.trim()) return check();
+    const { secrets } = await api('GET', '/api/secrets');
+    return secrets.some((s) => s.name === need);
+  };
+  return { el: wrap, value: sel, keyReady, tested: () => out.classList.contains('ok') };
 }
 
 async function stepLlm({ settings, presets, has, next, back }) {
-  const main = providerPicker(presets, settings.llm?.preset ?? 'claude', { has });
-  const fb = providerPicker(presets, settings.fallback?.preset ?? (settings.llm ? 'none' : 'groq'), { allowNone: true, has });
+  const main = providerPicker(presets, settings.llm?.preset ?? 'claude', { has, saved: settings.llm?.model });
+  const fb = providerPicker(presets, settings.fallback?.preset ?? (settings.llm ? 'none' : 'groq'), { allowNone: true, has, saved: settings.fallback?.model });
   const out = h('div', { class: 'msg' });
   const save = h('button', { class: 'primary' }, 'Save and continue');
   save.addEventListener('click', busy(save, async () => {
     const m = main.value();
     const f = fb.value();
-    const { secrets } = await api('GET', '/api/secrets');
-    const need = presets.find((p) => p.id === m)?.keySecret;
-    if (need && !secrets.some((s) => s.name === need)) return msg(out, 'Paste and test a key for the main provider first.', 'bad');
-    if (f === m) return msg(out, 'Pick a different fallback, or No fallback.', 'bad');
-    await api('PUT', '/api/settings', { llm: { preset: m }, fallback: { preset: f } });
+    if (f === m && m !== 'keep') return msg(out, 'Pick a different fallback, or No fallback.', 'bad');
+    if (!(await main.keyReady())) return msg(out, 'Paste and test a key for the main provider first.', 'bad');
+    if (!(await fb.keyReady())) return msg(out, 'Paste and test a key for the fallback first, or pick No fallback.', 'bad');
+    const patch = {};
+    if (m !== 'keep') patch.llm = { preset: m };
+    if (f !== 'keep') patch.fallback = { preset: f };
+    await api('PUT', '/api/settings', patch);
     next();
-  }));
+  }, out));
   return h(
     'div', {},
-    h('div', { class: 'card' }, h('h2', {}, 'Language model'), h('p', { class: 'muted small' }, 'Answers are written by a cloud model. Only the transcribed question and a short history of that person’s conversation are sent.'), main.el),
+    h('div', { class: 'card' }, h('h2', {}, 'Language model'), h('p', { class: 'muted small' }, 'Answers are written by a cloud model. It gets the transcribed question and that person’s recent conversation, plus what it needs to answer them: who is in the call, what was just said in the call, that person’s saved notes, and recent channel messages for a text message.'), main.el),
     h('div', { class: 'card' }, h('h2', {}, 'Fallback (optional)'), h('p', { class: 'muted small' }, 'Used automatically if the main provider is down or rate-limited.'), fb.el),
     h('div', {}, back, save, out),
   );
@@ -334,7 +393,7 @@ async function stepSearch({ settings, has, next, back }) {
     if (on.checked && !secrets.some((s) => s.name === 'TAVILY_API_KEY')) return msg(out, 'Paste and test a Tavily key, or turn search off.', 'bad');
     await api('PUT', '/api/settings', { search: on.checked });
     next();
-  }));
+  }, out));
   return h(
     'div', { class: 'card' },
     h('h2', {}, 'Web search (Recommended)'),
@@ -370,7 +429,7 @@ async function stepVoice({ settings, voices, next, back }) {
   save.addEventListener('click', busy(save, async () => {
     await api('PUT', '/api/settings', { voice: { voice: voice.value, speed: Number(speed.value) } });
     next();
-  }));
+  }, out));
   return h(
     'div', { class: 'card' },
     h('h2', {}, 'Voice'),
@@ -439,15 +498,26 @@ async function stepFinish({ back }) {
 // --- dashboard --------------------------------------------------------------
 
 let timer;
+const LOST_CONTACT = 'Lost contact with the service. Still trying…';
+
 async function dashboard(tab = 'status') {
   clearInterval(timer);
   const tabs = ['status', 'settings', 'keys', 'logs', 'account'];
-  const bar = h('div', { class: 'tabs' }, tabs.map((t) => h('button', { class: t === tab ? 'on' : '', onclick: () => dashboard(t) }, t[0].toUpperCase() + t.slice(1))));
+  const bar = h('div', { class: 'tabs' }, tabs.map((t) => h('button', { class: t === tab ? 'on' : '', onclick: () => reporting(dashboard(t)) }, t[0].toUpperCase() + t.slice(1))));
   const body = h('div');
   render(h('h1', {}, 'Dashboard'), bar, body);
   const views = { status: dashStatus, settings: dashSettings, keys: dashKeys, logs: dashLogs, account: dashAccount };
   await views[tab](body);
-  if (tab === 'status' || tab === 'logs') timer = setInterval(() => views[tab](body).catch(() => {}), 5000);
+  if (tab === 'status' || tab === 'logs') timer = setInterval(() => refresh(views[tab], body), 5000);
+}
+
+async function refresh(view, body) {
+  try {
+    await view(body);
+    if (noticeBar.textContent === LOST_CONTACT) notice('');
+  } catch {
+    notice(LOST_CONTACT);
+  }
 }
 
 async function dashStatus(body) {
@@ -462,7 +532,7 @@ async function dashStatus(body) {
   const restart = h('button', {}, 'Restart bot');
   restart.addEventListener('click', busy(restart, async () => {
     await api('POST', '/api/restart', {});
-    dashboard('status');
+    await dashboard('status');
   }));
   const lat = s.latency;
   body.replaceChildren(
@@ -475,7 +545,8 @@ async function dashStatus(body) {
         h('tr', {}, h('th', {}, 'Uptime'), h('td', {}, s.uptimeS == null ? '–' : `${Math.floor(s.uptimeS / 3600)} h ${Math.floor((s.uptimeS % 3600) / 60)} min`))),
       s.error ? h('div', { class: 'msg bad' }, s.error) : null,
       s.problems.length ? h('ul', {}, s.problems.map((p) => h('li', { class: 'msg warn' }, p))) : null,
-      s.state === 'setup' ? h('button', { class: 'primary', onclick: () => wizard(0) }, 'Continue setup') : null,
+      s.warnings.length ? h('ul', {}, s.warnings.map((w) => h('li', { class: 'msg warn' }, w))) : null,
+      s.state === 'setup' ? h('button', { class: 'primary', onclick: () => reporting(wizard(0)) }, 'Continue setup') : null,
       restart),
     h('div', { class: 'card' },
       h('h2', {}, 'Latency (last answers)'),
@@ -500,7 +571,7 @@ async function dashSettings(body) {
     h('div', { class: 'card' },
       h('h2', {}, 'Settings'),
       h('p', { class: 'muted small' }, 'Changes take effect after Restart bot on the Status tab.'),
-      STEPS.slice(1, 6).map((s, i) => h('button', { onclick: () => wizard(i + 1) }, s))),
+      STEPS.slice(1, 6).map((s, i) => h('button', { onclick: () => reporting(wizard(i + 1)) }, s))),
   );
 }
 
@@ -517,7 +588,7 @@ async function dashKeys(body) {
       if (!input.value.trim()) return;
       try {
         await api('PUT', `/api/secrets/${n}`, { value: input.value.trim() });
-        dashboard('keys');
+        await dashboard('keys');
       } catch (e) {
         msg(out, e.message, 'bad');
       }
@@ -525,8 +596,8 @@ async function dashKeys(body) {
     const del = set ? h('button', { class: 'danger' }, 'Delete') : null;
     del?.addEventListener('click', busy(del, async () => {
       await api('DELETE', `/api/secrets/${n}`);
-      dashboard('keys');
-    }));
+      await dashboard('keys');
+    }, out));
     return h('div', { class: 'card' }, h('h2', {}, n), input, save, del, out);
   });
   body.replaceChildren(h('p', { class: 'muted small' }, 'Keys are stored on this server only and are never shown again. Replacing a key takes effect after a restart.'), ...rows);
@@ -548,7 +619,7 @@ async function dashAccount(body) {
     try {
       await api('POST', '/api/password', { current: cur.value, next: nxt.value });
       msg(out, 'Changed. Log in again.', 'ok');
-      setTimeout(start, 1200);
+      setTimeout(boot, 1200);
     } catch (e) {
       msg(out, e.message, 'bad');
     }
@@ -556,4 +627,4 @@ async function dashAccount(body) {
   body.replaceChildren(h('div', { class: 'card' }, h('h2', {}, 'Password'), h('label', {}, 'Current password'), cur, h('label', {}, 'New password (at least 10 characters)'), nxt, go, out));
 }
 
-start().catch((e) => render(h('div', { class: 'card msg bad' }, `Could not reach the server: ${e.message}`)));
+boot();

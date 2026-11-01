@@ -19,7 +19,7 @@ const stub = new Proxy({}, {
   get: (_t, k) => {
     if (k === 'nowPlaying') return undefined;
     if (k === 'upNext') return [];
-    if (k === 'paused') return false;
+    if (k === 'paused' || k === 'youtubePaused') return false;
     if (k === 'recent') return history;
     if (k === 'autoplay') return true;
     return async (...a) => {

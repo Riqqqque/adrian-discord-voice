@@ -16,8 +16,8 @@
 #   adrian backup [FILE]          config, keys and state (not models) to a tar.gz
 #   adrian restore FILE
 #   adrian update                 install the newest release from GitHub (checksum verified);
-#                                 rolls back if it doesn't come up. Also: update BUNDLE.tar.gz,
-#                                 update --check (is there a newer one?)
+#                                 rolls back if it does worse than the old one. Also: update
+#                                 BUNDLE.tar.gz, update --check (is there a newer one?)
 #   adrian auto-update on|off|status   check every hour and update by itself, only while
 #                                 nobody is in her call and nothing is playing
 #   adrian rollback               switch back to the previous version
@@ -34,13 +34,19 @@ APP=$OPT/current
 # Where releases come from (adrian update, auto-update).
 REPO=${ADRIAN_UPDATE_REPO:-Riqqqque/adrian-discord-voice}
 UPDATE_UNITS=(adrian-update.service adrian-update.timer)
+UNIT=/etc/systemd/system/$SERVICE.service
+# The version the last update had to give up on. Root's, not in $VAR: the
+# service must not be able to clear it, or plant one to stop an update.
+FAILED=$OPT/update-failed
 
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 need_root() { [ "$(id -u)" = 0 ] || die "run with sudo: sudo adrian $*"; }
-tool() { # run the node helper as the service user, so files keep the right owner
+tool_of() { # tool_of RELEASE_DIR ARGS: one release's node helper, as the service user, so files keep the right owner
+  local dir=$1; shift
   runuser -u adrian -- env ADRIAN_CONFIG=$ETC/config.json ADRIAN_STATE=$VAR \
-    LD_LIBRARY_PATH="$APP/node_modules/sherpa-onnx-linux-x64" "$NODE" "$APP/dist/cli/tool.js" "$@"
+    LD_LIBRARY_PATH="$dir/node_modules/sherpa-onnx-linux-x64" "$NODE" "$dir/dist/cli/tool.js" "$@"
 }
+tool() { tool_of "$APP" "$@"; }
 addr() { tool port; } # → "http 127.0.0.1 8790"
 health() { # health [timeout_s] → prints JSON, exit 0 if healthy
   local proto host port t=${1:-5}
@@ -48,10 +54,16 @@ health() { # health [timeout_s] → prints JSON, exit 0 if healthy
   [ "$host" = 0.0.0.0 ] && host=127.0.0.1
   curl -fsS -k --max-time "$t" "$proto://$host:$port/api/health"
 }
-wait_healthy() { # wait_healthy seconds
-  local end=$((SECONDS + $1))
+# wait_healthy seconds [HEALTH]: healthy, and no worse than HEALTH (an earlier
+# reply): running if it was running, in her call if it was in her call.
+wait_healthy() {
+  local end=$((SECONDS + $1)) was=${2:-} out
   while [ $SECONDS -lt $end ]; do
-    if out=$(health 3 2>/dev/null) && grep -q '"ok":true' <<<"$out"; then echo "$out"; return 0; fi
+    if out=$(health 3 2>/dev/null) && grep -q '"ok":true' <<<"$out" \
+      && { ! grep -q '"state":"running"' <<<"$was" || grep -q '"state":"running"' <<<"$out"; } \
+      && { ! grep -q '"voiceReady":true' <<<"$was" || grep -q '"voiceReady":true' <<<"$out"; }; then
+      echo "$out"; return 0
+    fi
     sleep 1
   done
   return 1
@@ -86,6 +98,22 @@ config_broken() { # why config.json can't be loaded, if it can't; unfinished set
   local why rc=0
   why=$(tool check 2>&1 >/dev/null) || rc=$?
   [ "$rc" = 1 ] && echo "${why%%$'\n'*}"
+}
+config_refused() { # config_refused RELEASE_DIR: what that release has against the live config, if anything
+  local out rc=0
+  out=$(tool_of "$1" check 2>&1) || rc=$?
+  # Only 3 is its answer. It runs before the release's Node is in, so a crash
+  # says nothing about the config, and it mustn't block a release that moves Node.
+  [ "$rc" = 3 ] && echo "$out"
+}
+# Auto-update leaves a version that failed here alone for a day, so a bad release
+# can't restart her every hour, while a passing outage can't strand a good one.
+failed_lately() { [ -f "$FAILED" ] && [ "$(cat "$FAILED")" = "$1" ] && [ -n "$(find "$FAILED" -mmin -1440)" ]; }
+put_unit_back() { # the service file from before upgrade-prep.sh, if it changed
+  if [ -s "$unit_before" ] && ! cmp -s "$unit_before" "$UNIT"; then
+    install -m 0644 "$unit_before" "$UNIT"
+    systemctl daemon-reload
+  fi
 }
 previous_version() { # the release that was current before the last switch
   [ -L "$OPT/previous" ] && basename "$(readlink -f "$OPT/previous")"
@@ -145,6 +173,7 @@ case "$cmd" in
     systemctl is-enabled --quiet "$SERVICE" && ok "service enabled" || bad "service not enabled"
     systemctl is-active --quiet "$SERVICE" && ok "service running" || bad "service not running"
     if h=$(health 3 2>/dev/null); then ok "health: $h"; else bad "admin UI not responding"; fi
+    [ ! -f "$FAILED" ] || warn "update $(cat "$FAILED") failed here on $(date -r "$FAILED" '+%F %H:%M') and was undone; auto-update tries it again a day later, sudo adrian update any time"
     [ "$(stat -c %a "$ETC/secrets.env")" = 600 ] && ok "secrets.env is 0600" || bad "secrets.env permissions are $(stat -c %a "$ETC/secrets.env") (want 600)"
     [ "$(stat -c %U "$ETC/secrets.env")" = adrian ] && ok "secrets.env owned by adrian" || bad "secrets.env owner is $(stat -c %U "$ETC/secrets.env")"
     for m in silero_vad.onnx sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8 kokoro-multi-lang-v1_0 sherpa-onnx-whisper-small vits-piper-vi_VN-vais1000-medium; do
@@ -201,6 +230,7 @@ case "$cmd" in
         # No version gets healthy on a config.json that won't load: don't download,
         # restart twice and roll back every hour until someone fixes it.
         if [ $auto = 1 ] && why=$(config_broken); then echo "update $v waits: $why"; exit 0; fi
+        if [ $auto = 1 ] && failed_lately "$v"; then echo "update $v skipped: it failed here in the last day (try it by hand: sudo adrian update)"; exit 0; fi
         # Never restart her mid-call or mid-song: try again next hour.
         if [ $auto = 1 ] && h=$(health 5 2>/dev/null) && grep -q '"busy":true' <<<"$h"; then
           echo "update $v waits: someone is in her call or music is playing"; exit 0
@@ -221,20 +251,50 @@ case "$cmd" in
     [ "$new" != "$old" ] || die "version $new is already installed"
     rm -rf "$OPT/releases/$new"; mv "$tmp" "$OPT/releases/$new"; trap ${dl:+"rm -rf '$dl'"} EXIT
     chown -R root:root "$OPT/releases/$new"; chmod -R go-w "$OPT/releases/$new"; chmod 0755 "$OPT/releases/$new"
+    # Can the new code run this config? Asked as the service, before root runs
+    # anything from the release, and only if she's running: unfinished setup is a 3 too.
+    was=$(health 5 2>/dev/null || true)
+    if grep -q '"state":"running"' <<<"$was" && why=$(config_refused "$OPT/releases/$new"); then
+      rm -rf "${OPT:?}/releases/$new"; echo "$new" >"$FAILED"
+      die "version $new can't run this config, so nothing was changed:"$'\n'"$why"
+    fi
+    unit_before=$(mktemp); trap 'rm -rf "$unit_before" ${dl:+"$dl"}' EXIT
+    cp "$UNIT" "$unit_before" 2>/dev/null || : >"$unit_before"
     # The NEW release knows which models and service file it needs.
     if [ -f "$OPT/releases/$new/packaging/upgrade-prep.sh" ]; then
-      bash "$OPT/releases/$new/packaging/upgrade-prep.sh" || { rm -rf "${OPT:?}/releases/$new"; die "could not prepare $new (models, service file or Node); nothing was switched"; }
+      bash "$OPT/releases/$new/packaging/upgrade-prep.sh" || { put_unit_back; rm -rf "${OPT:?}/releases/$new"; die "could not prepare $new (models, service file or Node); nothing was switched"; }
+    fi
+    # What the new version has to live up to. Fetching models can take a while,
+    # so this is also the last look at whether someone has joined her call.
+    was=$(health 5 2>/dev/null || true)
+    if [ "${auto:-0}" = 1 ] && grep -q '"busy":true' <<<"$was"; then
+      put_unit_back; rm -rf "${OPT:?}/releases/$new"
+      echo "update $new waits: someone is in her call or music is playing"; exit 0
     fi
     echo "Switching $old -> $new"
     switch_to "$new"
-    systemctl restart "$SERVICE"
-    if wait_healthy 30 >/dev/null; then
+    echo "Watching $new for a minute or two"
+    # A join alone can take 20 s after login, and a crash can come after a good
+    # start: NRestarts counts the restarts systemd does by itself, from this one on.
+    # The last check waits too: a voice drop can take most of a minute to come
+    # back by itself, and one that lands here isn't the release's doing.
+    if systemctl restart "$SERVICE" && crashes=$(systemctl show -p NRestarts --value "$SERVICE") \
+      && wait_healthy 120 "$was" >/dev/null && sleep 60 && wait_healthy 60 "$was" >/dev/null \
+      && [ "$(systemctl show -p NRestarts --value "$SERVICE")" = "$crashes" ]; then
+      rm -f "$FAILED"
       echo "Updated to $new."
       # keep the three newest releases
       ls -1t "$OPT/releases" | tail -n +4 | while read -r r; do [ "$r" != "$new" ] && [ "$r" != "$old" ] && rm -rf "${OPT:?}/releases/$r"; done
     else
-      echo "Version $new did not become healthy within 30 s; rolling back to $old." >&2
-      switch_to "$old"; systemctl restart "$SERVICE"
+      # From here every step is worth trying, whatever became of the one before.
+      # wait_healthy at the end is what tells the person how it went.
+      set +e
+      echo "Version $new did worse than $old; rolling back." >&2
+      switch_to "$old"
+      # Its service file came in with it: back to the one $old ran under.
+      put_unit_back
+      systemctl restart "$SERVICE"
+      echo "$new" >"$FAILED"
       # Forget the failed release: "previous" goes back to what it was before this update.
       if [ -n "$prev_before" ]; then ln -sfn "$prev_before" "$OPT/previous"; else rm -f "$OPT/previous"; fi
       rm -rf "${OPT:?}/releases/$new"
@@ -272,6 +332,6 @@ case "$cmd" in
     wait_healthy 60 >/dev/null && echo "Rolled back to $prev." || die "rolled back, but not healthy: adrian logs" ;;
   uninstall) need_root uninstall; exec bash "$APP/packaging/install.sh" --uninstall "$@" ;;
   version) current_version ;;
-  -h|--help|help) sed -n '2,22p' "$0" ;;
+  -h|--help|help) sed -n '2,25p' "$0" ;;
   *) die "unknown command: $cmd (adrian help)" ;;
 esac

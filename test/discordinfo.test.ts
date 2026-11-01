@@ -19,6 +19,12 @@ describe('discord info', () => {
     expect(matchMembers(people, '  ')).toEqual([]);
   });
 
+  it('takes an id as that person only, never as part of someone\'s name', () => {
+    const lookalike = { id: '444444444444444444', displayName: 'x111111111111111111x', username: 'x' };
+    expect(matchMembers([lookalike], '111111111111111111')).toEqual([]);
+    expect(matchMembers([lookalike, ...people], '<@111111111111111111>').map((m) => m.displayName)).toEqual(['Sam']);
+  });
+
   it('pings only members it was told to, capped', () => {
     const isMember = (id: string) => id !== '999';
     expect(allowedPings('hey <@1> and <@!2>, also <@999> and <@1>', isMember)).toEqual(['1', '2']);

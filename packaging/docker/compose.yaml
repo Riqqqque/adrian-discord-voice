@@ -35,7 +35,7 @@ services:
       - models:/var/lib/adrian/models:ro
     read_only: true
     tmpfs:
-      - /tmp
+      - /tmp:exec # yt-dlp is a one-file build that runs from here
     cap_drop: [ALL]
     security_opt:
       - no-new-privileges:true

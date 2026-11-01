@@ -19,7 +19,7 @@ const auto = new AutoMemory(llm, notes, sessions, log, () => {}, 1);
 const roster = (asker) => [`People in this voice call right now (general): ${['Sean', 'Sam', 'Kim'].map((n) => (n === asker ? `${n} (talking to you now)` : n)).join(', ')}.`];
 const o = new ConversationOrchestrator(llm, sessions, [], {
   spokenName: 'Adrian', writtenName: 'A.D.R.I.A.N.', timezone: c.timezone, firstEventTimeoutMs: 12000, maxTokens: 500, maxToolRounds: 0,
-  context: (x) => ['Reply in English.', ...roster(x.speaker), ...room.context('ch', x.userId), ...notes.context(x.userId, x.speaker)],
+  context: (x) => ['Reply in English.', ...roster(x.speaker), ...room.context('ch', x.userId), ...notes.context(x.userId, x.speaker, x)],
 });
 async function say(uid, who, text, toBot = true) {
   room.add('ch', uid, who, text);

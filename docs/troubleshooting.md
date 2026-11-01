@@ -54,5 +54,7 @@ About 3.5 GB by default, because Whisper and the language voices load at every s
 
 ## Updates
 
-- **`adrian update` rolled back:** the new version didn't become healthy within 30 seconds. The log shows why: `sudo adrian logs`. The previous version is still running.
+- **`adrian update` rolled back:** the new version did worse than the old one: it wasn't up within 2 minutes, it came back in setup mode or out of her voice channel, or it crashed in the minute after. The log shows why: `sudo adrian logs`. The previous version is still running, under its old service file. A Discord voice outage during that minute can do this to a good release, so try `sudo adrian update` again once it's over.
+- **`version X can't run this config`:** the new release doesn't accept your `config.json`, and the message lists why. Nothing was changed. Fix those settings (see [configuration.md](configuration.md)), then update again.
+- **`update X skipped: it failed here in the last day`** (in `sudo adrian auto-update status`): auto-update leaves a version that failed alone for a day, so a bad release can't restart her every hour. `sudo adrian doctor` shows when it failed. `sudo adrian update` tries it right away, and a success clears it.
 - **After any update or restart,** the bot is back in its home channel. Use `/join` to bring it to another one.

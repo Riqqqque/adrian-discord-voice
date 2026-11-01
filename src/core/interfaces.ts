@@ -20,7 +20,7 @@ export interface VoiceTransportEvents {
   ready: () => void;
   /** Connection lost; the transport is trying to recover. */
   disconnected: (reason: string) => void;
-  /** Recovery failed; the transport gave up. */
+  /** The quick rejoins didn't bring it back. The transport keeps trying, slowly. */
   failed: (reason: string) => void;
   /** A user started an utterance (Discord speaking start). */
   speechStart: (userId: UserId) => void;
