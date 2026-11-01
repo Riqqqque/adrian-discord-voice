@@ -1,7 +1,11 @@
 import { EventEmitter } from 'node:events';
 import { ChannelType, Collection, Events } from 'discord.js';
 import { describe, expect, it } from 'vitest';
-import { type AskOptions, historyBlock, NAME_IN_TEXT, registerTextChat } from '../src/app/textchat.js';
+import { type AskOptions, historyBlock, NAME_IN_TEXT, registerTextChat, type TextChatDeps } from '../src/app/textchat.js';
+import { ConversationOrchestrator } from '../src/brain/orchestrator.js';
+import { SessionMemory } from '../src/brain/sessions.js';
+import type { LlmProvider } from '../src/core/interfaces.js';
+import { soundTool } from '../src/features/sounds.js';
 
 const quiet = { debug() {}, info() {}, warn() {}, error() {} };
 const BOT = 'bot';
@@ -16,7 +20,7 @@ interface Fake {
   quotes?: Fake;
 }
 
-function rig(opts: { readChannels?: boolean; answer?: (text: string, o: AskOptions) => string | string[] } = {}) {
+function rig(opts: { readChannels?: boolean; answer?: (text: string, o: AskOptions) => string | string[]; onAsk?: (o: AskOptions) => void; ask?: TextChatDeps['ask'] } = {}) {
   const client = Object.assign(new EventEmitter(), { user: { id: BOT } });
   const sent: string[] = [];
   const asked: { text: string; opts: AskOptions }[] = [];
@@ -61,14 +65,17 @@ function rig(opts: { readChannels?: boolean; answer?: (text: string, o: AskOptio
   registerTextChat({
     client: client as never,
     log: quiet as never,
-    ask: (_u, _n, text, _p, _s, o) => {
-      asked.push({ text, opts: o });
-      const a = opts.answer?.(text, o) ?? 'Sure thing.';
-      return (async function* () {
-        if (a === 'SILENT') o.onSilent();
-        else yield* [a].flat();
-      })();
-    },
+    ask:
+      opts.ask ??
+      ((_u, _n, text, _p, _s, o) => {
+        asked.push({ text, opts: o });
+        const a = opts.answer?.(text, o) ?? 'Sure thing.';
+        return (async function* () {
+          opts.onAsk?.(o);
+          if (a === 'SILENT') o.onSilent();
+          else yield* [a].flat().filter(Boolean);
+        })();
+      }),
     limited: () => undefined,
     enabled: true,
     dms: true,
@@ -259,5 +266,60 @@ describe('a reply over the limit', () => {
     const r = rig({ answer: () => ['Short.', 'x'.repeat(5_000)] });
     await r.say('rique', `<@${BOT}> hi`, { mentions: [BOT] });
     expect(r.sent.join(' ').length).toBeLessThanOrEqual(1800);
+  });
+});
+
+describe('a turn that did something and said nothing', () => {
+  const played = (o: AskOptions) => o.onActed();
+
+  it('says it is done, not sorry', async () => {
+    const r = rig({ answer: () => '', onAsk: played });
+    await r.say('rique', `<@${BOT}> make an airhorn sound`, { mentions: [BOT] });
+    expect(r.sent).toEqual(['Done.']);
+  });
+
+  it('still apologizes for an answer that really came back empty', async () => {
+    const r = rig({ answer: () => '' });
+    await r.say('rique', `<@${BOT}> hi`, { mentions: [BOT] });
+    expect(r.sent).toEqual(["Sorry, I didn't get that."]);
+  });
+
+  it('adds nothing to words she did say', async () => {
+    const r = rig({ answer: () => 'Airhorn it is.', onAsk: played });
+    await r.say('rique', `<@${BOT}> make an airhorn sound`, { mentions: [BOT] });
+    expect(r.sent).toEqual(['Airhorn it is.']);
+  });
+
+  it('counts as an answer in a conversation, not a miss, and keeps it open', async () => {
+    const r = rig({ answer: (text) => (text === 'hi' ? 'Hey.' : ''), onAsk: (o) => o.followUp && o.onActed() });
+    await r.say('rique', `<@${BOT}> hi`, { mentions: [BOT] });
+    await r.say('rique', 'make an airhorn sound');
+    await r.say('rique', 'and another one');
+    await r.say('rique', 'one more');
+    expect(r.sent).toEqual(['Hey.', 'Done.', 'Done.', 'Done.']);
+  });
+
+  it('still counts an empty follow-up with nothing done as a miss', async () => {
+    const r = rig({ answer: (text) => (text === 'hi' ? 'Hey.' : '') });
+    await r.say('rique', `<@${BOT}> hi`, { mentions: [BOT] });
+    await r.say('rique', 'lol');
+    await r.say('rique', 'lmao');
+    await r.say('rique', 'this one is not even read');
+    expect(r.sent).toEqual(['Hey.']);
+    expect(r.asked).toHaveLength(3);
+  });
+
+  it('holds with the real orchestrator and the real sound tool', async () => {
+    const llm: LlmProvider = {
+      model: 'fake',
+      async *stream() {
+        yield { type: 'toolCalls', calls: [{ id: 't1', name: 'play_sound', arguments: '{"query":"airhorn"}' }] };
+      },
+    };
+    const sound = soundTool({ find: async () => ({ title: 'airhorn', ref: 'x', seconds: 3 }) as never, play: async () => undefined });
+    const brain = new ConversationOrchestrator(llm, new SessionMemory(), [sound], { spokenName: 'Adrian', writtenName: 'A.D.R.I.A.N.', timezone: 'UTC', firstEventTimeoutMs: 2000, maxTokens: 200, maxToolRounds: 2 });
+    const r = rig({ ask: (u, n, text, place, signal, o) => brain.ask(u, n, text, signal, undefined, place, { text: true, followUp: o.followUp, extra: o.extra, onSilent: o.onSilent, onActed: o.onActed }) });
+    await r.say('rique', `<@${BOT}> make an airhorn sound`, { mentions: [BOT] });
+    expect(r.sent).toEqual(['Done.']);
   });
 });

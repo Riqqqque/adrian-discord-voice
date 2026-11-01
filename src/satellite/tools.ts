@@ -14,8 +14,10 @@ export interface PcToolDeps {
   findUrl?(query: string, signal: AbortSignal): Promise<string | undefined>;
   /** Every action sent to a PC (for the optional transcript log). */
   onCall?(name: string, args: Record<string, unknown>, result: string): void;
-  /** The PC took a restart or shutdown: it can be called off for 30 seconds. */
-  onPowerDown?(userId: UserId): void;
+  /** This PC took a restart or shutdown: it can be called off for 30 seconds. */
+  onPowerDown?(userId: UserId, pc: SatelliteConnection): void;
+  /** This PC called one off, because the model asked it to. */
+  onPowerCancelled?(userId: UserId, pc: SatelliteConnection): void;
   /** Clock for the wait on a yes. */
   now?(): number;
 }
@@ -34,28 +36,34 @@ const QUESTIONS = new Set([...NEEDS_YES.values()].map((n) => n.ask));
 /** How long a restart or shutdown waits on the PC (system.rs). */
 const POWER_DOWN_MS = 30_000;
 
-/** Who has a restart or shutdown counting down, so a plain "cancel" reaches it:
- *  that's a stop phrase, which never gets as far as the model. */
+/** What's counting down, by person and PC, so a plain "cancel" reaches it:
+ *  that's a stop phrase, which never gets as far as the model. It goes to the
+ *  PC that took the order: the one seen or used last can be another. */
 export class PowerDownWindow {
-  private readonly until = new Map<UserId, number>();
+  private readonly running = new Map<UserId, { pc: SatelliteConnection; until: number }[]>();
 
-  constructor(
-    private readonly pcFor: (userId: UserId) => SatelliteConnection | undefined,
-    private readonly now: () => number = Date.now,
-  ) {}
+  constructor(private readonly now: () => number = Date.now) {}
 
-  started(userId: UserId): void {
-    this.until.set(userId, this.now() + POWER_DOWN_MS);
+  started(userId: UserId, pc: SatelliteConnection): void {
+    this.calledOff(userId, pc);
+    this.running.set(userId, [...(this.running.get(userId) ?? []), { pc, until: this.now() + POWER_DOWN_MS }]);
   }
 
-  /** Call theirs off if it's still counting down. True if it was. */
-  async cancel(userId: UserId): Promise<boolean> {
-    const until = this.until.get(userId);
-    if (until === undefined) return false;
-    this.until.delete(userId);
-    if (this.now() >= until) return false;
-    const r = await this.pcFor(userId)?.action('pc_system', { action: 'cancel_shutdown' });
-    return r?.ok ?? false;
+  /** That PC has nothing counting down any more. */
+  calledOff(userId: UserId, pc: SatelliteConnection): void {
+    const left = (this.running.get(userId) ?? []).filter((w) => w.pc !== pc);
+    if (left.length) this.running.set(userId, left);
+    else this.running.delete(userId);
+  }
+
+  /** Call theirs off, if any is still counting down: what to tell them, which
+   *  they need most if it failed. Undefined when there was nothing to call off. */
+  async cancel(userId: UserId): Promise<string | undefined> {
+    const live = (this.running.get(userId) ?? []).filter((w) => this.now() < w.until);
+    this.running.delete(userId);
+    if (!live.length) return undefined;
+    const answers = await Promise.all(live.map((w) => w.pc.action('pc_system', { action: 'cancel_shutdown' })));
+    return answers.every((r) => r.ok) ? 'Cancelled.' : "I couldn't cancel it.";
   }
 }
 
@@ -148,17 +156,23 @@ export function pcTools(d: PcToolDeps): Tool[] {
       if (name === 'pc_open' && typeof a.search === 'string' && a.search.trim()) {
         // Find the actual page; without a search service, the search results themselves.
         const found = d.findUrl ? await d.findUrl(a.search, signal).catch(() => undefined) : undefined;
-        args.url = found ?? `https://www.google.com/search?q=${encodeURIComponent(a.search)}`;
+        args.url = found && webUrl(found) ? found : `https://www.google.com/search?q=${encodeURIComponent(a.search)}`;
         delete args.search;
         // `a` is what speak reads: she names the page that really opens.
         a.url = args.url;
         delete a.search;
       }
       delete args.play;
+      if (name === 'pc_open' && typeof args.url === 'string' && args.url.trim() && !webUrl(args.url.trim())) {
+        const refused = `${NOT_DONE}Only public http and https web addresses can be opened.`;
+        d.onCall?.(name, args, refused);
+        return refused;
+      }
       const r = await pc.action(name, args);
       const result = r.ok ? r.result : `${NOT_DONE}${r.result}`;
       d.onCall?.(name, args, result);
-      if (r.ok && name === 'pc_system' && (a.action === 'restart' || a.action === 'shutdown')) d.onPowerDown?.(ctx.userId);
+      if (r.ok && name === 'pc_system' && (a.action === 'restart' || a.action === 'shutdown')) d.onPowerDown?.(ctx.userId, pc);
+      if (r.ok && name === 'pc_system' && a.action === 'cancel_shutdown') d.onPowerCancelled?.(ctx.userId, pc);
       return result;
     },
     speak: (a, result) => confirmation(name, a, result),
@@ -173,6 +187,36 @@ const LOOKUPS = new Set(['pc_apps.running', 'pc_apps.list', 'pc_media.status', '
 
 /** Say it in words: "40%" → "40 percent". */
 const spoken = (s: string) => s.replace(/(\d+)\s?%/g, '$1 percent');
+
+/** Longest address that opens: a long query string is how a page gets handed
+ *  what she knows. This and the rest of webUrl mirror web_url in
+ *  crates/pc-control/src/win/open.rs, so PCs older than that rule get it too.
+ *  Change them together. */
+const MAX_URL = 300;
+/** Last labels that never reach the public web. */
+const PRIVATE_SUFFIXES = new Set(['localhost', 'local', 'lan', 'home', 'internal', 'intranet', 'corp', 'arpa']);
+
+/** A name on the public web, from `host` or `host:port`. Only plain hostname
+ *  characters pass, so a user@ part, a backslash, an escape or a look-alike
+ *  digit can't make the browser go somewhere other than what this reads. */
+function publicHost(authority: string): boolean {
+  const colon = authority.lastIndexOf(':');
+  if (colon >= 0 && !/^[0-9]*$/.test(authority.slice(colon + 1))) return false;
+  const host = (colon >= 0 ? authority.slice(0, colon) : authority).replace(/\.$/, '');
+  if (!/^[A-Za-z0-9.-]*$/.test(host)) return false;
+  const labels = host.split('.');
+  const last = labels.at(-1)!.toLowerCase();
+  // No top-level domain starts with a digit, but 127.0.0.1, 127.1 and 0x7f.0.0.1 do.
+  return labels.length > 1 && labels.every(Boolean) && !/^[0-9]/.test(last) && !PRIVATE_SUFFIXES.has(last);
+}
+
+/** A plain web page on the public web: no file:, javascript: or app protocols,
+ *  and nothing on the PC or its network. */
+export function webUrl(url: string): boolean {
+  const scheme = /^https?:\/\//i.exec(url);
+  if (!scheme || Buffer.byteLength(url) > MAX_URL || /[\p{White_Space}\p{Cc}"]/u.test(url)) return false;
+  return publicHost(url.slice(scheme[0].length).split(/[/?#]/, 1)[0]!);
+}
 
 /** The host a browser really goes to (past any user@ part), without www. */
 function hostOf(url: string): string | undefined {
@@ -203,7 +247,7 @@ export function confirmation(name: string, a: Record<string, unknown>, result: s
         return host ? `Opening ${host}.` : 'Opening it.';
       }
       if (typeof a.folder === 'string' && a.folder) return `Opening ${a.folder}.`;
-      if (a.video_id) return 'Opening it on YouTube.';
+      if (a.play === true && /YouTube video/.test(result)) return 'Opening it on YouTube.';
       if (typeof a.youtube === 'string' && a.youtube) return `Here's YouTube for ${a.youtube}.`;
       if (typeof a.spotify === 'string' && a.spotify) return `Here's ${a.spotify} in Spotify.`;
       return 'Opening it.';

@@ -61,19 +61,22 @@ export interface Named {
   nickname?: string | null;
 }
 
+const plainQuery = (query: string) => query.trim().replace(/^@/, '').toLowerCase();
+const idIn = (query: string) => /^<@!?(\d+)>$/.exec(query.trim())?.[1] ?? (/^\d{15,22}$/.test(plainQuery(query)) ? plainQuery(query) : undefined);
+const wholeNames = (m: Named) => [m.displayName, m.username, m.nickname ?? ''].map((n) => n.toLowerCase()).filter(Boolean);
+
+/** Their ping code, their id, or one of their names in full. */
+function isExactMatch(m: Named, query: string): boolean {
+  const id = idIn(query);
+  return id ? m.id === id : wholeNames(m).includes(plainQuery(query));
+}
+
 /** Members matching a name or mention: exact matches first, else partial. */
 export function matchMembers<T>(all: T[], query: string, named: (m: T) => Named = (m) => m as Named): T[] {
-  const q = query.trim().replace(/^@/, '').toLowerCase();
-  const id = /^<@!?(\d+)>$/.exec(query.trim())?.[1] ?? (/^\d{15,22}$/.test(q) ? q : undefined);
-  if (id) return all.filter((m) => named(m).id === id);
-  if (!q) return [];
-  const names = (x: T) => {
-    const m = named(x);
-    return [m.displayName, m.username, m.nickname ?? ''].map((n) => n.toLowerCase()).filter(Boolean);
-  };
-  const exact = all.filter((m) => names(m).includes(q));
-  if (exact.length) return exact;
-  return all.filter((m) => names(m).some((n) => n.includes(q)));
+  const exact = all.filter((m) => isExactMatch(named(m), query));
+  if (exact.length || idIn(query)) return exact;
+  const q = plainQuery(query);
+  return q ? all.filter((m) => wholeNames(named(m)).some((n) => n.includes(q))) : [];
 }
 
 /** Words too common to name anyone: a member nicknamed "what" (or "Adrian")
@@ -94,13 +97,13 @@ const WHO = [
   /\blet ((?:\S+ ){1,3})know\b/g,
 ];
 
-/** Did these words say it's for this person, by a whole word of a name or the
- *  start of one ("chris" for Christopher)? */
+/** Did these words say it's for this person, by a whole word of a name? The
+ *  start of one isn't enough: "tell Sam" isn't Samantha, whoever the model picks. */
 export function namesMember(said: string | undefined, m: Named): boolean {
   const words = nameWords(said ?? '').join(' ');
   const heard = WHO.flatMap((re) => [...words.matchAll(re)].flatMap((hit) => hit[1]!.trim().split(' '))).filter((w) => w.length > 1 && !EVERYDAY.has(w));
   const names = [m.displayName, m.username, m.nickname ?? ''].flatMap(nameWords);
-  return heard.some((w) => names.some((n) => n === w || (w.length >= 3 && n.startsWith(w))));
+  return heard.some((w) => names.includes(w));
 }
 
 /** User ids a reply may ping: mentioned in it, in the allowed set, at most `max`. */
@@ -230,11 +233,14 @@ export function discordTools(d: DiscordInfoDeps, relay?: { limiter: RelayLimiter
 
   const asNamed = (m: GuildMember): Named => ({ id: m.id, displayName: m.displayName, username: m.user.username, nickname: m.nickname });
   async function find(guild: Guild, query: string): Promise<GuildMember[]> {
-    const local = matchMembers(await everyone(guild), query, asNamed);
-    if (local.length || d.members) return local;
-    // No member list: Discord's name search works without the intent.
+    const known = await everyone(guild);
+    const local = matchMembers(known, query, asNamed);
+    if (d.members || local.some((m) => isExactMatch(asNamed(m), query))) return local;
+    // No member list, so a partial hit is only the best of who she's seen: the
+    // real Sam may be someone else. Discord's name search works without the intent.
     const found = await guild.members.search({ query: query.replace(/^@/, '').slice(0, 32), limit: 10 }).catch(() => undefined);
-    return found ? matchMembers([...found.values()], query, asNamed) : [];
+    if (!found) return local;
+    return matchMembers([...new Map([...known, ...found.values()].map((m) => [m.id, m])).values()], query, asNamed);
   }
 
   /** What Discord would show them. A thread answers with its parent's

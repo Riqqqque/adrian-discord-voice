@@ -23,7 +23,7 @@ cd "$STAGE"
 ONNXRUNTIME_NODE_INSTALL=skip npm ci --no-audit --no-fund --loglevel=error
 # Auto-update takes a release to every server within the hour: it has to pass first.
 npm run typecheck --silent || { echo "typecheck failed: no bundle built" >&2; exit 1; }
-npm test --silent || { echo "tests failed: no bundle built" >&2; exit 1; }
+npm test --silent -- --maxWorkers=2 || { echo "tests failed: no bundle built" >&2; exit 1; }
 npm run build --silent
 npm prune --omit=dev --no-audit --no-fund --loglevel=error
 rm -rf src test tsconfig.json packaging/package.sh node_modules/.vite*

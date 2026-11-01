@@ -1,6 +1,7 @@
 // Orders and chat at a PC: does the model pick the right PC tool with the
 // right arguments, keep confirmations short, and chat naturally? Real model,
 // real PC tool specs and prompt lines; the PC is a stub that records actions.
+// Sleep, restart and shutdown take two turns: see power() below.
 //   node bench/pc-orders.mjs <bot.json>
 import { AnthropicLlm } from '../dist/brain/anthropic.js';
 import { ConversationOrchestrator } from '../dist/brain/orchestrator.js';
@@ -18,7 +19,6 @@ const RESULTS = {
   pc_open: 'Opened the page.',
   pc_media: 'Spotify is playing “Nights” by Frank Ocean.',
   pc_volume: 'Volume 40%.',
-  pc_system: 'Locked the PC.',
   pc_info: 'CPU 12%; memory 17.2 GB of 30.9 GB used (56%); disks: C: 480 GB free of 930 GB; up 5h 2m.',
 };
 // Results that match the action, like the real PC's.
@@ -31,6 +31,11 @@ const result = (name, x) => {
     return x.action === 'status' ? 'Spotify is playing “Nights” by Frank Ocean.' : x.action === 'next' ? 'Spotify is playing “Ivy” by Frank Ocean.' : 'Spotify is paused on “Nights” by Frank Ocean.';
   if (name === 'pc_info') return x.action === 'processes' ? 'Using the most memory: chrome 4.2 GB (24 processes), valorant 3.1 GB, discord 1.4 GB (6 processes).' : RESULTS.pc_info;
   if (name === 'pc_open') return x.folder ? `Opened the ${x.folder} folder.` : x.video_id ? 'Opened the YouTube video.' : 'Opened the page.';
+  if (name === 'pc_system') {
+    if (x.action === 'lock') return 'Locked the PC.';
+    if (x.action === 'sleep') return 'Going to sleep in 3 seconds.';
+    return `${x.action === 'restart' ? 'Restarting' : 'Shutting down'} in 30 seconds. Saying "cancel that" stops it.`;
+  }
   return RESULTS[name];
 };
 const pc = { action: async (name, args) => (calls.push({ name, args }), { ok: true, result: result(name, args) }) };
@@ -38,7 +43,7 @@ const stub = new Proxy({}, {
   get: (_t, k) => {
     if (k === 'nowPlaying') return undefined;
     if (k === 'upNext' || k === 'recent') return [];
-    if (k === 'paused') return false;
+    if (k === 'paused' || k === 'youtubePaused') return false;
     if (k === 'autoplay') return true;
     return async (...a) => (calls.push({ name: `music.${String(k)}`, args: a.filter((x) => typeof x === 'string') }), { ok: true, started: { title: 'Lofi Mix', artist: 'Lofi Girl', source: 'youtube', ref: '' }, added: 3 });
   },
@@ -54,11 +59,11 @@ const o = new ConversationOrchestrator(llm, new SessionMemory(16, 3_600_000), to
 let ok = 0;
 let total = 0;
 const words = (t) => t.split(/\s+/).filter(Boolean).length;
-async function ask(text, check, maxWords = 30) {
+async function ask(text, check, maxWords = 30, { user = `u${total}`, followUp = false } = {}) {
   calls.length = 0;
   let out = '';
   // A fresh conversation per check, so one result can't color the next.
-  for await (const ch of o.ask(`u${total}`, 'Rique', text, AbortSignal.timeout(30000), undefined, { channelId: 'sat:x' }, { desk: true })) out += (out ? ' ' : '') + ch;
+  for await (const ch of o.ask(user, 'Rique', text, AbortSignal.timeout(30000), undefined, { channelId: 'sat:x' }, { desk: true, followUp })) out += (out ? ' ' : '') + ch;
   const got = calls.map((k) => `${k.name}${JSON.stringify(k.args)}`).join(' ');
   const pass = check(calls, out) && words(out) <= maxWords;
   total++;
@@ -67,6 +72,16 @@ async function ask(text, check, maxWords = 30) {
 }
 const call = (name, pred = () => true) => (cs) => cs.some((k) => k.name === name && pred(k.args));
 const a = (k) => (k.action ?? '').toString();
+/** The server asks by itself: the first turn must call the tool and reach no PC.
+ *  Their next turn is the answer, said without her name as it would be. On a
+ *  yes the model has to call the tool again, and only then does the PC hear of
+ *  it. The model never sends `confirmed`: pcTools drops it and sets it from their
+ *  own words, so seeing it here means the yes went all the way through. */
+async function power(order, action, question, answer = 'yes', goes = true) {
+  const user = `power${total}`;
+  await ask(order, (cs, out) => cs.length === 0 && out.includes(question), 40, { user });
+  await ask(answer, (cs) => cs.some((k) => k.name === 'pc_system' && k.args.action === action && k.args.confirmed === true) === goes, 40, { user, followUp: true });
+}
 
 await ask('open spotify', call('pc_apps', (x) => a(x) === 'open' && /spotify/i.test(x.name)));
 await ask('close discord', call('pc_apps', (x) => a(x) === 'close' && /discord/i.test(x.name)));
@@ -86,7 +101,10 @@ await ask('pull up the wiki page for the ender dragon', call('pc_open', (x) => /
 await ask('put on some lofi on youtube', (cs) => call('pc_open', (x) => /lofi/i.test(x.youtube ?? '') || !!x.video_id)(cs) || cs.some((k) => k.name === 'music.request'));
 await ask('lock my pc', call('pc_system', (x) => a(x) === 'lock'));
 await ask('switch to chrome', call('pc_apps', (x) => a(x) === 'focus' && /chrome/i.test(x.name)));
-await ask('shut down my computer', (cs, out) => !cs.some((k) => k.name === 'pc_system' && k.args.confirmed === true) && /\?/.test(out), 40);
+await power('shut down my computer', 'shutdown', 'Shut down the PC?');
+await power('restart my pc', 'restart', 'Restart the PC?', 'yes restart it');
+await power('put my computer to sleep', 'sleep', 'Put the PC to sleep?', 'yeah go ahead');
+await power('shut down my computer', 'shutdown', 'Shut down the PC?', 'no wait', false);
 await ask('open valorant and turn my music down', (cs) => call('pc_apps', (x) => /valorant/i.test(x.name))(cs) && cs.some((k) => k.name === 'pc_volume' || k.name === 'pc_media'));
 // Chat: short, natural, no lists.
 await ask("how's it going", (cs, out) => cs.length === 0 && out.length > 0 && !/\n- |\*\*/.test(out), 35);

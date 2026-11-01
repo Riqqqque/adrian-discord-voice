@@ -9,7 +9,7 @@ import { WebSocket } from 'ws';
 import type { SatelliteConnection } from '../src/satellite/connection.js';
 import { SatelliteDevices } from '../src/satellite/devices.js';
 import { startSatelliteServer } from '../src/satellite/server.js';
-import { PC_RULE, pcTools, PowerDownWindow } from '../src/satellite/tools.js';
+import { PC_RULE, pcTools, PowerDownWindow, webUrl } from '../src/satellite/tools.js';
 
 const quiet = { debug() {}, info() {}, warn() {}, error() {} };
 const OWNER = '123456789012345678';
@@ -300,6 +300,135 @@ describe('PC confirmations', () => {
     expect(confirmation('pc_open', { url: 'https://good.example:pw@evil.example:8443/x' }, 'Opened the page.')).toBe('Opening evil.example.');
     expect(confirmation('pc_open', { url: 'not a url' }, 'Opened the page.')).toBe('Opening it.');
   });
+
+  it('say when the video itself opened, and when only the results did', async () => {
+    const { confirmation } = await import('../src/satellite/tools.js');
+    expect(confirmation('pc_open', { youtube: 'lofi', play: true }, 'Opened the YouTube video.')).toBe('Opening it on YouTube.');
+    expect(confirmation('pc_open', { youtube: 'lofi', play: true }, 'Opened YouTube results for “lofi”.')).toBe("Here's YouTube for lofi.");
+    expect(confirmation('pc_open', { youtube: 'lofi' }, 'Opened YouTube results for “lofi”.')).toBe("Here's YouTube for lofi.");
+  });
+});
+
+// The same lists as the tests in crates/pc-control/src/win/open.rs: a PC too old
+// to have that rule gets it here, and a new one gets it twice, so they must agree.
+describe('what counts as a public web address', () => {
+  it.each([
+    'https://example.com/a?b=c',
+    'https://example.com',
+    'http://example.com/a?b=c#d',
+    'HTTPS://Example.COM/Path',
+    'https://www.reddit.com/r/pcgaming',
+    'https://modrinth.com:443/mod/jei',
+    'https://example.com./x',
+    'https://xn--bcher-kva.example/',
+    'https://example.de/',
+    'https://example.ca/',
+    'https://example.cc/',
+    'https://example.cafe/',
+  ])('opens %s', (u) => {
+    expect(webUrl(u)).toBe(true);
+  });
+
+  it.each([
+    'file:///C:/Windows/System32/cmd.exe',
+    'javascript:alert(1)',
+    'https://x.com/" --evil',
+    'http://localhost/',
+    'http://localhost:3000/',
+    'http://LOCALHOST/',
+    'http://localhost./',
+    'http://app.localhost/',
+    'http://printer.local/',
+    'http://printer.local./',
+    'http://router.lan/',
+    'http://nas.home/',
+    'http://nas.home.arpa/',
+    'http://db.internal/',
+    'http://intranet/',
+    'http://printer/',
+    'http://printer.LOCAL/',
+    'https://example.com:80x/',
+    'http://127.0.0.1/',
+    'http://192.168.1.1/admin',
+    'http://192.168.1.1:8080/',
+    'http://8.8.8.8/',
+    'http://127.1/',
+    'http://2130706433/',
+    'http://0x7f.0.0.1/',
+    'http://0x7f000001/',
+    'http://[::1]/',
+    'http://[fe80::1]:8080/',
+    'https://steamcommunity.com@evil.example/',
+    'https://user:pw@evil.example/',
+    'https://evil.example\\@good.example/',
+    'https://good.example\\.evil.example/',
+    'https://evil.example%2f@good.example/',
+    'http://127%2e0%2e0%2e1/',
+    'http://a.loc%61l/',
+    'http://１２７.０.０.１/',
+    'https://exa_mple.com:80x/',
+    'https://exa..mple.com/',
+    'https:///example.com',
+    'https://',
+  ])('refuses %s', (u) => {
+    expect(webUrl(u)).toBe(false);
+  });
+
+  it('counts bytes, as the PC does, and stops at 300', () => {
+    const atLimit = `https://example.com/${'a'.repeat(280)}`;
+    expect(atLimit).toHaveLength(300);
+    expect(webUrl(atLimit)).toBe(true);
+    expect(webUrl(`${atLimit}a`)).toBe(false);
+    expect(webUrl(`https://example.com/${'é'.repeat(141)}`)).toBe(false);
+  });
+
+  it('a look-alike letter stays a look-alike: lowercasing must not turn it into its ASCII twin', () => {
+    expect(webUrl('https://example.\u212Az/')).toBe(false);
+  });
+});
+
+describe('an address on its way to a PC', () => {
+  function rig(found?: string) {
+    const sent: Record<string, unknown>[] = [];
+    const seen: string[] = [];
+    const pc = { action: async (_n: string, args: Record<string, unknown>) => (sent.push(args), { ok: true, result: 'Opened the page.' }) };
+    const open = pcTools({ pcFor: () => pc as never, onCall: (_n, _a, r) => seen.push(r), ...(found ? { findUrl: async () => found } : {}) }).find((t) => t.spec.name === 'pc_open')!;
+    const run = (a: Record<string, unknown>) => open.run(a, AbortSignal.timeout(1000), { userId: OWNER, speaker: 'Rique' });
+    return { sent, seen, open, run };
+  }
+  const REFUSED = "Didn't happen: Only public http and https web addresses can be opened.";
+
+  it.each(['http://192.168.1.1/admin', 'http://localhost:3000/', 'https://user:pw@evil.example/', `https://example.com/${'a'.repeat(300)}`])('stops at the server, for a PC of any age: %s', async (url) => {
+    const r = rig();
+    expect(await r.run({ url })).toBe(REFUSED);
+    expect(r.sent).toEqual([]);
+    expect(r.seen).toEqual([REFUSED]);
+    expect(r.open.speak!({ url }, REFUSED, { userId: OWNER, speaker: 'Rique' })).toBeUndefined();
+  });
+
+  it('a public one goes through, spaces and all, since the PC trims them too', async () => {
+    const r = rig();
+    await r.run({ url: ' https://example.com/x ' });
+    expect(r.sent).toEqual([{ url: ' https://example.com/x ' }]);
+  });
+
+  it('a blank address is no address: the PC still gets what else was asked', async () => {
+    const r = rig();
+    await r.run({ url: ' ', folder: 'downloads' });
+    expect(r.sent).toEqual([{ url: ' ', folder: 'downloads' }]);
+  });
+
+  it('a search result the rule refuses falls back to the results page', async () => {
+    const r = rig('http://192.168.1.1/admin');
+    await r.run({ search: 'router login' });
+    expect(r.sent).toEqual([{ url: 'https://www.google.com/search?q=router%20login' }]);
+  });
+
+  it('a search too long for the results page stops there as well', async () => {
+    const r = rig();
+    expect(await r.run({ search: 'x'.repeat(400) })).toBe(REFUSED);
+    expect(r.sent).toEqual([]);
+  });
 });
 
 describe('pc_open with a search', () => {
@@ -330,7 +459,7 @@ describe('power actions need their own yes', () => {
     const sent: { name: string; args: Record<string, unknown> }[] = [];
     const down: string[] = [];
     const pc = { action: async (name: string, args: Record<string, unknown>) => (sent.push({ name, args }), result) };
-    const tools = pcTools({ pcFor: (c) => (c.userId === OWNER ? (pc as never) : undefined), now: () => now, onPowerDown: (id) => down.push(id) });
+    const tools = pcTools({ pcFor: (c) => (c.userId === OWNER ? (pc as never) : undefined), now: () => now, onPowerDown: (id, on) => (on === (pc as never) ? down.push(id) : undefined) });
     const sys = tools.find((t) => t.spec.name === 'pc_system')!;
     const ctx = (said: string, o: Record<string, unknown> = {}) => ({ userId: OWNER, speaker: 'Rique', channelId: 'c1', said, turn: ++turn, ...o });
     const say = (a: Record<string, unknown>, said: string, o: Record<string, unknown> = {}) => sys.run(a, AbortSignal.timeout(1000), ctx(said, o));
@@ -460,43 +589,127 @@ describe('power actions need their own yes', () => {
 });
 
 describe('calling off a restart or shutdown', () => {
+  const OTHER = '999999999999999999';
   function rig() {
     let now = 0;
     const sent: { name: string; args: Record<string, unknown> }[] = [];
-    const pc = { action: async (name: string, args: Record<string, unknown>) => (sent.push({ name, args }), { ok: true, result: 'Cancelled.' }) };
-    return { sent, power: new PowerDownWindow((id) => (id === OWNER ? (pc as never) : undefined), () => now), tick: (ms: number) => (now += ms) };
+    const replies: { ok: boolean; result: string }[] = [];
+    const makePc = () => ({ action: async (name: string, args: Record<string, unknown>) => (sent.push({ name, args }), replies.shift() ?? { ok: true, result: 'Cancelled.' }) });
+    return { sent, replies, makePc, pc: makePc() as never, power: new PowerDownWindow(() => now), tick: (ms: number) => (now += ms) };
   }
   const cancel = [{ name: 'pc_system', args: { action: 'cancel_shutdown' } }];
+  const COULD_NOT = "I couldn't cancel it.";
 
   it('works once, up to the moment it happens', async () => {
     const r = rig();
-    r.power.started(OWNER);
+    r.power.started(OWNER, r.pc);
     r.tick(29_000);
-    expect(await r.power.cancel(OWNER)).toBe(true);
-    expect(await r.power.cancel(OWNER)).toBe(false);
+    expect(await r.power.cancel(OWNER)).toBe('Cancelled.');
+    expect(await r.power.cancel(OWNER)).toBeUndefined();
     expect(r.sent).toEqual(cancel);
   });
 
   it('does nothing once the time is up', async () => {
     const r = rig();
-    r.power.started(OWNER);
+    r.power.started(OWNER, r.pc);
     r.tick(31_000);
-    expect(await r.power.cancel(OWNER)).toBe(false);
+    expect(await r.power.cancel(OWNER)).toBeUndefined();
     expect(r.sent).toEqual([]);
   });
 
   it("does nothing for someone else's words, or with nothing counting down", async () => {
     const r = rig();
-    expect(await r.power.cancel(OWNER)).toBe(false);
-    r.power.started(OWNER);
-    expect(await r.power.cancel('999999999999999999')).toBe(false);
+    expect(await r.power.cancel(OWNER)).toBeUndefined();
+    r.power.started(OWNER, r.pc);
+    expect(await r.power.cancel(OTHER)).toBeUndefined();
     expect(r.sent).toEqual([]);
-    expect(await r.power.cancel(OWNER)).toBe(true);
+    expect(await r.power.cancel(OWNER)).toBe('Cancelled.');
   });
 
-  it('says false when the PC has gone away', async () => {
+  it('says so when the PC refuses or has gone away', async () => {
     const r = rig();
-    r.power.started('999999999999999999');
-    expect(await r.power.cancel('999999999999999999')).toBe(false);
+    r.replies.push({ ok: false, result: 'The PC disconnected.' });
+    r.power.started(OWNER, r.pc);
+    expect(await r.power.cancel(OWNER)).toBe(COULD_NOT);
+  });
+
+  it('goes to the PC that took it, and only that one', async () => {
+    const r = rig();
+    const sentTo: string[] = [];
+    const named = (n: string) => ({ action: async () => (sentTo.push(n), { ok: true, result: 'Cancelled.' }) }) as never;
+    r.power.started(OWNER, named('desk'));
+    expect(await r.power.cancel(OWNER)).toBe('Cancelled.');
+    expect(sentTo).toEqual(['desk']);
+  });
+
+  it('calls off every PC counting down, and "Cancelled." means all of them', async () => {
+    const r = rig();
+    r.power.started(OWNER, r.pc);
+    r.tick(5_000);
+    r.power.started(OWNER, r.makePc() as never);
+    r.replies.push({ ok: true, result: 'Cancelled.' }, { ok: false, result: "The PC didn't answer in time." });
+    expect(await r.power.cancel(OWNER)).toBe(COULD_NOT);
+    expect(r.sent).toEqual([...cancel, ...cancel]);
+  });
+
+  it('leaves out a PC whose time has already run out', async () => {
+    const r = rig();
+    r.power.started(OWNER, r.pc);
+    r.tick(25_000);
+    r.power.started(OWNER, r.makePc() as never);
+    r.tick(10_000);
+    expect(await r.power.cancel(OWNER)).toBe('Cancelled.');
+    expect(r.sent).toEqual(cancel);
+  });
+
+  it('one PC asked twice is one countdown: the second cancel would be refused', async () => {
+    const r = rig();
+    r.power.started(OWNER, r.pc);
+    r.tick(5_000);
+    r.power.started(OWNER, r.pc);
+    r.tick(1_000);
+    expect(await r.power.cancel(OWNER)).toBe('Cancelled.');
+    expect(r.sent).toEqual(cancel);
+  });
+
+  it('and that countdown runs from the later order', async () => {
+    const r = rig();
+    r.power.started(OWNER, r.pc);
+    r.tick(5_000);
+    r.power.started(OWNER, r.pc);
+    r.tick(29_000);
+    expect(await r.power.cancel(OWNER)).toBe('Cancelled.');
+  });
+
+  it('forgets what the model called off itself', async () => {
+    const r = rig();
+    const other = r.makePc() as never;
+    r.power.started(OWNER, r.pc);
+    r.power.started(OWNER, other);
+    r.power.calledOff(OWNER, r.pc);
+    expect(await r.power.cancel(OWNER)).toBe('Cancelled.');
+    expect(r.sent).toEqual(cancel);
+  });
+});
+
+describe('the PC tool and the countdown', () => {
+  function rig(result = { ok: true, result: 'Cancelled.' }) {
+    const events: unknown[][] = [];
+    const pc = { action: async () => result };
+    const sys = pcTools({ pcFor: () => pc as never, onPowerDown: (id, p) => events.push(['down', id, p]), onPowerCancelled: (id, p) => events.push(['off', id, p]) }).find((t) => t.spec.name === 'pc_system')!;
+    return { sys, events, pc };
+  }
+  const ctx = { userId: OWNER, speaker: 'Rique' };
+
+  it('reports a cancel the model made, with the PC that took it', async () => {
+    const r = rig();
+    await r.sys.run({ action: 'cancel_shutdown' }, AbortSignal.timeout(1000), ctx);
+    expect(r.events).toEqual([['off', OWNER, r.pc]]);
+  });
+
+  it('a cancel the PC refused changes nothing', async () => {
+    const r = rig({ ok: false, result: 'There was no restart or shutdown to cancel.' });
+    await r.sys.run({ action: 'cancel_shutdown' }, AbortSignal.timeout(1000), ctx);
+    expect(r.events).toEqual([]);
   });
 });

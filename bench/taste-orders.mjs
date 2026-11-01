@@ -32,14 +32,15 @@ const CASES = [
 let good = 0;
 for (const [text, want, args] of CASES) {
   const calls = [];
-  const taste = new MusicTaste(undefined);
+  // Only an owner can set her own taste, and Portishead below is hers.
+  const taste = new MusicTaste(undefined, Date.now, (id) => id === 'u');
   for (const a of ['Frank Ocean', 'SZA', 'Tyler, The Creator']) taste.played('u', a);
   await taste.tools()[0].run({ who: 'you', what: 'like', name: 'Portishead' }, AbortSignal.timeout(1000), { userId: 'u', speaker: 'Sam' });
   const stub = new Proxy({}, {
     get: (_t, k) => {
       if (k === 'nowPlaying') return undefined;
       if (k === 'upNext' || k === 'recent') return [];
-      if (k === 'paused') return false;
+      if (k === 'paused' || k === 'youtubePaused') return false;
       if (k === 'autoplay') return true;
       return async () => ({ ok: true, started: { title: 'Nights', artist: 'Frank Ocean', source: 'youtube', ref: '' }, added: 3 });
     },

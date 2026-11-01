@@ -122,6 +122,11 @@ function json(res: ServerResponse, status: number, data: unknown): void {
   res.end(b);
 }
 
+/** The total now starts at the end of speech and the first stage starts sooner,
+ *  so older figures aren't comparable: this is measuring, not a slowdown. */
+const LATENCY_NOTE =
+  'End of speech to first audio now counts from when you stopped talking, so at a PC it reads about 1 s higher than older versions, which left out part of the wait for silence, the end-of-turn check and any hold. She is not slower. Speech recognition reads lower because it now starts earlier, not because it got faster.';
+
 function pct(xs: number[], p: number): number | null {
   if (!xs.length) return null;
   const s = [...xs].sort((a, b) => a - b);
@@ -267,6 +272,17 @@ export function createAdminServer(d: WebDeps): Server {
         return [(e as Error).message];
       }
     };
+    // Not a problem: the bot runs fine without its fallback, until the day it
+    // needs one, so this mustn't stop it starting either.
+    const setupWarnings = (): string[] => {
+      try {
+        const fb = (s.rawConfig().brain as { fallback?: { model?: string; apiKeySecret?: string } } | undefined)?.fallback;
+        if (!fb?.apiKeySecret || d.secrets.names().includes(fb.apiKeySecret)) return [];
+        return [`The fallback model (${fb.model}) has no key, so it will not be used. Save ${fb.apiKeySecret} on the Keys tab, or choose No fallback.`];
+      } catch {
+        return []; // a config that can't be read is reported as a problem
+      }
+    };
 
     if (path === '/api/status' && method === 'GET') {
       const ans = s.current?.answers() ?? [];
@@ -278,11 +294,12 @@ export function createAdminServer(d: WebDeps): Server {
         state: s.state,
         error: s.error ?? null,
         problems: s.state === 'setup' ? setupProblems() : [],
+        warnings: setupWarnings(),
         voiceReady: s.current?.voiceReady() ?? false,
         botTag: s.current?.botTag() ?? null,
         uptimeS: s.uptimeS,
-        latency: { stt: stage('sttLatencyMs'), llmFirst: stage('llmFirstChunkMs'), ttsFirst: stage('ttsFirstMs'), speechEndToAudio: stage('speechEndToAudioMs') },
-        lastAnswers: ans.slice(-10).map(({ at, outcome, speechEndToAudioMs, costUsd }) => ({ at, outcome, speechEndToAudioMs, costUsd })),
+        latency: { stt: stage('sttLatencyMs'), llmFirst: stage('llmFirstChunkMs'), ttsFirst: stage('ttsFirstMs'), speechEndToAudio: stage('speechEndToAudioMs'), note: LATENCY_NOTE },
+        lastAnswers: ans.slice(-10).map(({ at, room, outcome, speechEndToAudioMs, costUsd }) => ({ at, room, outcome, speechEndToAudioMs, costUsd })),
         spend: d.ledger.summary(),
       });
     }

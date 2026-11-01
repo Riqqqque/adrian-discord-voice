@@ -4,7 +4,7 @@
 
 import { spawn } from 'node:child_process';
 import { Readable } from 'node:stream';
-import type { PlaybackHandle, Tool, ToolContext } from '../core/interfaces.js';
+import type { PlaybackHandle, Tool, ToolContext, UserId } from '../core/interfaces.js';
 import { parseMediaLink, spotifyItem } from './links.js';
 import type { MusicTaste } from './taste.js';
 
@@ -23,6 +23,8 @@ export interface Track {
   fullTitle?: string;
   /** Found on YouTube Music by these words when its turn comes (an artist's top songs). */
   query?: string;
+  /** Nobody picked this one (radio, an artist's shuffle): a request goes ahead of it. */
+  auto?: boolean;
 }
 
 export interface MusicSource {
@@ -40,6 +42,8 @@ export interface MusicOutput {
   pauseMusic(): void;
   resumeMusic(): void;
   setMusicVolume(v: number): void;
+  /** Bring music back up early, unless a newer wake came after `since` (performance.now()). */
+  endDuck?(since: number): void;
   readonly musicPlaying: boolean;
   readonly musicPaused: boolean;
   takeStats?(): object;
@@ -72,15 +76,20 @@ export function describe(t: Track): string {
 
 // --- YouTube ----------------------------------------------------------------
 
-export type Runner = (cmd: string, args: string[], signal: AbortSignal) => Promise<string>;
+/** `enough`: stop waiting once the output says so; the program still runs to its end. */
+export type Runner = (cmd: string, args: string[], signal: AbortSignal, enough?: (out: string) => boolean) => Promise<string>;
 
-/** Run a program and return its stdout. */
-export const runProgram: Runner = (cmd, args, signal) =>
+/** Run a program and return its stdout. An abort sends SIGTERM, which is what
+ *  lets yt-dlp (a PyInstaller build) remove its temp folder: never SIGKILL it. */
+export const runProgram: Runner = (cmd, args, signal, enough) =>
   new Promise((resolve, reject) => {
     const p = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], signal });
     let out = '';
     let err = '';
-    p.stdout.on('data', (b: Buffer) => (out += b.toString()));
+    p.stdout.on('data', (b: Buffer) => {
+      out += b.toString();
+      if (enough?.(out)) resolve(out);
+    });
     p.stderr.on('data', (b: Buffer) => (err += b.toString()));
     p.on('error', reject);
     p.on('close', (code) => (code === 0 ? resolve(out) : reject(new Error(err.trim().split('\n').pop()?.slice(0, 200) || `exit ${code}`))));
@@ -93,6 +102,92 @@ const VIDEO_ID = /^[\w-]{11}$/;
 const ytm = (q: string, kind: 'songs' | 'albums' | 'community playlists' | 'episodes') =>
   `https://music.youtube.com/search?q=${encodeURIComponent(q)}#${kind.replace(/ /g, '+')}`;
 
+/** A whole line ending in a stream URL. */
+const URL_LINE = /\thttps?:[^\n]*\n/;
+
+/** YouTube wants a sign-in: it takes this server for a bot. "Sign in to confirm
+ *  your age" is one video's rule, not that. */
+const BOT_CHECK = /sign in to confirm(?! your age)/i;
+/** How long to leave YouTube alone after a bot check. */
+const BOT_PAUSE_MS = 30 * 60_000;
+
+/** Thrown instead of running yt-dlp while YouTube is paused. */
+export class YoutubePaused extends Error {
+  constructor() {
+    super('YouTube is paused after a bot check');
+  }
+}
+
+/** Stream URLs stop working at their `expire` time: this close to it, look again. */
+const STALE_MS = 20 * 60_000;
+
+/** A stream URL's `expire` time (ms), from its query or its path. */
+function expiresAt(url: string): number | undefined {
+  try {
+    const u = new URL(url);
+    const at = Number(u.searchParams.get('expire') ?? /\/expire\/(\d+)/.exec(u.pathname)?.[1]);
+    return at > 0 ? at * 1000 : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Where a lookup spent its time, for the `music timing` line. */
+interface Timing {
+  via?: string;
+  searchMs?: number;
+  resolveMs?: number;
+}
+const timings = new WeakMap<Track, Timing>();
+const msSince = (t0: number) => Math.round(performance.now() - t0);
+
+/** Wait for someone else's lookup, as long as `signal` allows. How it ends is theirs to handle. */
+const outlast = (lookup: Promise<void>, signal: AbortSignal): Promise<void> =>
+  new Promise((resolve, reject) => {
+    signal.throwIfAborted();
+    const stop = () => reject(signal.reason);
+    signal.addEventListener('abort', stop, { once: true });
+    void lookup
+      .catch(() => undefined)
+      .finally(() => {
+        signal.removeEventListener('abort', stop);
+        resolve();
+      });
+  });
+
+/** YouTube Music's own search. Pass it as `searchApi` to search without starting yt-dlp. */
+export const YTM_API = 'https://music.youtube.com';
+const YTM_VERSION = '1.20260801.01.00';
+/** The songs filter, the one yt-dlp sends for #songs. */
+const YTM_SONGS = 'EgWKAQIIAWoKEAoQAxAEEAkQBQ==';
+const YTM_TIMEOUT_MS = 1_500;
+
+interface YtmItem {
+  playlistItemData?: { videoId?: string };
+  overlay?: { musicItemThumbnailOverlayRenderer?: { content?: { musicPlayButtonRenderer?: { playNavigationEndpoint?: { watchEndpoint?: { videoId?: string } } } } } };
+  flexColumns?: { musicResponsiveListItemFlexColumnRenderer?: { text?: { runs?: { text?: string }[] } } }[];
+}
+
+interface YtmSearch {
+  contents?: { tabbedSearchResultsRenderer?: { tabs?: { tabRenderer?: { content?: { sectionListRenderer?: { contents?: { musicShelfRenderer?: { contents?: { musicResponsiveListItemRenderer?: YtmItem }[] } }[] } } } }[] } };
+}
+
+/** What yt-dlp would take: the first of the top three rows with an id. If that
+ *  one is too long or can't be read, it's left to yt-dlp: the next row down may
+ *  be a cover or another artist, so it's never taken instead. */
+function pickSong(res: YtmSearch): string | undefined {
+  const sections = res.contents?.tabbedSearchResultsRenderer?.tabs?.[0]?.tabRenderer?.content?.sectionListRenderer?.contents ?? [];
+  for (const { musicResponsiveListItemRenderer: it } of sections.flatMap((s) => s.musicShelfRenderer?.contents ?? []).slice(0, 3)) {
+    const id = it?.playlistItemData?.videoId ?? it?.overlay?.musicItemThumbnailOverlayRenderer?.content?.musicPlayButtonRenderer?.playNavigationEndpoint?.watchEndpoint?.videoId;
+    if (!id) continue;
+    const runs = it?.flexColumns?.[1]?.musicResponsiveListItemFlexColumnRenderer?.text?.runs ?? [];
+    const dur = runs.map((r) => r.text ?? '').filter((t) => /^\d+:\d\d(:\d\d)?$/.test(t)).at(-1);
+    const seconds = dur?.split(':').reduce((a, b) => a * 60 + Number(b), 0);
+    return VIDEO_ID.test(id) && seconds && seconds <= MAX_SONG_S ? id : undefined;
+  }
+  return undefined;
+}
+
 /** A list of tracks (album, playlist, radio, podcast show). */
 export interface Collection {
   title?: string;
@@ -101,10 +196,41 @@ export interface Collection {
 
 export class YoutubeSource implements MusicSource {
   readonly name = 'youtube' as const;
+  /** Where a pause gets logged. The first player to use this source sets it. */
+  log: Log | undefined;
+  private readonly run: Runner;
+  private pausedUntil = 0;
+  /** Lookups under way, so a track is only looked up once at a time. */
+  private readonly looking = new WeakMap<Track, Promise<void>>();
+
+  /** `searchApi`: search YouTube Music directly (see YTM_API); without it, yt-dlp does. */
   constructor(
-    private readonly o: { ytdlp: string; node?: string; timeoutMs?: number },
-    private readonly run: Runner = runProgram,
-  ) {}
+    private readonly o: { ytdlp: string; node?: string; timeoutMs?: number; searchApi?: string; now?: () => number },
+    run: Runner = runProgram,
+  ) {
+    // Everything that starts yt-dlp comes through here, so a bot check stops it all.
+    this.run = async (cmd, args, signal, enough) => {
+      if (this.paused) throw new YoutubePaused();
+      try {
+        return await run(cmd, args, signal, enough);
+      } catch (e) {
+        const message = (e as Error).message;
+        if (!BOT_CHECK.test(message)) throw e;
+        if (!this.paused) this.log?.warn('youtube paused', { minutes: BOT_PAUSE_MS / 60_000, error: message.slice(0, 120) });
+        this.pausedUntil = this.time() + BOT_PAUSE_MS;
+        throw new YoutubePaused();
+      }
+    };
+  }
+
+  private time(): number {
+    return this.o.now?.() ?? Date.now();
+  }
+
+  /** A bot check came up lately: nothing goes to YouTube. */
+  get paused(): boolean {
+    return this.time() < this.pausedUntil;
+  }
 
   private base(): string[] {
     return [...(this.o.node ? ['--js-runtimes', `node:${this.o.node}`] : []), '--no-warnings', '--no-progress', '--no-cache-dir', '--ignore-config'];
@@ -117,24 +243,62 @@ export class YoutubeSource implements MusicSource {
   /** First result id on a search or listing page. */
   private async firstId(url: string, sig: AbortSignal): Promise<string | undefined> {
     const out = await this.run(this.o.ytdlp, [...this.base(), '--flat-playlist', '-I', '1:3', '--print', '%(id)s', url], sig).catch((e: Error) => {
-      if (sig.aborted) throw e;
+      if (sig.aborted || e instanceof YoutubePaused) throw e;
       return '';
     });
     return out.split('\n').map((l) => l.trim()).find((l) => l && l !== 'NA');
   }
 
+  /** A song's id from YouTube Music's search, one request instead of starting
+   *  yt-dlp. The API isn't documented: anything odd leaves it to yt-dlp. */
+  private async searchSongs(query: string, sig: AbortSignal): Promise<string | undefined> {
+    if (!this.o.searchApi) return undefined;
+    try {
+      const r = await fetch(`${this.o.searchApi}/youtubei/v1/search?prettyPrint=false`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          origin: YTM_API,
+          'x-youtube-client-name': '67',
+          'x-youtube-client-version': YTM_VERSION,
+          'user-agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36',
+        },
+        body: JSON.stringify({ context: { client: { clientName: 'WEB_REMIX', clientVersion: YTM_VERSION, hl: 'en', gl: 'US' } }, query, params: YTM_SONGS }),
+        signal: AbortSignal.any([sig, AbortSignal.timeout(YTM_TIMEOUT_MS)]),
+      });
+      if (!r.ok) throw new Error(`YouTube Music answered ${r.status}`);
+      return pickSong((await r.json()) as YtmSearch);
+    } catch (e) {
+      if (sig.aborted) throw e;
+      this.log?.warn('direct music search failed', { error: (e as Error).message.slice(0, 120) });
+      return undefined;
+    }
+  }
+
   /** One song: YouTube Music's song catalog (real tracks, never hour-long
    *  loops or compilations); regular YouTube for mixes, or as a fallback. */
   async find(query: string, signal: AbortSignal): Promise<Track | undefined> {
+    if (this.paused) throw new YoutubePaused();
     const sig = this.sig(signal);
+    const t0 = performance.now();
     const long = NOT_A_SONG.test(query);
-    let id = long ? undefined : await this.firstId(ytm(query, 'songs'), sig);
-    if (id && !VIDEO_ID.test(id)) id = undefined;
+    let via = 'direct';
+    let id = long ? undefined : await this.searchSongs(query, sig);
+    if (!id && !long) {
+      via = 'ytdlp';
+      id = await this.firstId(ytm(query, 'songs'), sig);
+      if (id && !VIDEO_ID.test(id)) id = undefined;
+    }
     if (!id) {
+      via = 'ytsearch';
       const out = await this.run(this.o.ytdlp, [...this.base(), '--flat-playlist', '--print', '%(id)s\t%(duration)s\t%(live_status)s', `ytsearch5:${query}`], sig);
       id = pickVideo(out, long);
     }
-    return id ? this.resolve(id, sig) : undefined;
+    if (!id) return undefined;
+    const searchMs = msSince(t0);
+    const t = await this.resolve(id, sig);
+    if (t) timings.set(t, { ...timings.get(t), via, searchMs });
+    return t;
   }
 
   /** A short sound-effect clip: the first result under 30 s (else under 2 min). */
@@ -145,23 +309,33 @@ export class YoutubeSource implements MusicSource {
     return id ? this.resolve(id, sig) : undefined;
   }
 
-  /** Any YouTube video, any length (a 10-hour rain loop, a live radio). */
-  async video(query: string, signal: AbortSignal): Promise<Track | undefined> {
-    const sig = this.sig(signal);
-    const out = await this.run(this.o.ytdlp, [...this.base(), '--flat-playlist', '--print', '%(id)s\t%(duration)s\t%(live_status)s', `ytsearch5:${query}`], sig);
-    const id = pickVideo(out, true);
-    return id ? this.resolve(id, sig) : undefined;
+  /** The id of any YouTube video, any length (a 10-hour rain loop, a live radio). */
+  async videoId(query: string, signal: AbortSignal): Promise<string | undefined> {
+    const out = await this.run(this.o.ytdlp, [...this.base(), '--flat-playlist', '--print', '%(id)s\t%(duration)s\t%(live_status)s', `ytsearch5:${query}`], this.sig(signal));
+    return pickVideo(out, true);
   }
 
-  /** Stream URL and names for one video. */
+  /** Such a video, ready to play. */
+  async video(query: string, signal: AbortSignal): Promise<Track | undefined> {
+    const id = await this.videoId(query, signal);
+    return id ? this.resolve(id, signal) : undefined;
+  }
+
+  /** Stream URL and names for one video. Returns at that line: yt-dlp takes
+   *  another 90 ms or so to exit, and does that by itself. */
   async resolve(id: string, signal: AbortSignal): Promise<Track | undefined> {
+    const t0 = performance.now();
     const out = await this.run(
       this.o.ytdlp,
       [...this.base(), '--no-playlist', '-f', 'bestaudio/best', '--print', '%(title)s\t%(artist,creator,uploader)s\t%(duration)s\t%(url)s', `https://www.youtube.com/watch?v=${id}`],
       this.sig(signal),
+      (o) => URL_LINE.test(o),
     );
     const t = parseYtdlp(out);
-    return t && { ...t, id };
+    if (!t) return undefined;
+    const track = { ...t, id };
+    timings.set(track, { resolveMs: msSince(t0) });
+    return track;
   }
 
   /** A SoundCloud or Bandcamp page (already checked by parseMediaLink). */
@@ -211,9 +385,29 @@ export class YoutubeSource implements MusicSource {
     return (await this.list(`https://music.youtube.com/watch?v=${seedId}&list=RDAMVM${seedId}`, signal, limit)).tracks;
   }
 
-  /** Fill in the stream URL ahead of time (a track from a list). */
+  /** It has a stream URL with enough life left to play on. */
+  private hasStream(t: Track): boolean {
+    const at = expiresAt(t.ref);
+    return !!t.ref && (at === undefined || at - this.time() >= STALE_MS);
+  }
+
+  /** Fill in the stream URL ahead of time (a track from a list). A second caller
+   *  joins the lookup already running, and tries itself only if that one failed. */
   async prepare(t: Track, signal: AbortSignal): Promise<void> {
-    if (t.ref) return;
+    if (this.hasStream(t)) return;
+    const running = this.looking.get(t);
+    if (running) {
+      await outlast(running, signal);
+      if (this.hasStream(t)) return;
+    }
+    const lookup = this.lookUp(t, signal).finally(() => {
+      if (this.looking.get(t) === lookup) this.looking.delete(t);
+    });
+    this.looking.set(t, lookup);
+    return lookup;
+  }
+
+  private async lookUp(t: Track, signal: AbortSignal): Promise<void> {
     if (!t.id && t.query) {
       // Named but not looked up yet: the top song result for its words.
       const f = await this.find(t.query, signal);
@@ -222,6 +416,7 @@ export class YoutubeSource implements MusicSource {
       t.ref = f.ref;
       if (f.durationS) t.durationS = f.durationS;
       if (!t.artist && f.artist) t.artist = f.artist;
+      timings.set(t, timings.get(f) ?? {});
       return;
     }
     if (!t.id) return;
@@ -232,6 +427,7 @@ export class YoutubeSource implements MusicSource {
     if (r.fullTitle) t.fullTitle = r.fullTitle;
     if (r.artist) t.artist = r.artist;
     if (r.durationS) t.durationS = r.durationS;
+    timings.set(t, { ...timings.get(r), via: 'list' });
   }
 
   async open(t: Track, signal: AbortSignal): Promise<{ url: string }> {
@@ -302,9 +498,19 @@ export function parseYtdlp(out: string): Track | undefined {
 
 // --- an artist's most popular songs ----------------------------------------------
 
+/** Who a name is, with their songs one step further. */
+export interface ArtistMatch {
+  artist: string;
+  known: boolean;
+  titles(signal: AbortSignal): Promise<string[]>;
+}
+
 /** An artist's best-known songs, most popular first. `known`: that name really
- *  is a well-known artist, not just the nearest match. */
-export type TopTracks = (artist: string, signal: AbortSignal) => Promise<{ artist: string; titles: string[]; known: boolean } | undefined>;
+ *  is a well-known artist, not just the nearest match. `match` is the first
+ *  step alone, which is all it takes to tell a song title from an artist. */
+export type TopTracks = ((artist: string, signal: AbortSignal) => Promise<{ artist: string; titles: string[]; known: boolean } | undefined>) & {
+  match?(artist: string, signal: AbortSignal): Promise<ArtistMatch | undefined>;
+};
 
 const fold = (s: string) =>
   s
@@ -322,14 +528,15 @@ const songKey = (title: string) => fold(title.replace(/\s*[([].*?[)\]]/g, '').re
 const KNOWN_FANS = 5_000;
 
 /** Deezer's public catalog (no key): the artist by name, then their top
- *  tracks by popularity. Only the artist's name is sent. */
+ *  tracks by popularity. It's only sent a name: the artist asked for, or the X
+ *  of a plain "play X", which may turn out to be a song. */
 export function deezerTopTracks(f: typeof fetch = fetch): TopTracks {
   const get = async (url: string, signal: AbortSignal) => {
     const r = await f(url, { signal: AbortSignal.any([signal, AbortSignal.timeout(3_000)]), headers: { accept: 'application/json' } });
     if (!r.ok) throw new Error(`Deezer answered ${r.status}`);
     return (await r.json()) as { data?: unknown[] };
   };
-  return async (name, signal) => {
+  const match = async (name: string, signal: AbortSignal): Promise<ArtistMatch | undefined> => {
     const q = name.trim().slice(0, 100);
     if (!q) return undefined;
     const found = (await get(`https://api.deezer.com/search/artist?q=${encodeURIComponent(q)}&limit=5`, signal)).data as
@@ -338,19 +545,30 @@ export function deezerTopTracks(f: typeof fetch = fetch): TopTracks {
     const exact = (found ?? []).filter((a) => a.name && fold(a.name) === fold(q)).sort((a, b) => (b.nb_fan ?? 0) - (a.nb_fan ?? 0));
     const artist = exact[0] ?? found?.[0];
     if (!artist?.id || !artist.name) return undefined;
-    const top = (await get(`https://api.deezer.com/artist/${artist.id}/top?limit=50`, signal)).data as { title?: string; artist?: { id?: number } }[] | undefined;
-    const seen = new Set<string>();
-    const titles: string[] = [];
-    for (const t of top ?? []) {
-      // Their own songs (not someone else's that features them), one version each.
-      if (!t.title || t.artist?.id !== artist.id) continue;
-      const k = songKey(t.title);
-      if (!k || seen.has(k)) continue;
-      seen.add(k);
-      titles.push(t.title);
-    }
-    return { artist: artist.name, titles, known: artist === exact[0] && (artist.nb_fan ?? 0) >= KNOWN_FANS };
+    return {
+      artist: artist.name,
+      known: artist === exact[0] && (artist.nb_fan ?? 0) >= KNOWN_FANS,
+      titles: async (s) => {
+        const top = (await get(`https://api.deezer.com/artist/${artist.id}/top?limit=50`, s)).data as { title?: string; artist?: { id?: number } }[] | undefined;
+        const seen = new Set<string>();
+        const titles: string[] = [];
+        for (const t of top ?? []) {
+          // Their own songs (not someone else's that features them), one version each.
+          if (!t.title || t.artist?.id !== artist.id) continue;
+          const k = songKey(t.title);
+          if (!k || seen.has(k)) continue;
+          seen.add(k);
+          titles.push(t.title);
+        }
+        return titles;
+      },
+    };
   };
+  const top: TopTracks = async (name, signal) => {
+    const m = await match(name, signal);
+    return m && { artist: m.artist, titles: await m.titles(signal), known: m.known };
+  };
+  return Object.assign(top, { match });
 }
 
 /** Fewer than this many top songs: not worth a shuffle, use the old way. */
@@ -432,15 +650,20 @@ export type DecoderFactory = (input: { url: string } | { stream: Readable }) => 
  *  live loudness normalizer audibly pumps the volume. */
 const MUSIC_FILTER = 'aresample=48000:resampler=soxr:precision=28,volume=-6dB,alimiter=limit=0.89:attack=5:release=50:level=0';
 
+/** Where ffmpeg reads from. Web streams only: a URL can never make ffmpeg read
+ *  a local file or use another protocol (file:, concat:, subfile:...). A socket
+ *  left open with nothing coming fails after 15 s. */
+export function inputArgs(input: { url: string } | { stream: Readable }): string[] {
+  if ('stream' in input) return ['-i', 'pipe:0'];
+  return ['-protocol_whitelist', 'http,https,tls,tcp,crypto', '-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_on_network_error', '1', '-reconnect_delay_max', '5', '-rw_timeout', '15000000', '-i', input.url];
+}
+
 /** ffmpeg decoder (music sits a bit under speech). */
 export function ffmpegDecoder(ffmpeg = 'ffmpeg'): DecoderFactory {
   return (input) => {
-    // Web streams only: a URL can never make ffmpeg read a local file or use
-    // another protocol (file:, concat:, subfile:...).
-    const src = 'url' in input ? ['-protocol_whitelist', 'http,https,tls,tcp,crypto', '-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_on_network_error', '1', '-reconnect_delay_max', '5', '-i', input.url] : ['-i', 'pipe:0'];
     const p = spawn(
       ffmpeg,
-      ['-nostdin', '-hide_banner', '-loglevel', 'error', ...src, '-vn', '-af', MUSIC_FILTER, '-ac', '2', '-ar', '48000', '-f', 's16le', 'pipe:1'],
+      ['-nostdin', '-hide_banner', '-loglevel', 'error', ...inputArgs(input), '-vn', '-af', MUSIC_FILTER, '-ac', '2', '-ar', '48000', '-f', 's16le', 'pipe:1'],
       { stdio: ['stream' in input ? 'pipe' : 'ignore', 'pipe', 'ignore'] },
     );
     if ('stream' in input) {
@@ -472,6 +695,8 @@ export interface PlayerOptions {
   autoplay?: boolean;
   /** An artist's top songs, for artist requests and mixes (off: their top song, then radio). */
   topTracks?: TopTracks;
+  /** No audio for this long means the stream is dead (default 30 s). */
+  stallMs?: number;
 }
 
 export type PlayResult = { ok: true; track: Track; queued: number } | { ok: false; message: string };
@@ -483,10 +708,25 @@ export type RequestResult =
   | { ok: true; started?: Track; label?: string; added: number; artist?: string; queuedAs?: { track: Track; position: number } }
   | { ok: false; message: string };
 
+/** A stop came while this was being looked up. */
+const STOPPED = { ok: false, message: 'Stopped.' } as const;
+
 /** Unplayable tracks in a row before giving up (like Yusic). */
 /** Unplayable tracks in a row before giving up (private or removed videos). */
 const MAX_FAILS = 5;
 const HISTORY = 50;
+const STALL_MS = 30_000;
+/** What she says when a bot check has YouTube paused and Plex can't help. */
+const YT_DOWN = "I can't reach YouTube right now.";
+
+/** Someone asked, as of before any lookup: a wake after `at` is newer than the
+ *  request, and a stop after `epoch` called it off. */
+interface Asked {
+  at: number;
+  epoch: number;
+  /** What Deezer held things up by. */
+  deezerMs?: number;
+}
 
 export class MusicPlayer {
   private queue: Track[] = [];
@@ -508,6 +748,8 @@ export class MusicPlayer {
   constructor(private readonly o: PlayerOptions) {
     this.volume = o.volume ?? 0.5;
     this.autoplayOn = o.autoplay ?? true;
+    const yt = this.youtube;
+    if (yt) yt.log ??= o.log;
   }
 
   get nowPlaying(): Track | undefined {
@@ -536,14 +778,29 @@ export class MusicPlayer {
     if (on) void this.topUp();
   }
 
-  private get yt(): YoutubeSource | undefined {
+  private get youtube(): YoutubeSource | undefined {
     return this.o.sources.find((s): s is YoutubeSource => s instanceof YoutubeSource);
+  }
+
+  /** A bot check has YouTube paused, so what isn't on Plex can't be played. */
+  get youtubePaused(): boolean {
+    return !!this.youtube?.paused;
+  }
+
+  /** YouTube, while it can be used. */
+  private get yt(): YoutubeSource | undefined {
+    return this.youtubePaused ? undefined : this.youtube;
+  }
+
+  private asked(): Asked {
+    return { at: performance.now(), epoch: this.epoch };
   }
 
   /** Look a song up: the named source first (if any), then the others. */
   async find(query: string, signal: AbortSignal, prefer?: Track['source']): Promise<Track | undefined> {
     const order = [...this.o.sources].sort((a, b) => Number(b.name === prefer) - Number(a.name === prefer));
     for (const s of order) {
+      if (s === this.youtube && this.youtubePaused) continue;
       try {
         const t = await s.find(query, signal);
         if (t) return t;
@@ -556,57 +813,75 @@ export class MusicPlayer {
   }
 
   /** Play one song now (replacing the current song) or add it to the queue. */
-  async play(query: string, mode: 'now' | 'queue', signal: AbortSignal, prefer?: Track['source']): Promise<PlayResult> {
+  async play(query: string, mode: 'now' | 'queue', signal: AbortSignal, prefer?: Track['source'], asked = this.asked()): Promise<PlayResult> {
     const q = query.trim().slice(0, 200);
     if (!q) return { ok: false, message: 'What should I play?' };
     this.o.log.info('music search', { query: q, mode, ...(prefer ? { prefer } : {}) });
-    const track = await this.find(q, signal, prefer);
-    if (!track) return { ok: false, message: `I couldn't find ${q}.` };
+    return this.playFound(await this.find(q, signal, prefer), q, mode, signal, asked, prefer);
+  }
+
+  private async playFound(track: Track | undefined, q: string, mode: 'now' | 'queue', signal: AbortSignal, asked: Asked, prefer?: Track['source']): Promise<PlayResult> {
+    if (!track) return { ok: false, message: this.youtubePaused && prefer !== 'plex' ? YT_DOWN : `I couldn't find ${q}.` };
+    if (asked.epoch !== this.epoch) return STOPPED;
     if (mode === 'queue' && this.nowPlaying) {
-      if (this.queue.length >= (this.o.maxQueue ?? 25)) return { ok: false, message: 'The queue is full.' };
-      this.queue.push(track);
-      this.o.log.info('music queued', { source: track.source, title: track.title, position: this.queue.length });
-      return { ok: true, track, queued: this.queue.length };
+      if (this.requested >= (this.o.maxQueue ?? 25)) return { ok: false, message: 'The queue is full.' };
+      const position = this.enqueue([track]);
+      this.o.log.info('music queued', { source: track.source, title: track.title, position });
+      return { ok: true, track, queued: position };
     }
     this.queue = [];
-    await this.start(track, signal);
-    return { ok: true, track, queued: 0 };
+    this.seeded.clear();
+    return { ok: true, track: (await this.start(track, signal, asked)) ?? track, queued: 0 };
   }
 
   /** Anything someone might ask to hear, by kind. */
-  async request(kind: RequestKind, query: string, mode: 'now' | 'queue', signal: AbortSignal, prefer?: Track['source']): Promise<RequestResult> {
+  async request(kind: RequestKind, query: string, mode: 'now' | 'queue', signal: AbortSignal, prefer?: Track['source'], asked = this.asked()): Promise<RequestResult> {
     const q = query.trim().slice(0, kind === 'link' ? 500 : 200);
     this.o.log.info('music request', { kind, query: q, mode, ...(prefer ? { prefer } : {}) });
+    try {
+      return await this.fulfil(kind, q, mode, signal, prefer, asked);
+    } catch (e) {
+      // The bot check came up on this very request: it goes the way the next one will.
+      if (!(e instanceof YoutubePaused) || signal.aborted) throw e;
+      return this.fulfil(kind, q, mode, signal, prefer, asked);
+    }
+  }
+
+  private async fulfil(kind: RequestKind, q: string, mode: 'now' | 'queue', signal: AbortSignal, prefer: Track['source'] | undefined, asked: Asked): Promise<RequestResult> {
     const yt = prefer === 'plex' ? undefined : this.yt;
+    const down = this.youtubePaused && prefer !== 'plex';
     const one = async (t: Track | undefined, label?: string): Promise<RequestResult> =>
-      t ? this.playList([t], mode, signal, label) : { ok: false, message: `I couldn't find ${q || 'that'}.` };
+      t ? this.playList([t], mode, signal, label, asked) : { ok: false, message: `I couldn't find ${q || 'that'}.` };
     const many = async (c: Collection | undefined, label?: string): Promise<RequestResult> =>
-      c?.tracks.length ? this.playList(c.tracks, mode, signal, c.title ?? label) : { ok: false, message: `I couldn't find ${q || 'that'}.` };
+      c?.tracks.length ? this.playList(c.tracks, mode, signal, c.title ?? label, asked) : { ok: false, message: `I couldn't find ${q || 'that'}.` };
 
     if (kind === 'similar') {
-      if (!yt) return { ok: false, message: "I can only find similar songs on YouTube, and it isn't available." };
+      if (!yt) return { ok: false, message: down ? YT_DOWN : "I can only find similar songs on YouTube, and it isn't available." };
       let seed: Track | undefined;
       if (q) seed = await yt.find(q, signal);
       else seed = this.nowPlaying ?? this.recent[0];
       if (!seed?.id) return { ok: false, message: q ? `I couldn't find ${q}.` : "Nothing's been played yet, so tell me a song or artist to base it on." };
       const radio = this.fresh(await yt.radio(seed.id, signal), { skip: seed.id, replacing: mode === 'now' });
-      return radio.length ? this.playList(radio, mode, signal, `songs like ${describe(seed)}`) : { ok: false, message: "I couldn't find anything similar." };
+      return radio.length ? this.playList(radio, mode, signal, `songs like ${describe(seed)}`, asked) : { ok: false, message: "I couldn't find anything similar." };
     }
     if (!q) return { ok: false, message: 'What should I play?' };
     if (!yt) {
-      // Plex only (or asked for Plex): best effort as a song search.
-      const r = await this.play(q, mode, signal, prefer);
+      if (down && kind === 'link') return { ok: false, message: YT_DOWN };
+      // Plex only (or asked for Plex, or YouTube is paused): best effort as a song search.
+      const r = await this.play(q, mode, signal, prefer, asked);
       return r.ok ? { ok: true, ...(r.queued ? {} : { started: r.track }), added: r.queued ? 1 : 0 } : r;
     }
     switch (kind) {
       case 'artist': {
         // Their best-known songs, shuffled; then autoplay carries on with similar ones.
-        const best = await this.topOf([q], 25, signal);
-        if (best.tracks.length >= MIN_TOP) return this.artistList(best, mode, signal);
+        const best = await this.topOf([q], 25, signal, asked);
+        if (best.tracks.length >= MIN_TOP) return this.artistList(best, mode, signal, asked);
         const top = await yt.find(q, signal);
         if (!top?.id) return one(await this.find(q, signal));
-        const radio = this.fresh(await yt.radio(top.id, signal).catch(() => []), { skip: top.id, replacing: mode === 'now' });
-        return this.playList([top, ...radio], mode, signal, `${top.artist ?? q} radio`);
+        // Their top song starts now: its radio takes another yt-dlp run, and follows.
+        const r = await this.playList([top], mode, signal, `${top.artist ?? q} radio`, asked);
+        if (r.ok) void this.topUp(top);
+        return r;
       }
       case 'album':
         return many(await yt.album(q, signal), q);
@@ -623,7 +898,7 @@ export class MusicPlayer {
       case 'podcast': {
         const c = await yt.podcast(q, signal);
         // The newest episode that plays; the rest wait in the list.
-        return c?.tracks.length ? this.playList(c.tracks.slice(0, 3), mode, signal, c.title ?? q) : one(await yt.video(`${q} podcast`, signal), q);
+        return c?.tracks.length ? this.playList(c.tracks.slice(0, 3), mode, signal, c.title ?? q, asked) : one(await yt.video(`${q} podcast`, signal), q);
       }
       case 'video':
         return one(await yt.video(q, signal), q);
@@ -645,51 +920,83 @@ export class MusicPlayer {
         return one(t, 'that link');
       }
       default: {
-        const r = await this.play(q, mode, signal, prefer);
+        const r = await this.play(q, mode, signal, prefer, asked);
         return r.ok ? { ok: true, ...(r.queued ? {} : { started: r.track }), added: r.queued ? 1 : 0 } : r;
       }
     }
   }
 
-  private async artistList(best: { names: string[]; tracks: Track[] }, mode: 'now' | 'queue', signal: AbortSignal): Promise<RequestResult> {
+  private async artistList(best: { names: string[]; tracks: Track[] }, mode: 'now' | 'queue', signal: AbortSignal, asked: Asked): Promise<RequestResult> {
     const artist = best.names[0]!;
-    const r = await this.playList(best.tracks, mode, signal, `${artist}'s top songs, shuffled`);
+    const r = await this.playList(best.tracks, mode, signal, `${artist}'s top songs, shuffled`, asked);
     return r.ok ? { ...r, artist } : r;
   }
 
   /** A bare "play X" (no model to say what X is): a well-known artist's name
    *  shuffles their top songs, anything else is one song. */
   async playNamed(query: string, mode: 'now' | 'queue', signal: AbortSignal, prefer?: Track['source']): Promise<RequestResult> {
+    const asked = this.asked();
     const name = query
       .trim()
       .replace(/^(?:some|a little|a bit of|more)\s+/i, '')
       .replace(/^(?:music|songs)\s+(?:by|from)\s+/i, '')
       .replace(/\s+(?:music|songs)$/i, '');
-    if (!prefer && name) {
-      const best = await this.topOf([name], 25, signal, true);
-      if (best.tracks.length >= MIN_TOP) return this.artistList(best, mode, signal);
+    const said = (r: PlayResult): RequestResult => (!r.ok ? r : r.queued ? { ok: true, added: 1, queuedAs: { track: r.track, position: r.queued } } : { ok: true, started: r.track, added: 0 });
+    if (prefer || !name || !this.o.topTracks || !this.yt) return said(await this.play(query, mode, signal, prefer, asked));
+    const q = query.trim().slice(0, 200);
+    this.o.log.info('music search', { query: q, mode });
+    // Most of these are songs: the search runs beside Deezer's answer, so a song
+    // loses nothing to it. For a well-known artist the search is dropped, but not
+    // before there's a list to play instead.
+    const lookup = new AbortController();
+    let foundAt: number | undefined;
+    const song = this.find(q, AbortSignal.any([signal, lookup.signal])).finally(() => (foundAt = performance.now()));
+    song.catch(() => {}); // it may never be asked for
+    const best = await this.knownArtist(name, signal);
+    if (best.tracks.length >= MIN_TOP) {
+      lookup.abort();
+      asked.deezerMs = msSince(asked.at);
+      return this.artistList(best, mode, signal, asked);
     }
-    const r = await this.play(query, mode, signal, prefer);
-    if (!r.ok) return r;
-    return r.queued ? { ok: true, added: 1, queuedAs: { track: r.track, position: r.queued } } : { ok: true, started: r.track, added: 0 };
+    asked.deezerMs = foundAt === undefined ? 0 : msSince(foundAt);
+    return said(await this.playFound(await song, q, mode, signal, asked));
+  }
+
+  /** `name`'s top songs, if it's a well-known artist; anyone else costs one call. */
+  private async knownArtist(name: string, signal: AbortSignal): Promise<{ names: string[]; tracks: Track[] }> {
+    const top = this.o.topTracks!;
+    const failed = (e: Error) => {
+      if (signal.aborted) throw e;
+      this.o.log.warn('top songs lookup failed', { error: e.message.slice(0, 120) });
+      return undefined;
+    };
+    const oneStep = async (a: string, s: AbortSignal): Promise<ArtistMatch | undefined> => {
+      const l = await top(a, s);
+      return l && { artist: l.artist, known: l.known, titles: async () => l.titles };
+    };
+    const m = await (top.match ?? oneStep)(name, signal).catch(failed);
+    const titles = m?.known ? await m.titles(signal).catch(failed) : undefined;
+    return this.pickTop(titles ? [{ artist: m!.artist, titles }] : [], 25);
   }
 
   /** Several artists' top songs mixed and shuffled ("music I like"). */
   async mix(artists: string[], mode: 'now' | 'queue', signal: AbortSignal, label: string): Promise<RequestResult> {
+    const asked = this.asked();
     const names = artists.map((a) => a.trim()).filter(Boolean).slice(0, 8);
     if (!names.length) return { ok: false, message: 'Which artists?' };
     this.o.log.info('music mix', { artists: names.length, mode });
     const each = Math.max(4, Math.ceil(30 / names.length));
-    const best = await this.topOf(names, each, signal);
-    if (best.tracks.length) return this.playList(best.tracks.slice(0, 25), mode, signal, label);
+    const best = await this.topOf(names, each, signal, asked);
+    if (best.tracks.length) return this.playList(best.tracks.slice(0, 25), mode, signal, label, asked);
     // No song lists: the first artist the usual way.
-    return this.request('artist', names[0]!, mode, signal);
+    return this.request('artist', names[0]!, mode, signal, undefined, asked);
   }
 
-  /** The named artists' top songs (up to `each` per artist), shuffled together, as tracks found when played. */
-  private async topOf(artists: string[], each: number, signal: AbortSignal, knownOnly = false): Promise<{ names: string[]; tracks: Track[] }> {
+  /** The named artists' top songs, as tracks found when played. */
+  private async topOf(artists: string[], each: number, signal: AbortSignal, asked: Asked): Promise<{ names: string[]; tracks: Track[] }> {
     const top = this.o.topTracks;
     if (!top || !this.yt) return { names: [], tracks: [] };
+    const t0 = performance.now();
     const lists = await Promise.all(
       artists.map((a) =>
         top(a, signal).catch((e: Error) => {
@@ -699,16 +1006,22 @@ export class MusicPlayer {
         }),
       ),
     );
+    asked.deezerMs = msSince(t0);
+    return this.pickTop(lists, each);
+  }
+
+  /** Up to `each` songs per artist, shuffled together. */
+  private pickTop(lists: ({ artist: string; titles: string[] } | undefined)[], each: number): { names: string[]; tracks: Track[] } {
     const names: string[] = [];
     const tracks: Track[] = [];
     const recent = new Set(this.played.slice(-20).map((t) => songKey(t.title)));
     for (const l of lists) {
-      if (!l?.titles.length || (knownOnly && !l.known)) continue;
+      if (!l?.titles.length) continue;
       names.push(l.artist);
       // Skip what just played when there's enough else.
       const fresh = l.titles.filter((t) => !recent.has(songKey(t)));
       const pick = (fresh.length >= MIN_TOP ? fresh : l.titles).slice(0, each);
-      tracks.push(...pick.map((title): Track => ({ title, artist: l.artist, source: 'youtube', ref: '', query: `${title} ${l.artist}` })));
+      tracks.push(...pick.map((title): Track => ({ title, artist: l.artist, source: 'youtube', ref: '', query: `${title} ${l.artist}`, auto: true })));
     }
     return { names, tracks: shuffle(tracks) };
   }
@@ -728,63 +1041,105 @@ export class MusicPlayer {
     return out;
   }
 
+  /** Songs people asked for, waiting. */
+  private get requested(): number {
+    return this.queue.filter((t) => !t.auto).length;
+  }
+
+  /** Add to the queue ahead of what nobody picked; returns the last one's position. */
+  private enqueue(tracks: Track[]): number {
+    const first = this.queue.findIndex((t) => t.auto);
+    const at = first < 0 ? this.queue.length : first;
+    this.queue.splice(at, 0, ...tracks);
+    if (at === 0) this.prepareNext();
+    return at + tracks.length;
+  }
+
   /** Play a list now (first one starts, the rest queue up) or add it to the queue. */
-  private async playList(tracks: Track[], mode: 'now' | 'queue', signal: AbortSignal, label?: string): Promise<RequestResult> {
+  private async playList(tracks: Track[], mode: 'now' | 'queue', signal: AbortSignal, label: string | undefined, asked: Asked): Promise<RequestResult> {
+    if (asked.epoch !== this.epoch) return STOPPED;
     const max = this.o.maxQueue ?? 25;
     if (mode === 'queue' && this.current) {
-      const add = tracks.slice(0, Math.max(0, max - this.queue.length));
+      const add = tracks.slice(0, Math.max(0, max - this.requested));
       if (!add.length) return { ok: false, message: 'The queue is full.' };
-      this.queue.push(...add);
+      this.enqueue(add);
       this.o.log.info('music queued', { count: add.length, ...(label ? { label } : {}) });
       return { ok: true, ...(label ? { label } : {}), added: add.length };
     }
     const list = [...tracks];
-    this.queue = [];
     for (let fails = 0; list.length && fails < MAX_FAILS; fails++) {
       const t = list.shift()!;
       try {
+        // Looked up first: until this one can start, what's playing stays.
+        const found = await this.ready(t, signal);
+        if (asked.epoch !== this.epoch) return STOPPED;
         this.queue = list.slice(0, max);
-        await this.start(t, signal);
-        return { ok: true, started: t, ...(label ? { label } : {}), added: this.queue.length };
+        this.seeded.clear();
+        const started = (await this.start(found, signal, asked)) ?? found;
+        return { ok: true, started, ...(label ? { label } : {}), added: this.queue.length };
       } catch (e) {
         if (signal.aborted) throw e;
         this.o.log.warn('music track failed', { error: (e as Error).message });
       }
     }
-    this.queue = [];
-    return { ok: false, message: "I found it, but it wouldn't play." };
+    if (!this.current) this.queue = [];
+    return { ok: false, message: this.youtubePaused ? YT_DOWN : "I found it, but it wouldn't play." };
   }
 
-  private async start(track: Track, signal?: AbortSignal): Promise<void> {
+  /** Get a track ready to start. If YouTube is paused, Plex may have the same
+   *  song: that goes by title and artist. */
+  private async ready(t: Track, signal: AbortSignal): Promise<Track> {
+    try {
+      await this.o.sources.find((s) => s.name === t.source)?.prepare?.(t, signal);
+      return t;
+    } catch (e) {
+      if (!(e instanceof YoutubePaused) || signal.aborted) throw e;
+    }
+    const found = await this.o.sources.find((s) => s.name === 'plex')?.find(`${t.title} ${t.artist ?? ''}`.trim(), signal);
+    if (!found) throw new Error(YT_DOWN);
+    return found;
+  }
+
+  /** Returns what started, undefined if something newer took over. */
+  private async start(track: Track, signal?: AbortSignal, asked?: Asked): Promise<Track | undefined> {
     this.stopCurrent();
     const turn = ++this.turn;
-    const source = this.o.sources.find((s) => s.name === track.source)!;
-    const input = await source.open(track, signal ?? AbortSignal.timeout(20_000));
+    const sig = signal ?? AbortSignal.timeout(20_000);
+    const found = await this.ready(track, sig);
+    const source = this.o.sources.find((s) => s.name === found.source)!;
+    const input = await source.open(found, sig);
     if (turn !== this.turn) {
       // Something else started meanwhile: close what was opened for this one.
       if ('stream' in input) input.stream.destroy();
-      return;
+      return undefined;
     }
+    const decodeAt = performance.now();
     const decoder = this.o.decode(input);
     const handle = this.o.output.playMusic(decoder.pcm, this.volume);
-    this.current = { track, handle, decoder };
-    this.played.push(track);
+    // Asked for: the wake that asked shouldn't keep their song down. Speech still does.
+    if (asked) this.o.output.endDuck?.(asked.at);
+    this.current = { track: found, handle, decoder };
+    this.played.push(found);
     if (this.played.length > HISTORY) this.played.shift();
     this.o.output.takeStats?.();
-    this.o.log.info('music playing', { source: track.source, title: track.title, artist: track.artist, durationS: track.durationS });
+    this.o.log.info('music playing', { source: found.source, title: found.title, artist: found.artist, durationS: found.durationS });
+    const { via = found.source, ...spent } = timings.get(found) ?? {};
+    decoder.pcm.once('data', () => this.o.log.info('music timing', { via, source: found.source, ...(asked?.deezerMs === undefined ? {} : { deezerMs: asked.deezerMs }), ...spent, pcmMs: msSince(decodeAt) }));
+    const stopWatching = this.watch(decoder, found);
     const startedAt = performance.now();
     void handle.done.then((outcome) => {
+      stopWatching();
       if (turn !== this.turn) return;
       decoder.kill();
       this.current = undefined;
-      this.o.log.info('music ended', { outcome, source: track.source, ...this.o.output.takeStats?.() });
-      if (outcome === 'error') this.o.log.warn('music stream failed', { source: track.source });
+      this.o.log.info('music ended', { outcome, source: found.source, ...this.o.output.takeStats?.() });
+      if (outcome === 'error') this.o.log.warn('music stream failed', { source: found.source });
       // A song that ends seconds after starting didn't really play (a dead
       // stream link): after a few in a row, stop instead of looping forever.
-      const quick = performance.now() - startedAt < 3_000 && (track.durationS ?? 60) > 10;
+      const quick = performance.now() - startedAt < 3_000 && (found.durationS ?? 60) > 10;
       this.quickEnds = quick ? this.quickEnds + 1 : 0;
       if (this.quickEnds >= MAX_FAILS) {
-        this.o.log.warn('music keeps failing; stopping', { source: track.source });
+        this.o.log.warn('music keeps failing; stopping', { source: found.source });
         this.quickEnds = 0;
         this.queue = [];
         return;
@@ -793,30 +1148,56 @@ export class MusicPlayer {
     });
     void this.topUp();
     this.prepareNext();
+    return found;
+  }
+
+  /** A stream can go quiet with its connection open: ffmpeg's own timeout covers
+   *  a URL, this the rest (Plex, a stuck ffmpeg). Audio that isn't wanted right
+   *  now doesn't count: the mixer pauses a stream it has plenty of. Ending the
+   *  decoder ends the track, and the queue moves on. */
+  private watch(decoder: Decoder, track: Track): () => void {
+    const limit = this.o.stallMs ?? STALL_MS;
+    let last = performance.now();
+    decoder.pcm.on('data', () => (last = performance.now()));
+    const timer = setInterval(() => {
+      if (decoder.pcm.isPaused() || this.o.output.musicPaused) last = performance.now();
+      else if (performance.now() - last >= limit) {
+        clearInterval(timer);
+        this.o.log.warn('music stalled', { source: track.source, seconds: Math.round(limit / 1000) });
+        decoder.kill();
+      }
+    }, limit / 4);
+    timer.unref();
+    return () => clearInterval(timer);
   }
 
   /** Resolve the next track while this one plays, so songs change without a wait. */
   private prepareNext(): void {
     const next = this.queue[0];
     const src = next && this.o.sources.find((s) => s.name === next.source);
-    if (next && src?.prepare) void src.prepare(next, AbortSignal.timeout(30_000)).catch(() => undefined);
+    if (!next || !src?.prepare) return;
+    void src.prepare(next, AbortSignal.timeout(30_000)).then(
+      () => timings.set(next, { via: 'ready' }),
+      () => undefined,
+    );
   }
 
   /** Autoplay: with fewer than 3 songs left, add similar ones (YouTube Music
-   *  radio of the last song), skipping anything played lately. */
-  private topUp(): Promise<void> {
+   *  radio of the last song), skipping anything played lately. `from`: this
+   *  song's radio is wanted whatever autoplay says. */
+  private topUp(from?: Track): Promise<void> {
     if (this.refill) return this.refill;
     const yt = this.yt;
-    const seed = this.queue.at(-1) ?? this.current?.track ?? this.played.at(-1);
-    if (!this.autoplayOn || !yt || this.queue.length >= 3 || !seed?.id || seed.kind === 'podcast' || this.seeded.has(seed.id)) return Promise.resolve();
+    const seed = from ?? this.queue.at(-1) ?? this.current?.track ?? this.played.at(-1);
+    if (!(from || (this.autoplayOn && this.queue.length < 3)) || !yt || !seed?.id || seed.kind === 'podcast' || this.seeded.has(seed.id)) return Promise.resolve();
     this.seeded.add(seed.id);
     const epoch = this.epoch;
     this.refill = (async () => {
       try {
         const radio = await yt.radio(seed.id!, AbortSignal.timeout(30_000));
-        if (epoch !== this.epoch) return; // stopped meanwhile
+        if (epoch !== this.epoch || !this.seeded.has(seed.id!)) return; // stopped or replaced meanwhile
         const more = this.fresh(radio).slice(0, 10);
-        this.queue.push(...more.slice(0, Math.max(0, (this.o.maxQueue ?? 25) - this.queue.length)));
+        this.queue.push(...more.slice(0, Math.max(0, (this.o.maxQueue ?? 25) - this.queue.length)).map((t) => ({ ...t, auto: true })));
         if (more.length) this.o.log.info('music autoplay', { added: more.length });
         if (this.queue.length === more.length) this.prepareNext();
       } catch (e) {
@@ -830,15 +1211,19 @@ export class MusicPlayer {
   }
 
   private async advance(fails = 0): Promise<void> {
-    if (!this.queue.length) await this.topUp();
     const turn = this.turn;
+    if (!this.queue.length) await this.topUp();
+    if (turn !== this.turn) return;
     const next = this.queue.shift();
-    if (!next || turn !== this.turn) return;
+    if (!next) return;
+    const starting = this.start(next);
+    const mine = this.turn; // start takes its turn before its first wait
     try {
-      await this.start(next);
+      await starting;
     } catch (e) {
       this.o.log.warn('music next failed', { error: (e as Error).message });
-      if (fails + 1 < MAX_FAILS) void this.advance(fails + 1);
+      // Unless a stop or a request came while it failed: the queue is theirs now.
+      if (mine === this.turn && fails + 1 < MAX_FAILS) void this.advance(fails + 1);
     }
   }
 
@@ -852,18 +1237,24 @@ export class MusicPlayer {
     }
   }
 
-  /** Skip to the next song; false if nothing was playing. */
-  async skip(): Promise<Track | false | undefined> {
+  /** Skip to the next song; false if nothing was playing. `signal`: the request
+   *  was called off. The song it skipped is gone by then, so that means quiet. */
+  async skip(signal?: AbortSignal): Promise<Track | false | undefined> {
     if (!this.current) return false;
+    const asked = this.asked();
     this.stopCurrent();
+    const turn = this.turn;
     if (!this.queue.length) await this.topUp();
+    if (turn !== this.turn || signal?.aborted) return undefined;
     for (let fails = 0; this.queue.length && fails < MAX_FAILS; fails++) {
       const next = this.queue.shift()!;
+      const starting = this.start(next, signal, asked);
+      const mine = this.turn;
       try {
-        await this.start(next);
-        return next;
+        return await starting;
       } catch (e) {
         this.o.log.warn('music next failed', { error: (e as Error).message });
+        if (mine !== this.turn || signal?.aborted) return undefined;
       }
     }
     return undefined;
@@ -957,9 +1348,15 @@ const KINDS: RequestKind[] = ['song', 'artist', 'album', 'playlist', 'vibe', 'si
 const NO_TASTE = "You don't know what they like yet.";
 /** Requests answered from remembered taste. */
 const TASTE_KINDS = ['favorites', 'hers'] as const;
+/** music_control's results that only confirm. The rest (nothing to do, no
+ *  music here, what's playing) the model puts in words. */
+const CONFIRMS = /^(?:Paused|Resumed|Skipped|Music stopped|Music volume|Autoplay|(?:Shuffled|Cleared) [1-9])/;
+const songs = (n: number) => `${n} song${n === 1 ? '' : 's'}`;
 
-/** `player` is the one music player, or picks the player for where a request came from. */
-export function musicTools(player: MusicPlayer | ((ctx: ToolContext) => MusicPlayer | undefined), taste?: MusicTaste): Tool[] {
+/** `player` is the one music player, or picks the player for where a request
+ *  came from. `english`: does this person speak English to her? The tools'
+ *  short lines are in English, so for anyone else the model says them. */
+export function musicTools(player: MusicPlayer | ((ctx: ToolContext) => MusicPlayer | undefined), taste?: MusicTaste, english: (userId: UserId) => boolean = () => true): Tool[] {
   const get = typeof player === 'function' ? player : () => player;
   const NONE = "Music isn't available here.";
   return [
@@ -991,7 +1388,7 @@ export function musicTools(player: MusicPlayer | ((ctx: ToolContext) => MusicPla
       slow: true,
       filler: 'On it.',
       // The music starting is the answer. Words only for what it can't say.
-      speak: (_a, raw) => (raw === NO_TASTE ? 'Who do you want to hear?' : raw.startsWith('Now playing') ? '' : raw.startsWith('Added ') ? 'Added.' : undefined),
+      speak: (_a, raw, ctx) => (raw === NO_TASTE ? 'Who do you want to hear?' : raw.startsWith('Now playing') ? '' : raw.startsWith('Added ') ? 'Added.' : raw === YT_DOWN && english(ctx.userId) ? raw : undefined),
       acts: true,
       run: async (a, signal, ctx) => {
         const p = get(ctx);
@@ -1040,7 +1437,13 @@ export function musicTools(player: MusicPlayer | ((ctx: ToolContext) => MusicPla
       },
       timeoutMs: 25_000,
       acts: (a) => a.action !== 'status',
-      run: async (a, _signal, ctx) => {
+      // A second model call would only say this again. As with play_music, the
+      // next song starting is the answer to a skip.
+      speak: (a, raw, ctx) => {
+        if (a.action === 'status' || !english(ctx.userId) || !(raw === YT_DOWN || CONFIRMS.test(raw))) return undefined;
+        return raw.startsWith('Skipped. Now playing') ? '' : raw.replace('%', ' percent');
+      },
+      run: async (a, signal, ctx) => {
         const p = get(ctx);
         if (!p) return NONE;
         switch (a.action) {
@@ -1049,8 +1452,10 @@ export function musicTools(player: MusicPlayer | ((ctx: ToolContext) => MusicPla
           case 'resume':
             return p.resume() ? 'Resumed.' : 'Nothing is paused.';
           case 'skip': {
-            const n = await p.skip();
-            return n === false ? 'Nothing is playing.' : n ? `Skipped. Now playing ${describe(n)}.` : 'Skipped. Nothing else is queued.';
+            const n = await p.skip(signal);
+            if (n === false) return 'Nothing is playing.';
+            if (n) return `Skipped. Now playing ${describe(n)}.`;
+            return p.youtubePaused ? YT_DOWN : 'Skipped. Nothing else is queued.';
           }
           case 'stop':
             return p.stop() ? 'Music stopped.' : 'Nothing is playing.';
@@ -1058,9 +1463,9 @@ export function musicTools(player: MusicPlayer | ((ctx: ToolContext) => MusicPla
           case 'quieter':
             return `Music volume ${Math.round(p.nudgeVolume(a.action === 'louder' ? 1 : -1) * 100)}%.`;
           case 'shuffle':
-            return `Shuffled ${p.shuffle()} songs.`;
+            return `Shuffled ${songs(p.shuffle())}.`;
           case 'clear_queue':
-            return `Cleared ${p.clearQueue()} songs from the queue.`;
+            return `Cleared ${songs(p.clearQueue())} from the queue.`;
           case 'autoplay_on':
           case 'autoplay_off':
             p.setAutoplay(a.action === 'autoplay_on');

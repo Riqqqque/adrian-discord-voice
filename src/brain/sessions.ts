@@ -6,6 +6,8 @@ import type { MemoryStore, UserId } from '../core/interfaces.js';
 
 type Turn = { role: 'user' | 'assistant'; content: string };
 
+const dmKey = (userId: UserId) => `dm:${userId}`;
+
 export class SessionMemory implements MemoryStore {
   private readonly turns = new Map<UserId, { turns: Turn[]; lastUsed: number }>();
 
@@ -48,7 +50,18 @@ export class SessionMemory implements MemoryStore {
     else s.turns.push({ role: 'assistant', content: note });
   }
 
+  /** The same memory for DM talk, kept apart: a public answer and the automatic
+   *  memory only ever read the main one. clear() covers both. */
+  dms(): MemoryStore {
+    return {
+      history: (userId) => this.history(dmKey(userId)),
+      append: (userId, turn) => this.append(dmKey(userId), turn),
+      clear: (userId) => void this.turns.delete(dmKey(userId)),
+    };
+  }
+
   clear(userId: UserId): void {
     this.turns.delete(userId);
+    this.turns.delete(dmKey(userId));
   }
 }

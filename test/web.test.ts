@@ -9,6 +9,7 @@ import { UsageLedger } from '../src/limits/usage-ledger.js';
 import { AdminAuth } from '../src/web/auth.js';
 import { SecretsFile } from '../src/web/secrets-file.js';
 import { createAdminServer } from '../src/web/server.js';
+import { applySettings, type SettingsPatch } from '../src/web/settings.js';
 
 // Fake values with the real prefixes, so the redaction patterns are tested.
 const FAKE = {
@@ -234,6 +235,59 @@ describe('admin web server', () => {
     expect(restarts).toBe(1);
   });
 
+  it('says which room each answer came from, and why the total reads higher now', async () => {
+    const running = stack as unknown as { current: unknown };
+    const answer = { at: 'now', room: 'sat:d1', outcome: 'finished', sttLatencyMs: 90, groqMs: 400, closedBy: 'vad', turnCheckMs: 120, holdMs: 0, llmFirstChunkMs: 2_000, ttsFirstMs: 500, speechEndToAudioMs: 4_850, costUsd: 0.001 };
+    running.current = { answers: () => [answer], voiceReady: () => true, botTag: () => 'bot#0' };
+    const r = await call('GET', '/api/status');
+    running.current = undefined;
+    const status = r.data as { latency: Record<string, unknown>; lastAnswers: unknown[] };
+    expect(status.lastAnswers).toEqual([{ at: 'now', room: 'sat:d1', outcome: 'finished', speechEndToAudioMs: 4_850, costUsd: 0.001 }]);
+    expect(status.latency.speechEndToAudio).toMatchObject({ p50: 4_850, n: 1 });
+    expect(status.latency.note).toContain('about 1 s');
+  });
+
+  describe('a saved fallback', () => {
+    const withConfig = async (config: unknown, run: () => Promise<void>) => {
+      const before = readFileSync(configFile, 'utf8');
+      writeFileSync(configFile, typeof config === 'string' ? config : JSON.stringify(config));
+      try {
+        await run();
+      } finally {
+        writeFileSync(configFile, before);
+      }
+    };
+
+    it('warns on the status page when it has no key, without stopping the bot starting', async () => {
+      await withConfig({ brain: { model: 'm', fallback: { model: 'spare-model', apiKeySecret: 'NOT_STORED_KEY' } } }, async () => {
+        const r = await call('GET', '/api/status');
+        expect(r.data.warnings).toEqual(['The fallback model (spare-model) has no key, so it will not be used. Save NOT_STORED_KEY on the Keys tab, or choose No fallback.']);
+        expect(r.data.problems).toEqual(['Discord bot token is not set']); // not a reason to hold the bot back
+      });
+    });
+
+    it('shows a brain with no preset as custom, and will not save an empty choice', async () => {
+      await withConfig({ brain: { model: 'by-hand' } }, async () => {
+        expect((await call('GET', '/api/settings')).data.settings).toMatchObject({ llm: { preset: 'custom', model: 'by-hand' } });
+        expect((await call('PUT', '/api/settings', { llm: {} })).status).toBe(400);
+      });
+    });
+
+    it('warns about nothing when its key is stored, it needs none, or there is none', async () => {
+      for (const brain of [{ fallback: { model: 'spare', apiKeySecret: 'GROQ_API_KEY' } }, { fallback: { model: 'local' } }, {}]) {
+        await withConfig({ brain }, async () => expect((await call('GET', '/api/status')).data.warnings).toEqual([]));
+      }
+    });
+
+    it('keeps the status page up when the config cannot be read', async () => {
+      await withConfig('{ not json', async () => {
+        const r = await call('GET', '/api/status');
+        expect(r.status).toBe(200);
+        expect(r.data.warnings).toEqual([]);
+      });
+    });
+  });
+
   it('will not point a stored key at a new address', async () => {
     const before = readFileSync(configFile, 'utf8');
     const groq = 'https://api.groq.com/openai/v1';
@@ -354,5 +408,48 @@ describe('admin web server', () => {
     expect(refused()).toBe(1);
     await Promise.all(Array.from({ length: 20 }, () => call('POST', '/api/login', { username: 'rique', password: 'wrong password!' })));
     expect(refused()).toBe(1);
+  });
+});
+
+describe('saving a provider', () => {
+  const paths = { secretsFile: 's', stateDir: 'state', modelsDir: 'models' };
+  const search = { apiKeySecret: 'TAVILY_API_KEY', maxResults: 4 };
+  const fallback = { preset: 'gemini', model: 'spare' };
+  const raw = {
+    brain: {
+      preset: 'groq',
+      provider: 'openai',
+      effort: 'high',
+      baseUrl: 'https://old.example/v1',
+      model: 'old-model',
+      apiKeySecret: 'GROQ_API_KEY',
+      extraBody: { reasoning_effort: 'high' },
+      priceInPerM: 9,
+      priceCachedInPerM: 8,
+      priceOutPerM: 7,
+      maxTokens: 800,
+      firstEventTimeoutMs: 9_000,
+      totalTimeoutMs: 30_000,
+      search,
+      fallback,
+    },
+  };
+  const saved = (patch: SettingsPatch) => applySettings(raw, patch, paths).brain as Record<string, unknown>;
+
+  it('keeps every brain setting this page has no say over', () => {
+    expect(saved({ llm: { preset: 'claude' } })).toMatchObject({ maxTokens: 800, firstEventTimeoutMs: 9_000, totalTimeoutMs: 30_000, search, fallback });
+  });
+
+  it('replaces everything about the old provider', () => {
+    const claude = saved({ llm: { preset: 'claude' } });
+    expect(claude).toMatchObject({ preset: 'claude', provider: 'anthropic', effort: 'low', apiKeySecret: 'ANTHROPIC_API_KEY', priceCachedInPerM: 0.01 });
+    expect(claude).not.toHaveProperty('extraBody');
+    const groq = applySettings({ brain: claude }, { llm: { preset: 'groq' } }, paths).brain as Record<string, unknown>;
+    expect(groq).toMatchObject({ provider: 'openai', apiKeySecret: 'GROQ_API_KEY' });
+    for (const gone of ['effort', 'priceCachedInPerM']) expect(groq).not.toHaveProperty(gone);
+  });
+
+  it('leaves the provider alone when only the fallback changes', () => {
+    expect(saved({ fallback: { preset: 'none' } })).toMatchObject({ preset: 'groq', model: 'old-model', extraBody: { reasoning_effort: 'high' }, maxTokens: 800 });
   });
 });

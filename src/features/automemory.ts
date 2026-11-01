@@ -34,7 +34,14 @@ export class AutoMemory {
     /** Called with the tokens each run used, for spend tracking. */
     private readonly onUsage: (inputTokens: number, outputTokens: number) => void,
     private readonly everyTurns = 4,
-  ) {}
+  ) {
+    // "Forget everything" covers what was said, not only what's saved: this
+    // reads the last turns, and they'd come straight back as new facts.
+    notes.onForgotAll = (id) => {
+      sessions.clear(id);
+      this.counts.delete(id);
+    };
+  }
 
   /** Count an exchange; every few, learn from the conversation in the background. */
   afterTurn(userId: UserId, speaker: string): void {
@@ -55,6 +62,7 @@ export class AutoMemory {
     const turns = this.sessions.history(userId).slice(-10);
     if (!turns.some((t) => t.role === 'user')) return [];
     const known = this.notes.of(userId);
+    const forgets = this.notes.forgets(userId);
     const transcript = turns.map((t) => `${t.role === 'user' ? speaker : 'Adrian'}: ${t.content}`).join('\n');
     let text = '';
     let inTok = 0;
@@ -64,7 +72,7 @@ export class AutoMemory {
         {
           role: 'system',
           content:
-            `You keep a short memory of facts about ${speaker}, a person who talks to a voice assistant. From the conversation, list up to 3 NEW facts about ${speaker} worth remembering for weeks: preferences, games they play, people or pets in their life, plans, their job or school, things they asked to be remembered. Only things ${speaker} said about themselves; no guesses, nothing about other people, no passwords or account details, nothing they asked to keep secret. Write each as a short note without their name ("plays Minecraft with Sam", "has a dog named Biscuit"). Reply with only a JSON array of strings, or [] if there's nothing new.`,
+            `You keep a short memory of facts about ${speaker}, a person who talks to a voice assistant. From the conversation, list up to 3 NEW facts about ${speaker} worth remembering for weeks: preferences, games they play, people or pets in their life, plans, their job or school, things they asked to be remembered. Only things ${speaker} said about themselves; no guesses, nothing about other people, no passwords or account details, nothing they asked to keep secret. Never save anything they asked you to forget or delete in this conversation. Write each as a short note without their name ("plays Minecraft with Sam", "has a dog named Biscuit"). Reply with only a JSON array of strings, or [] if there's nothing new.`,
         },
         { role: 'user', content: `Already remembered:\n${known.map((k) => `- ${k}`).join('\n') || '(nothing yet)'}\n\nConversation:\n${transcript}` },
       ],
@@ -77,8 +85,10 @@ export class AutoMemory {
       }
     }
     this.onUsage(inTok, outTok);
+    // They said to forget something while the model was reading: this may be it.
+    if (this.notes.forgets(userId) !== forgets) return [];
     const facts = parseFacts(text);
-    const saved = facts.filter((f) => this.notes.add(userId, f, true).startsWith('Remembered'));
+    const saved = facts.filter((f) => this.notes.add(userId, f, 'learned').startsWith('Remembered'));
     if (saved.length) this.log.info('auto memory', { user: userId, saved: saved.length });
     return saved;
   }

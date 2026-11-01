@@ -192,7 +192,7 @@ Most commands need `sudo`.
 | `adrian doctor` | Full diagnostics: service, permissions, models, ffmpeg, yt-dlp, config |
 | `adrian backup [FILE]` | Config, keys and state (not the models) to a `.tar.gz`. **It contains your keys; keep it private.** |
 | `adrian restore FILE` | Restore a backup |
-| `adrian update` | Install the newest release from GitHub, checksum verified (rolls back by itself if it isn't healthy within 30 s; keeps 3 versions). `--check` only says whether there's one; `adrian update FILE.tar.gz` installs a bundle you downloaded |
+| `adrian update` | Install the newest release from GitHub, checksum verified (rolls back by itself if the new version does worse than the old one; keeps 3 versions). `--check` only says whether there's one; `adrian update FILE.tar.gz` installs a bundle you downloaded |
 | `adrian auto-update on\|off\|status` | Update by itself: checks every hour, installs only while nobody is in her call and nothing is playing |
 | `adrian rollback` | Switch back to the previous version |
 | `adrian uninstall [--keep-data]` | Remove A.D.R.I.A.N. |
@@ -210,7 +210,9 @@ From then on she checks GitHub every hour and installs a new release by
 herself, but only while nobody is in her voice call and nothing is playing, so
 an update never cuts anyone off. `sudo adrian auto-update status` shows the
 last checks, and `off` turns it off. PC apps update themselves too (see
-[pc-app.md](pc-app.md)).
+[pc-app.md](pc-app.md)). It installs whatever is published as the latest
+release, as root: [security.md](security.md#things-to-know) says what you're
+trusting.
 
 Or update by hand whenever you like:
 
@@ -221,10 +223,27 @@ sudo adrian update --check    # only say whether there's a newer one
 
 Every update:
 - downloads the release and checks it against its `.sha256` file (a mismatch stops it);
+- asks the new code whether it can run your config (if it can't, nothing changes);
 - downloads any new models;
 - updates the service file;
 - moves to the release's Node.js runtime, if it pins a new one;
-- switches over, and rolls back by itself if the bot isn't healthy within 30 seconds.
+- switches over, watches the new version, and rolls back by itself if it does worse than the old one.
+
+Doing worse means one of these, which is why an update takes a minute or two:
+
+- it isn't up within 2 minutes;
+- it came back in setup mode, when the old version was running;
+- it hasn't rejoined a voice channel, when the old version was in one;
+- any of that a minute later, with up to another minute to get back, or systemd had to restart it during that minute.
+
+If the old version wasn't answering at all, any healthy answer will do, so you
+can always update your way out of a broken version.
+
+A rollback brings back the old release and its service file; new models and the
+new Node.js stay. Auto-update then leaves that version alone for a day, and
+`sudo adrian doctor` warns about it. `sudo adrian update` by hand tries it right
+away. A Discord voice outage during that minute can roll back a good release: it
+gets another try the next day, or update by hand once the outage is over.
 
 No internet on the server? Download the bundle and its `.sha256` from the
 [Releases page](https://github.com/Riqqqque/adrian-discord-voice/releases) and
@@ -234,6 +253,10 @@ run `sudo adrian update adrian-voice-VERSION-linux-x64.tar.gz` next to them.
 itself yet. Update once the old way (download the bundle and `.sha256`, then
 `sudo adrian update FILE`); from then on `sudo adrian update` and auto-update
 work.
+
+**Coming from 0.15.2 or older:** an update runs the `adrian` that's already
+installed, so these checks start with the update after the one that brings them.
+That first update still rolls back only if the bot isn't healthy within 30 seconds.
 
 `sudo adrian rollback` goes back one version at any time. With auto-update on, the newest release comes back within about an hour, as soon as nobody is in her call and nothing is playing, so run `sudo adrian auto-update off` first and turn it on again when a fix is out. After an update or restart, the bot rejoins its home channel. Use `/join` to bring it back to another one.
 

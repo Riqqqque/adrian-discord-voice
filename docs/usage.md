@@ -27,9 +27,11 @@ Speech recognition spells unusual names oddly, so it tolerates misspellings like
 
 - Stop phrases, "thanks", "bye", "okay" / "cool" (nothing to answer).
 - "Repeat that" / "what did you say".
-- "Louder" / "quieter", "faster" / "slower" (voice; with music playing, "turn it up" / "turn it down" changes the music).
+- "Louder" / "quieter", "faster" / "slower" (voice; with music playing, "turn it up" / "turn it down" changes the music). Each room keeps its own: changing her voice at a PC leaves the call alone, and the other way round. They reset on a restart.
 - "What time is it".
 - Plain music commands: "play X", "skip", "pause", "keep playing", "stop the music", "what's playing".
+
+Said with the name or right after "Yes?", all of these are instant. In a follow-up without the name, only stop phrases, "thanks", "bye" and "okay" are: the rest might be meant for someone else, so the model decides (one model call).
 
 Everything else goes to the language model.
 
@@ -53,6 +55,7 @@ Everything else goes to the language model.
 | "Shuffle", "what's playing?", "what's next?" | Queue control and status. |
 | "Turn off autoplay" | Stop adding similar songs when the queue ends. |
 
+- **Who can change it:** people in the voice call (muted counts), the owner of the PC it's playing on, and owners. Anyone can ask what's playing, but nobody else can play, skip or stop anything, from text chat or DMs either. Sounds work the same way.
 - **Volume:** music sits under the voice and drops further whenever someone says the name or the bot talks. Noise and talking to other people leave it alone.
 - **Taste:** she learns what you like from the artists and songs you ask for, and favors recent ones. She also builds up a taste of her own. Yours is only used in your own conversations.
 - **After an order:** when she's done something ("play Drake", "set a timer"), she stops listening right away, so talking to someone else afterwards isn't taken as more for her. After a normal answer, or if she asked you something, you can carry on without her name.
@@ -69,11 +72,13 @@ Everything else goes to the language model.
 
 - **Timers and reminders:**
   - "Set a timer for 10 minutes", "remind me at 6 to take the pizza out", "what timers do I have", "cancel my timer". Up to 20 per person, and they survive restarts.
-  - When one goes off, it's announced in the call. If you've left, you get a DM.
+  - When one goes off, it's announced in the call if you're in it and can hear it. If not, one you set at your PC goes off there, with a DM as well. Otherwise you get a DM (or, muted in the call, it's still announced there).
 - **Notes:**
   - "Remember that I'm allergic to peanuts", "forget my birthday". Up to 30 notes per person.
   - It also notes useful facts on its own every few answers (`autoMemory`).
   - Your notes are only ever used when **you** talk to it. It never tells anyone else what's in them.
+  - In a server, where others can hear or read the answer, it only uses notes you told it in that server, or the ones your own words ask about. In a DM or at your PC it uses them all. What it picked up by itself, and notes saved before this rule, count as private.
+  - "Forget" says how many notes went, not which ones.
   - What people say out loud in the call is shared context: it can refer to it.
 
 ## Party games
@@ -105,7 +110,7 @@ Japanese answers are written in kana (the Japanese voice can't read kanji). Viet
 Owners are the Discord application's owner plus anyone listed in `owners`. Owners:
 - can stop any answer;
 - go to the front of the line;
-- have no per-person hourly limit (the daily and monthly spend caps still apply).
+- have no per-person hourly limit (the daily and monthly spend caps still apply, and [passing messages on](#the-server-and-its-people) has its own limit: 30 an hour).
 
 Optional flavor:
 - `ownerAck`: what an owner hears instead of "Yes?", for example `["Yes boss", "Yes, chief"]`. Answers to owners also start with it.
@@ -135,7 +140,7 @@ Hard limits stay in every mode: no sexual roleplay or explicit sexual content, n
 
 ## Text chat
 
-@mention it in a channel ("@A.D.R.I.A.N. what's the weather in Denver?"), reply to one of its messages, or DM it. It answers in text, using the same model, tools and memory as in voice. "@A.D.R.I.A.N. play Humble" starts the song in the call it's in. It shows that it's typing, splits long answers, and never pings @everyone, roles or people. Spend caps and the hourly limit apply. Turn it off with `textChat.enabled false` (servers) or `textChat.dms false` (DMs).
+@mention it in a channel ("@A.D.R.I.A.N. what's the weather in Denver?"), reply to one of its messages, or DM it. It answers in text, using the same model, tools and memory as in voice. "@A.D.R.I.A.N. play Humble" starts the song in the call it's in, if you're in that call too or an owner. It shows that it's typing, splits long answers, and never pings @everyone, roles or people. Spend caps and the hourly limit apply. Turn it off with `textChat.enabled false` (servers) or `textChat.dms false` (DMs).
 
 With **Message Content** switched on for the bot in the Developer Portal (restart the service after changing it), text chat gets two more things:
 
@@ -155,7 +160,7 @@ It can look things up about the server it's in, by voice or text: "who's online?
 - By default it DMs them: "**Alex** (in Game Night) asked me to tell you: dinner's ready."
 - Ask for a channel, or it's a text chat, and it posts there with an @mention of that person only.
 - It always says who the message is from. Each person can send 10 an hour and each person can get 5 an hour (`messaging.perUserPerHour`, `messaging.perTargetPerHour`); owners can send 30, and at most 3 go out per request.
-- It goes straight out when you say who it's for ("tell Sam", "message Sam", "let Sam know"). Otherwise it reads the message back and waits for your yes.
+- It goes straight out when you name who it's for ("tell Sam", "message Sam", "let Sam know") and that's the whole of one of their names: "tell Sam" for Samantha is read back first. Otherwise it reads the message back and waits for your yes.
 - It won't post in a channel you can't post in yourself.
 - Turn it off with `messaging.enabled false`, and the lookups with `serverInfo.enabled false`.
 
@@ -171,6 +176,6 @@ It can look things up about the server it's in, by voice or text: "who's online?
 | Command | What it does |
 |---|---|
 | `/join` | Joins the voice channel you're in. It won't leave a call that still has people in it unless an owner asks. When it isn't in its home channel, it leaves after 10 minutes alone. |
-| `/leave` | Leaves voice. Use `/join` to bring it back. |
+| `/leave` | Leaves voice. Use `/join` to bring it back. From outside a call that has people in it, only the app's owner can. |
 
 After a restart or update, it goes back to its home channel. To limit which servers `/join` works in, set `allowedGuilds` by editing the config file (see [configuration.md](configuration.md)).

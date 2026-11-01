@@ -4,13 +4,15 @@ import { EventEmitter } from 'node:events';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ChannelType, Client, Collection, Events } from 'discord.js';
+import { ChannelType, Client, Collection, Events, PermissionsBitField } from 'discord.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { startVoiceStack } from '../src/app/stack.js';
 import { PocConfigSchema } from '../src/config.js';
 import { MusicPlayer, YoutubeSource } from '../src/features/music.js';
 import { UsageLedger } from '../src/limits/usage-ledger.js';
+import type { TurnOptions } from '../src/listen/pipeline.js';
 import { SmartTurn } from '../src/speech/smart-turn.js';
+import { SpeechifyTts } from '../src/speech/speechify.js';
 import { WhisperStt } from '../src/speech/whisper.js';
 import { Speaker } from '../src/voice/speaker.js';
 import { MODEL_LAYOUT } from '../src/web/checks.js';
@@ -32,15 +34,18 @@ const h = vi.hoisted(() => {
 
 // Music looks for ffmpeg at startup; nothing here decodes anything.
 vi.mock('node:child_process', async (orig) => ({ ...(await orig<typeof import('node:child_process')>()), spawnSync: () => ({ status: 0 }) }));
-vi.mock('../src/listen/pipeline.js', async () => {
+vi.mock('../src/listen/pipeline.js', async (orig) => {
   const { EventEmitter } = await import('node:events');
   class ListeningPipeline extends EventEmitter {
-    constructor() {
+    /** What the stack built it with: the turn options are the fifth. */
+    readonly args: unknown[];
+    constructor(...args: unknown[]) {
       super();
+      this.args = args;
       h.pipes.push(this);
     }
   }
-  return { ListeningPipeline };
+  return { ...(await orig<typeof import('../src/listen/pipeline.js')>()), ListeningPipeline };
 });
 vi.mock('../src/transport/discord.js', async () => {
   const { EventEmitter } = await import('node:events');
@@ -129,6 +134,8 @@ function fakeConn(owner: string, id: string) {
     calls: [] as { name: string; args: Record<string, unknown> }[],
     /** Holds PC actions until the test lets go. Like the real ones, they ignore a stop. */
     hold: undefined as Promise<void> | undefined,
+    /** What the PC answers (default: it worked). */
+    reply: { ok: true, result: 'CPU 12%.' },
     mode() {},
     state() {},
     send() {},
@@ -136,10 +143,11 @@ function fakeConn(owner: string, id: string) {
       c.transcripts.push(`${who}: ${t}`);
     },
     async action(name: string, args: Record<string, unknown>) {
+      if (!c.open) return { ok: false, result: 'The PC disconnected.' };
       c.actions.push(name);
       c.calls.push({ name, args });
       await c.hold;
-      return { ok: true, result: 'CPU 12%.' };
+      return c.reply;
     },
     playPcm: h.play,
   });
@@ -204,14 +212,15 @@ async function rig(over: Record<string, unknown> | ((dir: string) => Record<stri
     },
   };
   const warned: string[] = [];
-  const log = { debug() {}, info() {}, warn: (m: string) => void warned.push(m), error() {} };
+  const logged: { m: string; f: any }[] = [];
+  const log = { debug() {}, info: (m: string, f?: unknown) => void logged.push({ m, f }), warn: (m: string) => void warned.push(m), error() {} };
   const ledger = new UsageLedger(undefined, { perUserPerHour: 0, dailyUsd: 0, monthlyUsd: 0 }, 'UTC');
   let client: any;
   vi.spyOn(Client.prototype, 'login').mockImplementation(async function (this: unknown) {
     client = this;
     return o.login ? o.login(this as Client) : 'x';
   });
-  const secrets = new Map([['DISCORD_TOKEN', 'x'], ['LLM_API_KEY', 'y'], ['GROQ_API_KEY', 'z'], ['TAVILY_API_KEY', 'w']]);
+  const secrets = new Map([['DISCORD_TOKEN', 'x'], ['LLM_API_KEY', 'y'], ['GROQ_API_KEY', 'z'], ['TAVILY_API_KEY', 'w'], ['SPEECHIFY_API_KEY', 'v']]);
   const stack = await startVoiceStack(config as never, secrets, log as never, ledger, { sttFor: async () => ({}) as never, ttsFor: () => tts as never }, dir);
   client.users.fetch = async () => ({});
   client.user = { id: BOT, tag: 'bot#0' };
@@ -225,8 +234,8 @@ async function rig(over: Record<string, unknown> | ((dir: string) => Record<stri
   const voiceStates = new Map<string, unknown>();
   client.guilds.cache.set(GUILD, { voiceStates: { cache: voiceStates }, members: { cache: new Map() } });
   h.transport.emit('ready');
-  const heard = (pipe: EventEmitter, userId: string, t: string, command?: string, audioSeconds = 1) =>
-    pipe.emit('heard', { userId, text: t, woke: command !== undefined, command: command ?? '', samples: new Float32Array(16_000), audioSeconds, levelDbfs: -20, sttLatencyMs: 10, segmentClosedAt: performance.now(), decodeMs: 5 });
+  const heard = (pipe: EventEmitter, userId: string, t: string, command?: string, audioSeconds = 1, more: Record<string, unknown> = {}) =>
+    pipe.emit('heard', { userId, text: t, woke: command !== undefined, command: command ?? '', samples: new Float32Array(16_000), audioSeconds, levelDbfs: -20, sttLatencyMs: 10, segmentClosedAt: performance.now(), decodeMs: 5, ...more });
   const connect = (owner = OWNER, id = 'd1') => {
     const conn = fakeConn(owner, id);
     h.conns.push(conn);
@@ -249,7 +258,7 @@ async function rig(over: Record<string, unknown> | ((dir: string) => Record<stri
       mentions: { users: new Collection(guildId ? [[BOT, {}]] : []), roles: new Collection(), everyone: false },
       reply: async () => ({}),
     });
-  return { stack, ledger, steps, llmBodies, groq, search, tts, transport: h.transport as EventEmitter, discordPipe: h.pipes[0] as EventEmitter, heard, connect, voiceStates, loggedIn, typed, dms, dir, warned };
+  return { stack, client, ledger, steps, llmBodies, groq, search, tts, transport: h.transport as EventEmitter, discordPipe: h.pipes[0] as EventEmitter, heard, connect, voiceStates, loggedIn, typed, dms, dir, warned, logged };
 }
 
 afterEach(() => {
@@ -1275,6 +1284,7 @@ describe('whose PC a tool reaches', () => {
 describe('calling off a restart', () => {
   const asked = (c: { calls: { args: Record<string, unknown> }[] }) => c.calls.filter((x) => x.args.action === 'cancel_shutdown').length;
   const CANCELLED = 'Cancelled.';
+  const COULD_NOT = "I couldn't cancel it.";
   /** Asked for and confirmed: two turns, with their own yes. */
   async function restarting(r: Rig, pipe: EventEmitter, conn: { calls: unknown[] }) {
     r.steps.push({ parts: [toolCall('pc_system', '{"action":"restart"}'), usage(10, 2)] });
@@ -1380,16 +1390,43 @@ describe('calling off a restart', () => {
     await r.stack.stop();
   });
 
-  it('a PC that went away is forgotten: there is nothing left to call off', async () => {
+  it("a PC that went away can't be reached, and she says so: the restart may still be coming", async () => {
     const r = await rig();
     const { conn, pipe } = r.connect();
     await restarting(r, pipe, conn);
     conn.open = false;
     conn.emit('closed');
     r.heard(r.discordPipe, OWNER, 'cancel');
-    await sleep(40);
+    await until(() => r.tts.calls.includes(COULD_NOT), 'her word');
     expect(asked(conn)).toBe(0);
     expect(r.tts.calls).not.toContain(CANCELLED);
+    await r.stack.stop();
+  });
+
+  it('a PC that refuses: she says so instead of nothing', async () => {
+    const r = await rig();
+    const { conn, pipe } = r.connect();
+    await restarting(r, pipe, conn);
+    conn.reply = { ok: false, result: "The PC didn't answer in time." };
+    r.heard(pipe, OWNER, 'cancel');
+    await until(() => r.tts.calls.includes(COULD_NOT), 'her word');
+    expect(r.tts.calls).not.toContain(CANCELLED);
+    await r.stack.stop();
+  });
+
+  it('once the model has called it off, a later stop has nothing left to do', async () => {
+    const r = await rig();
+    const { conn, pipe } = r.connect();
+    await restarting(r, pipe, conn);
+    r.steps.push({ parts: [toolCall('pc_system', '{"action":"cancel_shutdown"}'), usage(10, 2)] });
+    r.heard(pipe, OWNER, 'hey adrian call off the restart', 'call off the restart');
+    await until(() => asked(conn) === 1, 'the cancel');
+    await sleep(40);
+    conn.reply = { ok: false, result: 'There was no restart or shutdown to cancel.' };
+    r.heard(pipe, OWNER, 'cancel');
+    await sleep(40);
+    expect(asked(conn)).toBe(1);
+    expect(r.tts.calls).not.toContain(COULD_NOT);
     await r.stack.stop();
   });
 
@@ -1598,5 +1635,546 @@ describe('a timer coming due', () => {
     await sleep(40);
     expect(r.dms.tries).toBe(0);
     expect(kept(r)).toBe(1);
+  });
+});
+
+
+describe('notes, DMs, text chat and /join through the real stack', () => {
+  const chat = { textChat: { enabled: true, dms: true } };
+  const said = (body: any) => JSON.stringify(body.messages);
+  /** One message, answered: one answer at a time per person. */
+  async function send(r: Awaited<ReturnType<typeof rig>>, n: number, userId: string, content: string, guildId?: string) {
+    r.typed(userId, content, guildId);
+    await until(() => r.llmBodies.length >= n, 'the answer');
+    await sleep(20);
+  }
+
+  it('keeps DM talk out of a public answer', async () => {
+    const r = await rig(chat);
+    await send(r, 1, OWNER, 'my landlord is evicting me');
+    await send(r, 2, OWNER, `<@${BOT}> any weekend ideas`, GUILD);
+    expect(said(r.llmBodies[1])).not.toContain('landlord');
+    await send(r, 3, OWNER, 'so what do I do');
+    expect(said(r.llmBodies[2])).toContain('landlord');
+    await r.stack.stop();
+  });
+
+  it('keeps a note told in a DM out of a server until they ask about it', async () => {
+    const r = await rig(chat);
+    r.steps.push({ parts: [toolCall('remember', '{"note":"landlord is evicting me"}'), usage(10, 2)] });
+    await send(r, 2, OWNER, 'remember that my landlord is evicting me');
+    await send(r, 3, OWNER, 'hello again');
+    expect(said(r.llmBodies[2])).toContain('landlord is evicting me');
+    expect(said(r.llmBodies[2])).toContain('use it naturally');
+    await send(r, 4, OWNER, `<@${BOT}> any weekend ideas`, GUILD);
+    expect(said(r.llmBodies[3])).not.toContain('evicting');
+    await send(r, 5, OWNER, `<@${BOT}> what's my landlord up to`, GUILD);
+    expect(said(r.llmBodies[4])).toContain('landlord is evicting me');
+    expect(said(r.llmBodies[4])).toContain('Other people can hear or read your answer here');
+    await r.stack.stop();
+  });
+
+  it('says Done after a tool that finishes the turn, instead of sorry', async () => {
+    const replies: string[] = [];
+    const r = await rig({ ...chat, ...MUSIC });
+    const yt = vi.spyOn(YoutubeSource.prototype, 'soundEffect').mockResolvedValue({ title: 'airhorn', ref: 'x', seconds: 3 } as never);
+    r.steps.push({ parts: [toolCall('play_sound', '{"query":"airhorn"}'), usage(10, 2)] });
+    r.voiceStates.set(OWNER, { channelId: CALL, mute: false, deaf: false });
+    r.client.emit('messageCreate', {
+      author: { id: OWNER, bot: false, username: 'someone' },
+      system: false,
+      content: `<@${BOT}> airhorn`,
+      embeds: [],
+      guildId: GUILD,
+      guild: null,
+      channelId: TEXT_CHANNEL,
+      channel: { type: ChannelType.GuildText },
+      mentions: { users: new Collection([[BOT, {}]]), roles: new Collection(), everyone: false },
+      reply: async (o: { content: string }) => void replies.push(o.content),
+    });
+    await until(() => replies.length > 0, 'the reply');
+    expect(yt).toHaveBeenCalled();
+    expect(replies).toEqual(['Done.']);
+    await r.stack.stop();
+  });
+
+  it('warns about a fallback with no key', async () => {
+    const r = await rig({ brain: { provider: 'openai', baseUrl: 'http://llm.test/v1', model: 'fake', apiKeySecret: 'LLM_API_KEY', priceInPerM: 1, priceOutPerM: 5, fallback: { baseUrl: 'http://spare.test/v1', model: 'spare', apiKeySecret: 'SPARE_API_KEY' } } });
+    expect(r.warned.some((w) => w.includes('fallback'))).toBe(true);
+    await r.stack.stop();
+  });
+
+  describe('/join', () => {
+    const OTHER = '100000000000000021';
+    const FRIEND = '100000000000000031';
+    /** One slash command from someone in `channelId`: the first reply. */
+    async function slash(r: Awaited<ReturnType<typeof rig>>, name: string, channelId: string) {
+      const replies: string[] = [];
+      const ch = { id: channelId, name: channelId === CALL ? 'drag' : 'other', permissionsFor: () => new PermissionsBitField(PermissionsBitField.All) };
+      const i: any = {
+        commandName: name, guildId: GUILD, user: { id: SAM }, deferred: false, replied: false,
+        isChatInputCommand: () => true, inCachedGuild: () => true,
+        guild: { voiceStates: { cache: new Map([[SAM, { channel: ch }]]) }, members: { me: {} } },
+        reply: async (o: { content: string }) => {
+          i.replied = true;
+          replies.push(o.content);
+        },
+        deferReply: async () => {
+          i.deferred = true;
+        },
+        editReply: async (o: string) => void replies.push(o),
+      };
+      r.client.emit(Events.InteractionCreate, i);
+      await until(() => replies.length > 0, 'a reply');
+      return replies[0]!;
+    }
+
+    it('retries after a join that failed', async () => {
+      const r = await rig();
+      let fails = 1;
+      h.connecting = async () => {
+        if (fails-- > 0) throw new Error('timed out');
+      };
+      expect(await slash(r, 'join', OTHER)).toContain("didn't work");
+      expect(r.stack.voiceReady()).toBe(false);
+      expect(await slash(r, 'join', OTHER)).toContain('Joined');
+      expect(r.stack.voiceReady()).toBe(true);
+      await r.stack.stop();
+    });
+
+    it("rebuilds after 'failed', from that channel", async () => {
+      const r = await rig();
+      h.transport.emit('failed', 'not back');
+      expect(await slash(r, 'join', CALL)).toContain('Joined');
+      await r.stack.stop();
+    });
+
+    it('rebuilds after a join at startup that failed', async () => {
+      const r = await rig();
+      h.transport.up = false;
+      expect(await slash(r, 'join', CALL)).toContain('Joined');
+      await r.stack.stop();
+    });
+
+    it('stays in a busy call during a drop, for someone elsewhere', async () => {
+      const r = await rig();
+      r.voiceStates.set(BOT, { channelId: CALL });
+      r.client.channels.cache.set(CALL, { members: { filter: () => ({ size: 1 }) }, isVoiceBased: () => true } as never);
+      void FRIEND;
+      h.transport.emit('disconnected', 'dropped');
+      expect(await slash(r, 'join', OTHER)).toContain('another channel here');
+      await r.stack.stop();
+    });
+
+    it('says she is already here when she is', async () => {
+      const r = await rig();
+      expect(await slash(r, 'join', CALL)).toContain("I'm already here");
+      await r.stack.stop();
+    });
+  });
+});
+
+describe('what music_control says', () => {
+  const pause = (r: Rig) => r.steps.push({ parts: [toolCall('music_control', '{"action":"pause"}'), usage(10, 2)] });
+
+  it('word for word to someone speaking English: no second model call', async () => {
+    const r = await rig(MUSIC);
+    fakeMusic();
+    r.voiceStates.set(SAM, { channelId: CALL, mute: false, deaf: false });
+    pause(r);
+    r.heard(r.discordPipe, SAM, 'hey adrian hold the tunes', 'hold the tunes');
+    await until(() => r.stack.answers().length === 1, 'the answer');
+    expect(r.llmBodies).toHaveLength(1);
+    await r.stack.stop();
+  });
+
+  it('in the words of the model for someone who is not', async () => {
+    const r = await rig(MUSIC);
+    fakeMusic();
+    r.voiceStates.set(SAM, { channelId: CALL, mute: false, deaf: false });
+    pause(r);
+    r.heard(r.discordPipe, SAM, 'hey adrian ¿puedes parar la música?', '¿puedes parar la música?');
+    await until(() => r.llmBodies.length === 2, 'the second call');
+    await r.stack.stop();
+  });
+});
+
+describe('a video asked for at the PC', () => {
+  const ID = 'dQw4w9WgXcQ';
+  it('opens by its id, found without a stream lookup, and she says so', async () => {
+    const r = await rig(MUSIC);
+    vi.spyOn(YoutubeSource.prototype, 'videoId').mockResolvedValue(ID);
+    const resolve = vi.spyOn(YoutubeSource.prototype, 'resolve').mockResolvedValue({ ...TRACK, ref: 'https://media.test/videoplayback?expire=1' } as never);
+    const { conn, pipe } = r.connect();
+    conn.reply = { ok: true, result: 'Opened the YouTube video.' };
+    r.steps.push({ parts: [toolCall('pc_open', '{"youtube":"rick astley","play":true}'), usage(10, 2)] });
+    r.heard(pipe, OWNER, 'hey adrian open rick astley on youtube', 'open rick astley on youtube');
+    await until(() => r.tts.calls.length === 1, 'her line');
+    expect(conn.calls).toEqual([{ name: 'pc_open', args: { video_id: ID } }]);
+    expect(r.tts.calls).toEqual(['Opening it on YouTube.']);
+    expect(resolve).not.toHaveBeenCalled();
+    await r.stack.stop();
+  });
+});
+
+describe('a skip with nothing to go to', () => {
+  const DOWN = "I can't reach YouTube right now.";
+  it.each([
+    [undefined, true, DOWN],
+    [undefined, false, "That's the end of the queue."],
+    [false, true, "Nothing's playing."],
+  ])('skip gave %s, YouTube paused %s', async (skipped, paused, line) => {
+    const r = await rig(MUSIC);
+    const m = fakeMusic();
+    m.skip.mockResolvedValue(skipped as never);
+    vi.spyOn(MusicPlayer.prototype, 'youtubePaused', 'get').mockReturnValue(paused);
+    await order(r, r.discordPipe, SAM, 'skip', line);
+    await r.stack.stop();
+  });
+});
+
+/** A PC room with Smart Turn loaded, and a lexicon, so words count as English.
+ *  Her name isn't in it, as it isn't in the real one: what's judged is what follows it. */
+async function holding(over: Record<string, unknown> = {}) {
+  vi.spyOn(SmartTurn, 'load').mockResolvedValue({} as never);
+  const words = 'play the what about and new so then we went to is capital of australia open spotify';
+  const r = await rig((dir) => ({ voice: { modelDir: join(dir, 'kokoro') }, satellite: { enabled: true, port: 40000, unfinishedWaitMs: 1200 }, ...over }), {
+    prepare: (dir) => {
+      mkdirSync(join(dir, 'kokoro'));
+      writeFileSync(join(dir, 'kokoro', 'lexicon-us-en.txt'), words.split(' ').map((w) => `${w} x`).join('\n'));
+      writeFileSync(join(dir, MODEL_LAYOUT.smartTurn), '');
+    },
+  });
+  const { conn, pipe } = r.connect();
+  return { r, conn, pipe, turn: (pipe as unknown as { args: TurnOptions[] }).args[4]! };
+}
+
+describe('speech that sounds unfinished at a PC', () => {
+  it('only PCs wait for the rest', async () => {
+    const { r } = await holding();
+    expect((r.discordPipe as unknown as { args: unknown[] }).args[4]).toBeUndefined();
+    await r.stack.stop();
+  });
+
+  it('and a PC waits out a longer silence first', async () => {
+    const { r, pipe } = await holding();
+    const vad = (p: unknown) => (p as { args: { minSilence: number }[] }).args[3]!.minSilence;
+    expect(vad(pipe)).toBe(0.8);
+    expect(vad(r.discordPipe)).toBe(0.5);
+    await r.stack.stop();
+  });
+
+  it('with her name, waits only if the words stop mid-thought', async () => {
+    const { r, turn } = await holding();
+    expect(turn.shouldHold!(OWNER, 'hey adrian play', 1)).toBe(true);
+    expect(turn.shouldHold!(OWNER, 'hey adrian what about the', 1)).toBe(true);
+    expect(turn.shouldHold!(OWNER, 'hey adrian play ella langley', 1)).toBe(false);
+    await r.stack.stop();
+  });
+
+  it('her name alone goes at once', async () => {
+    const { r, turn } = await holding();
+    expect(turn.shouldHold!(OWNER, 'hey adrian', 1)).toBe(false);
+    await r.stack.stop();
+  });
+
+  it('side talk goes at once, however it ends: nobody is waiting on it', async () => {
+    const { r, turn } = await holding();
+    expect(turn.shouldHold!(OWNER, 'so then we went to the', 1)).toBe(false);
+    await r.stack.stop();
+  });
+
+  it('inside the follow-up window, words without her name count', async () => {
+    const { r, pipe, turn } = await holding();
+    await answered(r, OWNER, pipe);
+    expect(turn.shouldHold!(OWNER, 'and what about the', 1)).toBe(true);
+    expect(turn.shouldHold!(OWNER, 'and what about new zealand', 1)).toBe(false);
+    await r.stack.stop();
+  });
+
+  it('the window is judged from when they started talking', async () => {
+    const { r, pipe, turn } = await holding();
+    await answered(r, OWNER, pipe);
+    const real = performance.now.bind(performance);
+    vi.spyOn(performance, 'now').mockImplementation(() => real() + 20_500);
+    expect(turn.shouldHold!(OWNER, 'and what about the', 2.5)).toBe(true);
+    expect(turn.shouldHold!(OWNER, 'and what about the', 0.4)).toBe(false);
+    await r.stack.stop();
+  });
+
+  it('push-to-talk counts, and asking does not use the press up', async () => {
+    const { r, conn, pipe, turn } = await holding();
+    conn.emit('ptt');
+    expect(turn.shouldHold!(OWNER, 'what about the', 1)).toBe(true);
+    r.heard(pipe, OWNER, 'open spotify');
+    await until(() => r.llmBodies.length === 1, 'the model');
+    await r.stack.stop();
+  });
+
+  it('words it can not read as English wait: only the words it knows can be judged', async () => {
+    const { r, turn } = await holding();
+    expect(turn.shouldHold!(OWNER, 'hey adrian wo ist der bahnhof', 1)).toBe(true);
+    await r.stack.stop();
+  });
+});
+
+describe('the cloud listen during a hold', () => {
+  const cloud = { cloudStt: { enabled: true } };
+  const QUESTION = 'Hey Adrian, what is the capital of Australia';
+
+  it('starts on the held words, and the answer uses that one listen', async () => {
+    const { r, pipe, turn } = await holding(cloud);
+    r.groq.reply = QUESTION;
+    const samples = new Float32Array(16_000);
+    turn.onHeldWords!(OWNER, { text: 'hey adrian what is the', samples });
+    await until(() => r.groq.calls === 1, 'the cloud listen');
+    r.heard(pipe, OWNER, 'hey adrian what is the', 'what is the', 1, { samples });
+    await until(() => r.llmBodies.length === 1, 'the model');
+    expect(r.groq.calls).toBe(1);
+    expect(asPrompt(r.llmBodies[0])).toContain('capital of Australia');
+    await r.stack.stop();
+  });
+
+  it('audio that was joined since gets a listen of its own', async () => {
+    const { r, pipe, turn } = await holding(cloud);
+    r.groq.reply = QUESTION;
+    turn.onHeldWords!(OWNER, { text: 'hey adrian what is the', samples: new Float32Array(16_000) });
+    await until(() => r.groq.calls === 1, 'the cloud listen');
+    r.heard(pipe, OWNER, 'hey adrian what is the capital', 'what is the capital');
+    await until(() => r.groq.calls === 2, 'the second listen');
+    await r.stack.stop();
+  });
+
+  it('inside the follow-up window too', async () => {
+    const { r, pipe, turn } = await holding(cloud);
+    await answered(r, OWNER, pipe);
+    const before = r.groq.calls;
+    turn.onHeldWords!(OWNER, { text: 'and what about the', samples: new Float32Array(16_000) });
+    await until(() => r.groq.calls === before + 1, 'the cloud listen');
+    await r.stack.stop();
+  });
+
+  it.each([
+    ['side talk', 'so then we went to the'],
+    ['her name alone', 'hey adrian'],
+    ['a stop', 'hey adrian stop'],
+  ])('not for %s', async (_what, words) => {
+    const { r, turn } = await holding(cloud);
+    turn.onHeldWords!(OWNER, { text: words, samples: new Float32Array(16_000) });
+    await sleep(30);
+    expect(r.groq.calls).toBe(0);
+    await r.stack.stop();
+  });
+
+  it('not without a key for it', async () => {
+    const { r, turn } = await holding();
+    turn.onHeldWords!(OWNER, { text: 'hey adrian what is the', samples: new Float32Array(16_000) });
+    await sleep(30);
+    expect(r.groq.calls).toBe(0);
+    await r.stack.stop();
+  });
+
+  it('not when the call has these words: the call answers them', async () => {
+    const { r, turn } = await holding(cloud);
+    r.voiceStates.set(OWNER, { channelId: CALL, mute: false, deaf: false });
+    turn.onHeldWords!(OWNER, { text: 'hey adrian what is the', samples: new Float32Array(16_000) });
+    await sleep(30);
+    expect(r.groq.calls).toBe(0);
+    await r.stack.stop();
+  });
+});
+
+describe('the second listen', () => {
+  it('skips her name alone: it would only hold up the "Yes?"', async () => {
+    const r = await rig({ cloudStt: { enabled: true } });
+    const { pipe } = r.connect();
+    r.heard(pipe, OWNER, 'hey adrian', '');
+    await until(() => r.tts.calls.includes('Yes?'), 'the ack');
+    expect(r.groq.calls).toBe(0);
+    await r.stack.stop();
+  });
+
+  it('still hears push-to-talk, where the words are the request', async () => {
+    const r = await rig({ cloudStt: { enabled: true } });
+    const { conn, pipe } = r.connect();
+    conn.emit('ptt');
+    r.heard(pipe, OWNER, 'how is the weather');
+    await until(() => r.groq.calls === 1, 'the cloud listen');
+    await r.stack.stop();
+  });
+});
+
+describe('the cloud voice after a long quiet', () => {
+  it('warms up when anyone starts talking, in the call or at a PC', async () => {
+    const warm = vi.spyOn(SpeechifyTts.prototype, 'warmIfIdle').mockResolvedValue();
+    const r = await rig({ cloudVoice: { enabled: true } });
+    const { conn } = r.connect();
+    r.transport.emit('speechStart', SAM);
+    conn.emit('speechStart', OWNER);
+    expect(warm).toHaveBeenCalledTimes(2);
+    await r.stack.stop();
+  });
+
+  it('has nothing to warm without it', async () => {
+    const r = await rig();
+    expect(() => r.transport.emit('speechStart', SAM)).not.toThrow();
+    await r.stack.stop();
+  });
+
+  it("has the bot check's line ready, like the other short replies", async () => {
+    const synth = vi.spyOn(SpeechifyTts.prototype, 'synthesize').mockResolvedValue({ samples: new Float32Array(960), sampleRate: 48_000, synthMs: 1 } as never);
+    const r = await rig({ cloudVoice: { enabled: true } });
+    await until(() => synth.mock.calls.some(([t]) => t === "I can't reach YouTube right now."), 'the line');
+    await r.stack.stop();
+  });
+});
+
+describe('how long an answer took', () => {
+  const lines = (r: Rig, m: string) => r.logged.filter((l) => l.m === m).map((l) => l.f);
+  const closed = (ms: number, by: string) => ({ vadClosedAt: performance.now() - ms, closedBy: by });
+  /** At least `ms`, and not by much: the rest is this machine answering a fake model. */
+  const about = (got: number | null, ms: number) => {
+    expect(got).toBeGreaterThanOrEqual(ms);
+    expect(got).toBeLessThan(ms + 1_200);
+  };
+  async function took(r: Rig, pipe: EventEmitter, who: string, more: Record<string, unknown> = {}) {
+    r.steps.push({ parts: [text('Canberra.'), usage(10, 2)] });
+    r.heard(pipe, who, 'hey adrian capital', 'capital of australia', 1, more);
+    await until(() => r.stack.answers().length === 1, 'the answer');
+    return r.stack.answers()[0]!;
+  }
+
+  it('counts from the VAD close, not the release, plus the wait a PC room really has', async () => {
+    const r = await rig();
+    const { pipe } = r.connect();
+    const a = await took(r, pipe, OWNER, { ...closed(1000, 'vad'), turnCheckMs: 120, holdMs: 880 });
+    about(a.speechEndToAudioMs, 1800);
+    expect(a).toMatchObject({ room: 'sat:d1', closedBy: 'vad', turnCheckMs: 120, holdMs: 880 });
+    await r.stack.stop();
+  });
+
+  it('a slower VAD setting is what a PC room waits, too', async () => {
+    const r = await rig((dir) => ({ listen: { vadModel: 'x', asrModelDir: dir, minSilence: 1.5 } }));
+    const { pipe } = r.connect();
+    const a = await took(r, pipe, OWNER, closed(0, 'vad'));
+    about(a.speechEndToAudioMs, 1500);
+    await r.stack.stop();
+  });
+
+  it('in the call, the VAD wait for a clip it closed', async () => {
+    const r = await rig();
+    const a = await took(r, r.discordPipe, SAM, closed(1000, 'vad'));
+    about(a.speechEndToAudioMs, 1500);
+    expect(a).toMatchObject({ room: 'discord', closedBy: 'vad', turnCheckMs: null, holdMs: null });
+    await r.stack.stop();
+  });
+
+  it("in the call, the transport's wait for a clip it ended", async () => {
+    const r = await rig();
+    const a = await took(r, r.discordPipe, SAM, closed(1000, 'flush'));
+    about(a.speechEndToAudioMs, 1800);
+    await r.stack.stop();
+  });
+
+  it('with no VAD time, from the release as before', async () => {
+    const r = await rig();
+    const a = await took(r, r.discordPipe, SAM);
+    about(a.speechEndToAudioMs, 500);
+    expect(a.closedBy).toBeNull();
+    await r.stack.stop();
+  });
+
+  it('counts the wait for the cloud listen', async () => {
+    const r = await rig({ cloudStt: { enabled: true } });
+    const { pipe } = r.connect();
+    r.groq.delay = 40;
+    r.groq.reply = 'Hey Adrian, capital of Australia';
+    const a = await took(r, pipe, OWNER);
+    expect(a.groqMs).toBeGreaterThanOrEqual(35);
+    await r.stack.stop();
+  });
+
+  it('has no cloud listen to count otherwise', async () => {
+    const r = await rig();
+    const a = await took(r, r.discordPipe, SAM);
+    expect(a.groqMs).toBeNull();
+    await r.stack.stop();
+  });
+
+  it('the log lines carry the same timing, and no words unless asked for', async () => {
+    const r = await rig();
+    const { pipe } = r.connect();
+    await took(r, pipe, OWNER, { ...closed(100, 'vad'), turnCheckMs: 120, holdMs: 0 });
+    expect(lines(r, 'pc heard')[0]).toMatchObject({ closedBy: 'vad', turnCheckMs: 120, holdMs: 0 });
+    expect(lines(r, 'pc heard')[0].text).toBeUndefined();
+    expect(lines(r, 'answered')[0]).toMatchObject({ room: 'sat:d1', closedBy: 'vad', turnCheckMs: 120, holdMs: 0, groqMs: null });
+    await r.stack.stop();
+  });
+});
+
+describe('a hold and the listening window', () => {
+  /** After an answer, move the clock past the 8 s follow-up window. */
+  async function pastTheWindow(r: Rig) {
+    r.steps.push({ parts: [text('Canberra.'), usage(10, 2)] });
+    r.heard(r.discordPipe, SAM, 'hey adrian capital', 'capital of australia');
+    await until(() => r.stack.answers().length === 1, 'the first answer');
+    await sleep(20);
+    const real = performance.now.bind(performance);
+    vi.spyOn(performance, 'now').mockImplementation(() => real() + 8_500);
+  }
+
+  it('counts for words that began inside it, however long the hold', async () => {
+    const r = await rig();
+    await pastTheWindow(r);
+    r.heard(r.discordPipe, SAM, 'and what about new zealand', undefined, 0.5, { vadClosedAt: performance.now() - 1_200 });
+    await until(() => r.llmBodies.length === 2, 'the follow-up');
+    await r.stack.stop();
+  });
+
+  it('does not count for words that began after it, held or not', async () => {
+    const r = await rig();
+    await pastTheWindow(r);
+    r.heard(r.discordPipe, SAM, 'and what about new zealand', undefined, 0.5, { vadClosedAt: performance.now() });
+    await sleep(60);
+    expect(r.llmBodies).toHaveLength(1);
+    await r.stack.stop();
+  });
+});
+
+describe('what forget says', () => {
+  const told = async (r: Rig) => {
+    r.steps.push({ parts: [toolCall('remember', '{"note":"likes green tea"}'), usage(10, 2)] }, { parts: [text('Got it.'), usage(10, 2)] });
+    r.heard(r.discordPipe, SAM, 'hey adrian remember i like green tea', 'remember i like green tea');
+    await until(() => r.stack.answers().length === 1, 'the note');
+    r.steps.push({ parts: [toolCall('forget', '{"what":"tea"}'), usage(10, 2)] });
+  };
+
+  it('word for word to someone speaking English: no second model call', async () => {
+    const r = await rig();
+    await told(r);
+    const before = r.llmBodies.length;
+    r.heard(r.discordPipe, SAM, 'hey adrian forget the tea thing', 'forget the tea thing');
+    await until(() => r.stack.answers().length === 2, 'the answer');
+    expect(r.llmBodies.length - before).toBe(1);
+    await r.stack.stop();
+  });
+
+  it('in the words of the model for someone who is not', async () => {
+    const r = await rig();
+    await told(r);
+    const before = r.llmBodies.length;
+    r.heard(r.discordPipe, SAM, 'hey adrian ¿puedes forget lo del té?', '¿puedes forget lo del té?'); // the router needs its word
+    await until(() => r.llmBodies.length === before + 2, 'the second call');
+    await r.stack.stop();
+  });
+});
+
+describe('a skip and a stop', () => {
+  it('hands the skip its signal, so a stop during the lookup ends it', async () => {
+    const r = await rig(MUSIC);
+    const m = fakeMusic();
+    await order(r, r.discordPipe, SAM, 'skip', "That's the end of the queue.");
+    expect(m.skip.mock.calls[0]![0]).toBeInstanceOf(AbortSignal);
+    await r.stack.stop();
   });
 });

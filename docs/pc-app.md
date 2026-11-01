@@ -121,6 +121,17 @@ playing, nobody talking), then starts again in the tray. The settings (gear)
 show the version and the last check, and have a switch to turn automatic
 updates off; then it only tells you a new version is out.
 
+**Going back to an older version:** turn automatic updates off first, or the app
+installs the newest one again a few minutes after it starts. Then quit the app and
+replace `ADRIAN.exe` with the older `adrian-pc-app-<version>-windows-x64.exe` from
+the Releases page, renamed to `ADRIAN.exe`.
+
+**If the app stops starting after an update:** the copy it replaced stays next to
+it as `ADRIAN.old.exe` until the new one has run for 3 minutes. In the app's
+folder (`%LOCALAPPDATA%\A.D.R.I.A.N` if you used the script), delete `ADRIAN.exe`,
+rename `ADRIAN.old.exe` back to `ADRIAN.exe` and start it. Then turn automatic
+updates off until a fixed version is out.
+
 For the bot on the server, `sudo adrian auto-update on` does the same (see
 [install.md](install.md#updating-rolling-back-backups)).
 

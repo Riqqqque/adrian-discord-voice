@@ -143,6 +143,8 @@ describe('music requests', () => {
     const res = await r.p.request('artist', 'jaeybxrd', 'now', sig());
     expect(res).toMatchObject({ ok: true });
     expect(r.p.nowPlaying!.id).toBe(id('song'));
+    await tick(); // the radio follows
+    await tick();
     expect(r.p.upNext.length).toBeGreaterThan(1);
   });
 

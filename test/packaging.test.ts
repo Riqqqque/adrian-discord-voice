@@ -2,7 +2,7 @@
 // against throwaway archives, and the limits on model downloads.
 
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:https';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -322,6 +322,391 @@ describe.skipIf(!hasBash)('auto-update', () => {
 
   it('never stands in the way of an update by hand', () => {
     expect(update([], 1).downloaded).toBe(true);
+  });
+});
+
+describe.skipIf(!hasBash)('adrian update, judged against the version it replaces', () => {
+  const OLD = '1.0.0';
+  const NEW = '9.9.9';
+  const health = (fields: object = {}) => JSON.stringify({ ok: true, state: 'running', voiceReady: true, busy: false, ...fields });
+  const noVoice = health({ voiceReady: false });
+  const setupMode = health({ state: 'setup', voiceReady: false });
+
+  /** What each version does. A health of null: nothing answers. */
+  interface Release {
+    before?: string | null;
+    after?: string | null;
+    /** The old version's health once upgrade-prep.sh is done. */
+    afterPrep?: string;
+    /** The new version's health once the minute's watch is over. */
+    afterAMinute?: string;
+    /** When that passes and its normal health is back, on the fake clock. */
+    backAfter?: number;
+    /** Seconds after the update starts before the new version answers. */
+    comesUpAfter?: number;
+    /** systemd restarted it by itself during that minute. */
+    crashes?: boolean;
+    /** Systemd can't start it under its new service file. */
+    badUnit?: boolean;
+    /** Systemd won't start anything. */
+    noStarts?: boolean;
+    /** The old service file can't be put back. */
+    unitStuck?: boolean;
+    /** Nothing can be written where the failed version is remembered. */
+    markerStuck?: boolean;
+    /** Exit code and words of the new release's `check`. */
+    check?: [number, string];
+    /** upgrade-prep.sh fails on its last step, after the service file. */
+    prepFails?: boolean;
+    /** What's already in /opt/adrian/update-failed. */
+    failed?: string;
+    /** And how long ago it was written. */
+    failedHoursAgo?: number;
+  }
+
+  // The fake clock runs ten times as fast, so the waits can keep their real lengths.
+  const stubs = `${server}
+    install() {
+      if [ "$1" = -d ]; then shift 7; mkdir -p "$@"; return; fi
+      case "$3" in *adrian-voice.service) ;; *) [ ! -f unit-stuck ] || return 1 ;; esac
+      cp "$3" "$4"
+    }
+    sleep() { echo "sleep $1" >>log; SECONDS=$((SECONDS + $1 * 10)); [ "$1" = 1 ] || : >watched; }
+    journalctl() { :; }
+    systemctl() {
+      case "$1" in
+        show) [ -f watched ] && cat restarts 2>/dev/null || echo 0 ;;
+        restart) echo "restart under: $(cat adrian-voice.service)" >>log; [ ! -f no-starts ] && { [ ! -f bad-unit ] || ! grep -q ${NEW} adrian-voice.service; } ;;
+        daemon-reload) echo reload >>log; : >prepared ;;
+      esac
+    }
+    curl() {
+      local out=
+      while [ $# -gt 1 ]; do [ "$1" != -o ] || out=$2; shift; done
+      case "$1" in
+        *releases/latest) printf '{"tag_name":"v${NEW}"}' ;;
+        */api/health)
+          local f; f=health.$(basename "$(readlink -f opt/current)")
+          [ ! -f prepared ] || [ ! -f "$f.prepared" ] || f=$f.prepared
+          [ ! -f watched ] || [ ! -f "$f.watched" ] || { [ -f "$f.back" ] && [ $SECONDS -ge "$(cat "$f.back")" ]; } || f=$f.watched
+          [ -f "$f" ] && [ $SECONDS -ge "$(cat "$f.from" 2>/dev/null || echo 0)" ] && cat "$f" || return 22 ;;
+        *nodejs.org*) return 7 ;;
+        *) echo "download $1" >>log; cp "published/$(basename "$1")" "$out" ;;
+      esac
+    }
+    runuser() {
+      case "$*" in
+        *" port") echo "http 127.0.0.1 8790" ;;
+        *"releases/${NEW}/dist/cli/tool.js check") echo "asked ${NEW}" >>log; cat check.says; return "$(cat check.exit)" ;;
+        *" check") echo "Config is complete." ;;
+      esac
+    }
+    export -f install sleep journalctl systemctl curl runuser
+    exec bash adrian "$@"`;
+
+  /** A server on the old version, with the new one out. */
+  function machine(r: Release = {}) {
+    const root = sandbox('update');
+    const put = (name: string, text: string) => writeFileSync(join(root, name), text);
+    const setup = [
+      'set -e',
+      `mkdir -p opt/releases/${OLD} opt/releases/0.9.0 opt/node-v${OLD}/bin etc var/models published new/packaging`,
+      `ln -sfn releases/${OLD} opt/current`,
+      'ln -sfn releases/0.9.0 opt/previous',
+      `ln -sfn node-v${OLD} opt/node`,
+    ].join('\n');
+    expect(sh(root, setup).code).toBe(0);
+    // node.exe can't read the /tmp path a release is unpacked in, in Git Bash.
+    const node = `#!/usr/bin/env bash
+if [ "$1" = -p ]; then sed -n 's/.*"version": *"\\([^"]*\\)".*/\\1/p' "$(sed -E "s/.*require\\('([^']+)'\\).*/\\1/" <<<"$2")"; exit; fi
+exec "${process.execPath.replaceAll('\\', '/')}" "$@"\n`;
+    writeFileSync(join(root, `opt/node-v${OLD}/bin/node`), node, { mode: 0o755 });
+    put('adrian', moved(readFileSync(`${packaging}adrian`, 'utf8'), root));
+    put('adrian-voice.service', `unit of ${OLD}\n`);
+    put('etc/secrets.env', '');
+    put('new/package.json', `{"version":"${NEW}"}\n`);
+    put('new/packaging/adrian-voice.service', `unit of ${NEW}\n`);
+    put('new/packaging/upgrade-prep.sh', moved(readFileSync(`${packaging}upgrade-prep.sh`, 'utf8'), root));
+    put(
+      'new/packaging/downloads.sh',
+      readFileSync(`${packaging}downloads.sh`, 'utf8')
+        .replace(/^NODE_VERSION=.*$/m, `NODE_VERSION=${r.prepFails ? NEW : OLD}`)
+        .replace(/^MODELS=\([\s\S]*?^\)$/m, 'MODELS=()'),
+    );
+    const name = `adrian-voice-${NEW}-linux-x64.tar.gz`;
+    expect(sh(root, `set -e; tar -czf "published/${name}" -C new .; cd published; sha256sum "${name}" >"${name}.sha256"`).code).toBe(0);
+    if (r.before !== null) put(`health.${OLD}`, r.before ?? health());
+    if (r.after !== null) put(`health.${NEW}`, r.after ?? health());
+    if (r.afterPrep) put(`health.${OLD}.prepared`, r.afterPrep);
+    if (r.afterAMinute !== undefined) put(`health.${NEW}.watched`, r.afterAMinute);
+    if (r.backAfter) put(`health.${NEW}.back`, String(r.backAfter));
+    if (r.comesUpAfter) put(`health.${NEW}.from`, String(r.comesUpAfter));
+    if (r.crashes) put('restarts', '1\n');
+    if (r.badUnit) put('bad-unit', '');
+    if (r.noStarts) put('no-starts', '');
+    if (r.unitStuck) put('unit-stuck', '');
+    if (r.markerStuck) mkdirSync(join(root, 'opt/update-failed'));
+    put('check.exit', String(r.check?.[0] ?? 0));
+    put('check.says', r.check?.[1] ?? 'Config is complete.\n');
+    const marker = join(root, 'opt/update-failed');
+    if (r.failed) put('opt/update-failed', `${r.failed}\n`);
+    if (r.failedHoursAgo) utimesSync(marker, new Date(), new Date(Date.now() - r.failedHoursAgo * 3_600_000));
+    const log = () => (existsSync(join(root, 'log')) ? readFileSync(join(root, 'log'), 'utf8') : '');
+    return {
+      root,
+      marker: () => (existsSync(marker) ? readFileSync(marker, 'utf8').trim() : undefined),
+      run: (...args: string[]) => sh(root, stubs, args),
+      /** One run of the hourly timer. */
+      hourly: () => sh(root, stubs, ['update', '--auto']),
+      log,
+      restarts: () => log().match(/^restart under: .*$/gm) ?? [],
+      downloads: () => log().match(/^download .*\.tar\.gz$/gm) ?? [],
+      unit: () => readFileSync(join(root, 'adrian-voice.service'), 'utf8').trim(),
+      version: () => link(root, 'opt/current').replace('releases/', ''),
+      previous: () => link(root, 'opt/previous').replace('releases/', ''),
+      unpacked: (version: string) => existsSync(join(root, 'opt/releases', version)),
+    };
+  }
+
+  it('keeps a good release, after watching it for a minute', () => {
+    const m = machine();
+    const r = m.hourly();
+    expect(r.err).toBe('');
+    expect(r.code).toBe(0);
+    expect(r.out).toContain(`Updated to ${NEW}`);
+    expect(m.version()).toBe(NEW);
+    expect(m.previous()).toBe(OLD);
+    expect(m.log()).toContain('sleep 60');
+    expect(m.restarts()).toEqual([`restart under: unit of ${NEW}`]);
+  }, 60_000);
+
+  it('gives it up to two minutes to come up', () => {
+    const m = machine({ comesUpAfter: 100 });
+    expect(m.hourly().code).toBe(0);
+    expect(m.version()).toBe(NEW);
+  }, 60_000);
+
+  it.each([
+    ['lands in setup mode, when her config was running', { after: setupMode }],
+    ['lands in setup mode, when she was running but not in a call', { before: noVoice, after: setupMode }],
+    ['logs in but never joins her call', { after: noVoice }],
+    ['never answers', { after: null }],
+    ['crashes after a good start', { crashes: true }],
+    ['stops answering during the minute', { afterAMinute: '' }],
+    ['leaves her call during the minute', { afterAMinute: noVoice }],
+    ['has a service file systemd can\'t start', { badUnit: true }],
+  ] as [string, Release][])('rolls back a release that %s', (_, release) => {
+    const m = machine(release);
+    const r = m.hourly();
+    expect(r.code).not.toBe(0);
+    expect(r.err).toContain(`rolled back to ${OLD}`);
+    expect(m.version()).toBe(OLD);
+    expect(m.previous()).toBe('0.9.0');
+    expect(m.unpacked(NEW)).toBe(false);
+    expect(m.restarts().at(-1)).toBe(`restart under: unit of ${OLD}`);
+  }, 60_000);
+
+  it('rides out a voice drop during the last check: a drop can take most of a minute to come back', () => {
+    const m = machine({ afterAMinute: noVoice, backAfter: 640 }); // the check starts at 600
+    const r = m.hourly();
+    expect(r.err).toBe('');
+    expect(r.code).toBe(0);
+    expect(m.version()).toBe(NEW);
+    expect(m.marker()).toBeUndefined();
+  }, 60_000);
+
+  it('asks for no more than the old version managed: voice already down', () => {
+    const m = machine({ before: noVoice, after: noVoice });
+    expect(m.hourly().code).toBe(0);
+    expect(m.version()).toBe(NEW);
+  }, 60_000);
+
+  it('can always update out of a version that does not answer: ok is enough', () => {
+    const m = machine({ before: null, after: setupMode });
+    expect(m.hourly().code).toBe(0);
+    expect(m.version()).toBe(NEW);
+  }, 60_000);
+
+  it('still rolls back one that does not come up either', () => {
+    const m = machine({ before: null, after: null });
+    expect(m.hourly().code).not.toBe(0);
+    expect(m.version()).toBe(OLD);
+  }, 60_000);
+
+  it('finishes rolling back when systemd won\'t start the old version either', () => {
+    const m = machine({ noStarts: true, before: null });
+    const r = m.hourly();
+    expect(r.err).toContain('not healthy either');
+    expect(m.version()).toBe(OLD);
+    expect(m.previous()).toBe('0.9.0');
+    expect(m.unpacked(NEW)).toBe(false);
+    expect(m.marker()).toBe(NEW);
+  }, 60_000);
+
+  it('restarts the old version even if its service file will not go back', () => {
+    const m = machine({ after: null, unitStuck: true });
+    const r = m.hourly();
+    expect(r.err).toContain(`rolled back to ${OLD}`);
+    expect(m.version()).toBe(OLD);
+    expect(m.restarts()).toHaveLength(2);
+    expect(m.previous()).toBe('0.9.0');
+    expect(m.unpacked(NEW)).toBe(false);
+    expect(m.marker()).toBe(NEW);
+  }, 60_000);
+
+  it('finishes rolling back with nowhere to remember the failure: a full disk may be why it failed', () => {
+    const m = machine({ after: null, markerStuck: true });
+    const r = m.hourly();
+    expect(r.err).toContain(`rolled back to ${OLD}`);
+    expect(m.version()).toBe(OLD);
+    expect(m.previous()).toBe('0.9.0');
+    expect(m.unpacked(NEW)).toBe(false);
+  }, 60_000);
+
+  it('adrian help lists every command', () => {
+    const r = machine().run('help');
+    for (const cmd of ['adrian status', 'adrian update', 'adrian auto-update', 'adrian rollback', 'adrian uninstall', 'adrian version']) expect(r.out).toContain(cmd);
+  }, 60_000);
+
+  it('leaves the other commands needing only a healthy answer', () => {
+    for (const [cmd, ok] of [['restart', setupMode], ['start', noVoice]] as const) {
+      const m = machine({ before: ok });
+      expect(m.run(cmd).code).toBe(0);
+    }
+    const down = machine({ before: null });
+    const r = down.run('restart');
+    expect(r.code).not.toBe(0);
+    expect(r.err).toContain('not healthy after 60 s');
+  }, 60_000);
+
+  describe('the service file', () => {
+    it('goes with a release that stays', () => {
+      const m = machine();
+      m.hourly();
+      expect(m.unit()).toBe(`unit of ${NEW}`);
+    }, 60_000);
+
+    it('goes back with a rollback, before the old version starts', () => {
+      const m = machine({ after: noVoice });
+      m.hourly();
+      expect(m.unit()).toBe(`unit of ${OLD}`);
+      expect(m.log().match(/^reload$/gm)).toHaveLength(2); // the release's, then the old one's
+      expect(m.restarts()).toEqual([`restart under: unit of ${NEW}`, `restart under: unit of ${OLD}`]);
+    }, 60_000);
+
+    it('goes back when upgrade-prep.sh fails after replacing it: nothing was switched', () => {
+      const m = machine({ prepFails: true });
+      const r = m.hourly();
+      expect(r.code).not.toBe(0);
+      expect(r.err).toContain('nothing was switched');
+      expect(m.unit()).toBe(`unit of ${OLD}`);
+      expect(m.restarts()).toEqual([]);
+      expect(m.version()).toBe(OLD);
+    }, 60_000);
+  });
+
+  describe('someone joining while upgrade-prep.sh runs', () => {
+    const busy = health({ busy: true });
+
+    it('stops the timer before it restarts her, and leaves nothing of the release', () => {
+      const m = machine({ afterPrep: busy });
+      const r = m.hourly();
+      expect(r.code).toBe(0);
+      expect(r.out).toContain(`update ${NEW} waits`);
+      expect(m.restarts()).toEqual([]);
+      expect(m.version()).toBe(OLD);
+      expect(m.unit()).toBe(`unit of ${OLD}`);
+      expect(m.unpacked(NEW)).toBe(false);
+      expect(m.marker()).toBeUndefined();
+    }, 60_000);
+
+    it('does not stop an update by hand', () => {
+      const m = machine({ afterPrep: busy });
+      expect(m.run('update').code).toBe(0);
+      expect(m.version()).toBe(NEW);
+    }, 60_000);
+  });
+
+  describe('a version that failed', () => {
+    it('is left alone by the timer: one download and two restarts, not one of each every hour', () => {
+      const m = machine({ after: noVoice });
+      expect(m.hourly().code).not.toBe(0);
+      expect(m.marker()).toBe(NEW);
+      for (let i = 0; i < 2; i++) {
+        const r = m.hourly();
+        expect(r.code).toBe(0);
+        expect(r.out).toContain(`update ${NEW} skipped`);
+      }
+      expect(m.downloads()).toHaveLength(1);
+      expect(m.restarts()).toHaveLength(2);
+    }, 60_000);
+
+    it('gets another try a day later: a passing outage can fail a good release', () => {
+      const m = machine({ failed: NEW, failedHoursAgo: 25 });
+      expect(m.hourly().code).toBe(0);
+      expect(m.version()).toBe(NEW);
+      expect(m.marker()).toBeUndefined();
+    }, 60_000);
+
+    it('stays alone until then', () => {
+      const m = machine({ failed: NEW, failedHoursAgo: 23 });
+      expect(m.hourly().code).toBe(0);
+      expect(m.downloads()).toEqual([]);
+    }, 60_000);
+
+    it('does not hold back a different version', () => {
+      const m = machine({ failed: '9.9.8' });
+      expect(m.hourly().code).toBe(0);
+      expect(m.version()).toBe(NEW);
+    }, 60_000);
+
+    it('does not stop an update by hand, and a success clears it', () => {
+      const m = machine({ failed: NEW });
+      expect(m.run('update').code).toBe(0);
+      expect(m.version()).toBe(NEW);
+      expect(m.marker()).toBeUndefined();
+    }, 60_000);
+
+    it('shows up in adrian doctor', () => {
+      const r = machine({ failed: NEW }).run('doctor');
+      expect(r.out).toMatch(new RegExp(`warn +update ${NEW.replaceAll('.', '\\.')} failed here on \\d{4}-\\d\\d-\\d\\d`));
+      expect(machine().run('doctor').out).not.toContain('failed here');
+    }, 60_000);
+  });
+
+  describe('asking the new code about the live config', () => {
+    const refused: [number, string] = [3, '- Config brain.model: Required\n'];
+
+    it('stops a release that refuses it before anything changes', () => {
+      const m = machine({ check: refused });
+      const r = m.hourly();
+      expect(r.code).not.toBe(0);
+      expect(r.err).toContain(`version ${NEW} can't run this config`);
+      expect(r.err).toContain('Config brain.model: Required');
+      expect(m.log()).toContain(`asked ${NEW}`);
+      expect(m.restarts()).toEqual([]);
+      expect(m.log()).not.toContain('reload');
+      expect(m.unit()).toBe(`unit of ${OLD}`);
+      expect(m.version()).toBe(OLD);
+      expect(m.unpacked(NEW)).toBe(false);
+      expect(m.marker()).toBe(NEW);
+    }, 60_000);
+
+    it('takes a crash for no answer: it runs under the old Node, and the health check still judges it', () => {
+      const m = machine({ check: [1, "SyntaxError: Unexpected token '#'\n"] });
+      expect(m.hourly().code).toBe(0);
+      expect(m.version()).toBe(NEW);
+    }, 60_000);
+
+    it.each([
+      ['in setup mode', setupMode],
+      ['not answering', null],
+    ] as [string, string | null][])('leaves unfinished setup alone: not asked while %s', (_, before) => {
+      const m = machine({ before, after: before ?? setupMode, check: refused });
+      expect(m.hourly().code).toBe(0);
+      expect(m.log()).not.toContain(`asked ${NEW}`);
+      expect(m.version()).toBe(NEW);
+    }, 60_000);
   });
 });
 

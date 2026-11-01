@@ -64,6 +64,10 @@ export interface InstallPaths {
 type Raw = Record<string, unknown>;
 type Llm = z.infer<typeof llmChoice>;
 
+/** What choosing a provider replaces. Anything else in the brain was set with
+ *  `adrian config` (token and time limits) and has nothing to do with this page. */
+const PROVIDER_FIELDS = ['preset', 'provider', 'effort', 'baseUrl', 'model', 'apiKeySecret', 'extraBody', 'priceInPerM', 'priceCachedInPerM', 'priceOutPerM'];
+
 function brainFor(c: Llm): Raw {
   if (c.preset === 'custom') {
     const x = c as Extract<Llm, { preset: 'custom' }>;
@@ -125,9 +129,8 @@ export function applySettings(raw: Raw, patch: SettingsPatch, paths: InstallPath
   if (patch.limits) out.limits = { ...(out.limits as Raw), ...patch.limits };
   const brain = { ...((out.brain as Raw | undefined) ?? {}) };
   if (patch.llm) {
-    const keep = { search: brain.search, fallback: brain.fallback };
-    Object.keys(brain).forEach((k) => delete brain[k]);
-    Object.assign(brain, brainFor(patch.llm), keep);
+    for (const k of PROVIDER_FIELDS) delete brain[k];
+    Object.assign(brain, brainFor(patch.llm));
   }
   if (patch.fallback) {
     if (patch.fallback.preset === 'none') delete brain.fallback;

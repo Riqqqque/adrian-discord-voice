@@ -1,7 +1,7 @@
 // Slash commands: /join brings A.D.R.I.A.N. into the caller's voice channel
 // (in any server the bot has been added to), /leave takes it out. One call
-// at a time: the bot won't be pulled out of a call where other people are,
-// except by the app owner.
+// at a time: nobody outside a call with other people in it can pull the bot
+// out of it, except the app owner.
 
 import {
   ApplicationIntegrationType,
@@ -26,6 +26,8 @@ export interface CommandDeps {
   log: Logger;
   /** Where the bot is now (undefined: not in voice). */
   current(): VoiceSpot | undefined;
+  /** The voice link works right now. Not given: taken as working. */
+  voiceReady?(): boolean;
   moveTo(spot: VoiceSpot): Promise<void>;
   leave(): Promise<void>;
   /** Servers where /join works; empty: any server the bot is in. */
@@ -78,6 +80,13 @@ export function registerVoiceCommands(d: CommandDeps): { ownerId(): string | und
     });
   });
 
+  /** Discord still has her in that channel, whatever the link is doing. */
+  const seatedIn = (s: VoiceSpot) => client.guilds.cache.get(s.guildId)?.voiceStates.cache.get(client.user?.id ?? '')?.channelId === s.channelId;
+  /** People in the call she'd be pulled out of, leaving out `userId`. She stays
+   *  through a drop, but a spot with no call behind it protects nobody. */
+  const peopleAt = (s: VoiceSpot, userId: string) =>
+    userId !== ownerId && ((d.voiceReady?.() ?? true) || seatedIn(s)) ? humansIn(client.channels.cache.get(s.channelId) as VoiceBasedChannel | undefined, userId) : 0;
+
   async function join(i: ChatInputCommandInteraction<'cached'>): Promise<void> {
     if (d.allowedGuilds?.length && !d.allowedGuilds.includes(i.guildId)) {
       await i.reply({ content: "I'm not set up to join calls in this server.", flags: MessageFlags.Ephemeral });
@@ -96,17 +105,16 @@ export function registerVoiceCommands(d: CommandDeps): { ownerId(): string | und
       return;
     }
     const cur = d.current();
-    if (cur?.guildId === i.guildId && cur.channelId === ch.id) {
+    const here = cur?.guildId === i.guildId && cur.channelId === ch.id;
+    if (here && (d.voiceReady?.() ?? true)) {
       await i.reply({ content: `I'm already here. Say "Hey Adrian" to talk to me.`, flags: MessageFlags.Ephemeral });
       return;
     }
-    if (cur && i.user.id !== ownerId) {
-      const busy = humansIn(client.channels.cache.get(cur.channelId) as VoiceBasedChannel | undefined, i.user.id);
-      if (busy > 0) {
-        const where = cur.guildId === i.guildId ? 'another channel here' : 'a call in another server';
-        await i.reply({ content: `I'm in ${where} right now. Try again when that call is over.`, flags: MessageFlags.Ephemeral });
-        return;
-      }
+    // Asked from the call she's lost: moveTo rebuilds it.
+    if (cur && !here && peopleAt(cur, i.user.id) > 0) {
+      const where = cur.guildId === i.guildId ? 'another channel here' : 'a call in another server';
+      await i.reply({ content: `I'm in ${where} right now. Try again when that call is over.`, flags: MessageFlags.Ephemeral });
+      return;
     }
     await i.deferReply();
     log.info('join requested', { user: i.user.id, guildId: i.guildId, channelId: ch.id });
@@ -118,6 +126,10 @@ export function registerVoiceCommands(d: CommandDeps): { ownerId(): string | und
     const cur = d.current();
     if (!cur || cur.guildId !== i.guildId) {
       await i.reply({ content: "I'm not in a voice channel in this server.", flags: MessageFlags.Ephemeral });
+      return;
+    }
+    if (i.guild.voiceStates.cache.get(i.user.id)?.channel?.id !== cur.channelId && peopleAt(cur, i.user.id) > 0) {
+      await i.reply({ content: "I'm in a call with other people right now. Try again when it's over.", flags: MessageFlags.Ephemeral });
       return;
     }
     log.info('leave requested', { user: i.user.id, guildId: i.guildId });

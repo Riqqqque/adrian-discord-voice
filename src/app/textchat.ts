@@ -21,6 +21,8 @@ export interface AskOptions {
   /** Prompt lines for this answer (the channel's recent messages). */
   extra: string[];
   onSilent: () => void;
+  /** A tool did something: no words after that isn't a miss (a sound effect). */
+  onActed: () => void;
 }
 
 export interface TextChatDeps {
@@ -240,9 +242,10 @@ export function registerTextChat(d: TextChatDeps): void {
     try {
       const extra = await channelContext(m);
       let silent = false;
+      let acted = false;
       let reply = '';
       let last = '';
-      const opts: AskOptions = { followUp, extra, onSilent: () => (silent = true) };
+      const opts: AskOptions = { followUp, extra, onSilent: () => (silent = true), onActed: () => (acted = true) };
       for await (const piece of d.ask(m.author.id, authorName(m), text, { ...(m.guildId ? { guildId: m.guildId } : {}), channelId: m.channelId }, AbortSignal.timeout(45_000), opts)) {
         startTyping();
         reply += (reply ? ' ' : '') + piece;
@@ -252,7 +255,7 @@ export function registerTextChat(d: TextChatDeps): void {
       // Too long: the cut goes before the last piece, which may be a question
       // they have to see, or a yes could be to whatever the model wrote above it.
       if (reply.length > d.maxReplyChars) reply = `${reply.slice(0, Math.max(0, d.maxReplyChars - last.length - 2)).trimEnd()}… ${last}`.slice(0, d.maxReplyChars);
-      if (followUp && (silent || !reply)) {
+      if (followUp && (silent || (!reply && !acted))) {
         // Not for it. Two misses in a row close that person's conversation.
         const c = convos.get(m.channelId);
         const misses = (c?.people.get(m.author.id) ?? 0) + 1;
@@ -262,7 +265,7 @@ export function registerTextChat(d: TextChatDeps): void {
         return;
       }
       log.info('text answered', { user: m.author.id, dm, followUp, context: extra.length > 0, chars: reply.length });
-      for (const part of splitReply(reply || "Sorry, I didn't get that.")) await send(part);
+      for (const part of splitReply(reply || (acted ? 'Done.' : "Sorry, I didn't get that."))) await send(part);
       if (!dm && d.readChannels) keepOpen(m.channelId, m.author.id);
     } catch (e) {
       log.warn('text answer failed', { user: m.author.id, error: (e as Error).message });
