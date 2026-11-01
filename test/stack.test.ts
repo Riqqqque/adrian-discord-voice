@@ -777,6 +777,23 @@ describe('a follow-up said without her name', () => {
     await r.stack.stop();
   });
 
+  it('"Yeah." to a question from her tool goes straight through: no judge, and the order runs', async () => {
+    const r = await rig();
+    const { conn } = r.connect();
+    r.voiceStates.set(OWNER, { channelId: CALL, mute: false, deaf: false });
+    r.steps.push({ parts: [toolCall('pc_system', '{"action":"restart"}'), usage(10, 2)] });
+    r.heard(r.discordPipe, OWNER, 'hey adrian restart the pc', 'restart the pc');
+    await until(() => r.stack.answers().length === 1, 'the question');
+    expect(r.tts.calls).toEqual(['Restart the PC?']);
+    expect(conn.actions).toHaveLength(0);
+
+    r.steps.push({ parts: [toolCall('pc_system', '{"action":"restart"}'), usage(10, 2)] });
+    r.heard(r.discordPipe, OWNER, 'Yeah.');
+    await until(() => conn.actions.length === 1, 'the restart');
+    expect(asPrompt(r.llmBodies[1])).not.toContain(JUDGE_LINE);
+    await r.stack.stop();
+  });
+
   it('what she does decide is for her still happens', async () => {
     const r = await rig(MUSIC);
     const m = fakeMusic();

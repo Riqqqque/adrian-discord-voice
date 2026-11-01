@@ -96,7 +96,7 @@ export function asUntrustedData(toolName: string, text: string): string {
 }
 
 /** How a yes starts. */
-const YES_START = /^(?:yes|yeah|yea|yep|yup|sure|absolutely|definitely|do it|go ahead|please do)\b/;
+const YES_START = /^(?:yes|yeah|yea|yep|yup|sure|absolutely|definitely|do it|go ahead|please do|send (?:it|that))\b/;
 /** All a plain yes may hold. Anything else ("but", "later", "wait") means it isn't one. */
 const YES_WORDS = new Set('yes yeah yea yep yup sure absolutely definitely do it go ahead and please now that ok okay hey adrian'.split(' '));
 const YES_MAX_WORDS = 5;

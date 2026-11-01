@@ -146,7 +146,7 @@ describe('pinned downloads', () => {
   it('are the releases with the security fixes, with the hashes upstream publishes', () => {
     expect(pins).toContain('NODE_VERSION=22.23.4\n');
     expect(pins).toContain('NODE_SHA256=1805bcd35e6815559bd2eb97db438d3fdb0eb3a5e6a977b7c1badca76337e9ce\n');
-    expect(pins).toContain('yt-dlp/releases/download/2026.10.26/yt-dlp_linux|767ba9dce7052aa196f8b12652f433d76de128ba168966fa84b6394d5e6c6795|bin');
+    expect(pins).toContain('yt-dlp/releases/download/2026.08.19/yt-dlp_linux|58162f9bfdc27458ea47bfcb311cf47028f17d8154a8bf7d689861d46399230a|bin');
   });
 });
 

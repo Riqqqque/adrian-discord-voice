@@ -97,6 +97,9 @@ describe('what counts as a yes', () => {
   it('may carry words about what was asked, and no others', () => {
     expect(isYes('yes restart it', ['restart'])).toBe(true);
     expect(isYes('yes restart the pc', ['restart', 'the', 'pc'])).toBe(true);
+    expect(isYes('send it', ['send'])).toBe(true);
+    expect(isYes('Send that.', ['send'])).toBe(true);
+    expect(isYes('send it')).toBe(false); // a question that isn't about sending
     expect(isYes('restart', ['restart'])).toBe(false);
     expect(isYes('yes restart it')).toBe(false);
     expect(isYes('yes shut it down', ['restart'])).toBe(false);

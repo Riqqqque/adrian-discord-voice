@@ -32,8 +32,10 @@ export interface ControllerDeps {
   /** Answer one request; must stop promptly when `signal` aborts. */
   /** Answer one request. `followUp`: said without the wake phrase right after
    *  an answer. Return "silent" if it wasn't meant for the bot, "done" if it
-   *  was an order carried out (no follow-up window after it). */
-  respond(userId: UserId, command: string, signal: AbortSignal, followUp?: boolean): Promise<void | 'silent' | 'done'>;
+   *  was an order carried out (no follow-up window after it), "asked" if a
+   *  tool is waiting on their answer (their next words are for her, as after
+   *  "Yes?"). */
+  respond(userId: UserId, command: string, signal: AbortSignal, followUp?: boolean): Promise<void | 'silent' | 'done' | 'asked'>;
   /** A stop for the bot while it isn't talking (stops the music). */
   stopOther?: (userId: UserId) => void;
   /** Short fixed reply (apologies, "Yes?", announcements); stops when `signal` aborts. */
@@ -354,7 +356,7 @@ export class ConversationController {
     const ctl = new AbortController();
     const active: NonNullable<typeof this.active> = { ...req, ctl, started: this.d.now() };
     this.active = active;
-    let outcome: void | 'silent' | 'done' = undefined;
+    let outcome: void | 'silent' | 'done' | 'asked' = undefined;
     let failed = false;
     try {
       if (req.announce) await this.d.say(req.announce, ctl.signal);
@@ -386,6 +388,9 @@ export class ConversationController {
         // An order carried out ("play Drake"): she stops listening, so talk
         // to someone else afterwards isn't taken as more for her.
         this.followUpUntil.delete(req.userId);
+      } else if (outcome === 'asked' && !ctl.signal.aborted) {
+        // "Yeah." here is the answer, not a reaction for the judge to drop.
+        this.expecting.set(req.userId, this.d.now() + EXPECT_MS);
       } else if (!ctl.signal.aborted && !req.closes) {
         this.followUpUntil.set(req.userId, this.d.now() + this.o.followUpMs);
       }

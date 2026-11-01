@@ -47,7 +47,7 @@ import { creatorLines, genderLines, memberLabel } from './identity.js';
 import { registerTextChat } from './textchat.js';
 import { discordTools, RelayLimiter } from '../features/discordinfo.js';
 import { MusicTaste } from '../features/taste.js';
-import { deezerTopTracks, describe as trackName, ffmpegDecoder, MusicPlayer, musicRules, musicState, musicTools, PlexMusicSource, type MusicSource, YoutubeSource } from '../features/music.js';
+import { deezerTopTracks, describe as trackName, ffmpegDecoder, MusicPlayer, musicRules, musicState, musicTools, PlexMusicSource, type MusicSource, YoutubeSource, YTM_API } from '../features/music.js';
 import { linksLine, PLAY_THAT_LINK, RecentLinks } from '../features/links.js';
 import { ParakeetStt } from '../speech/sherpa.js';
 import { DiscordVoiceTransport } from '../transport/discord.js';
@@ -191,7 +191,7 @@ export async function startVoiceStack(
   // --- music --------------------------------------------------------------
   const ytdlp = mc.ytdlp ?? join(langModels, MODEL_LAYOUT.ytdlp);
   const musicSources: MusicSource[] = [];
-  if (mc.enabled && existsSync(ytdlp)) musicSources.push(new YoutubeSource({ ytdlp, node: process.execPath }));
+  if (mc.enabled && existsSync(ytdlp)) musicSources.push(new YoutubeSource({ ytdlp, node: process.execPath, searchApi: YTM_API }));
   const plexForMusic = secrets.get('PLEX_TOKEN');
   if (mc.enabled && mc.plexBackup && plexForMusic) musicSources.push(new PlexMusicSource({ url: config.media.plexUrl, token: plexForMusic }));
   const ffmpegOk = mc.enabled && spawnSync(mc.ffmpeg, ['-version'], { stdio: 'ignore' }).status === 0;
@@ -685,7 +685,7 @@ export async function startVoiceStack(
     return true;
   }
 
-  async function respond(rm: Room, userId: UserId, command: string, outer: AbortSignal, followUp = false, onSpeaking?: () => void, onWorking?: (on: boolean) => void): Promise<void | 'silent' | 'done'> {
+  async function respond(rm: Room, userId: UserId, command: string, outer: AbortSignal, followUp = false, onSpeaking?: () => void, onWorking?: (on: boolean) => void): Promise<void | 'silent' | 'done' | 'asked'> {
     const waitKey = `${rm.key}:${userId}`;
     const waiting = pendingPlay.get(waitKey);
     pendingPlay.delete(waitKey);
@@ -707,6 +707,8 @@ export async function startVoiceStack(
     let silent = false;
     /** A tool did something (played music, opened an app): an order, not a chat. */
     let acted = false;
+    /** A tool is waiting on their answer ("Restart the PC?"). */
+    let asked = false;
     let saidAll = '';
     // The time limit is for getting the answer, not for saying it: the
     // model's text is read in as fast as it comes (eager), the timer stops
@@ -745,6 +747,7 @@ export async function startVoiceStack(
         ...(followUp && musicish ? { extra: [MUSIC_FOLLOW_UP] } : {}),
         onSilent: () => (silent = true),
         onActed: () => (acted = true),
+        onAsked: () => (asked = true),
         ...(onWorking ? { onWorking } : {}),
         // A slow tool (music lookup) may take longer than the answer limit: give
         // it its own limit plus time for the model to answer afterwards.
@@ -851,6 +854,7 @@ export async function startVoiceStack(
     // Only when nothing was said: then the user should hear a short sorry.
     // A partial answer that was cut off just ends.
     if ((timedOut || failure) && !outer.aborted && firstAudioAt === undefined) throw failure ?? new Error('timed out');
+    if (asked && !failure) return 'asked';
     // An order carried out, and she didn't ask anything back: the conversation is over.
     if (acted && !failure && !/\?\s*$/.test(saidAll)) return 'done';
   }
