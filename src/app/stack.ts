@@ -341,7 +341,7 @@ export async function startVoiceStack(
       const tools: Tool[] = [timeTool(config.timezone)];
       const searchKey = brain.search ? secrets.get(brain.search.apiKeySecret) : undefined;
       if (searchKey) tools.push(tavilySearchTool(searchKey, brain.search?.maxResults));
-      tools.push(...reminders.tools(), ...notes.tools(), ...games.tools());
+      tools.push(...reminders.tools((id) => (userLang.get(id) ?? 'en') === 'en'), ...notes.tools(), ...games.tools());
       if (music) tools.push(...musicTools((ctx) => roomFor(ctx).music, taste), ...taste.tools());
       if (sounds) tools.push(soundTool(sounds));
       if (satEnabled)
@@ -392,6 +392,10 @@ export async function startVoiceStack(
           llm,
           makeLlm(fb, fbKey),
           (err) => log.warn('primary LLM failed; using fallback', { error: err.message.slice(0, 200), fallback: fb.model }),
+          // Well inside the answer's own first-event limit, so a primary that
+          // hangs leaves the fallback time to answer. Much lower risks needless
+          // switches: Claude's tool rounds send nothing until they're finished.
+          Math.round(brain.firstEventTimeoutMs * 0.6),
         );
       }
       if (config.autoMemory) {
@@ -591,7 +595,12 @@ export async function startVoiceStack(
         if (!music.stop()) await say("Nothing's playing.");
         return true;
       case 'skip': {
-        const n = await music.skip().catch(() => undefined);
+        // The next song may need a lookup, and the skip can't be taken back.
+        onWorking?.(true);
+        const n = await music
+          .skip()
+          .catch(() => undefined)
+          .finally(() => onWorking?.(false));
         if (!n) await say(n === false ? "Nothing's playing." : "That's the end of the queue.");
         return true;
       }
@@ -656,6 +665,8 @@ export async function startVoiceStack(
     let llmFirstMs: number | undefined;
     let usage: Usage | undefined;
     let source: AsyncIterable<string>;
+    /** Resolves when the model has let go: by then its spend and its turn are in. */
+    let modelDone: Promise<void> = Promise.resolve();
     const allowed = orchestrator ? ledger.check(userId, isOwner(userId)) : ({ ok: true } as const);
     if (!orchestrator) {
       source = fixed("I'm not fully set up yet. My language model hasn't been configured.");
@@ -669,6 +680,8 @@ export async function startVoiceStack(
     } else {
       ledger.noteRequest(userId);
       const question = command.length > maxRequestChars ? command.slice(0, maxRequestChars) : command;
+      let finished!: () => void;
+      modelDone = new Promise((r) => (finished = r));
       const gen = orchestrator.ask(userId, nameOf(userId), question, signal, (u) => (usage = u), rm.place(), {
         followUp,
         ...(rm.ui ? { desk: true } : {}),
@@ -695,6 +708,7 @@ export async function startVoiceStack(
           }
           generated = true;
         } finally {
+          finished();
           clearTimeout(genTimer);
           if (said.length) {
             saidAll = said.join(' ');
@@ -727,10 +741,14 @@ export async function startVoiceStack(
       // can't keep generating (or start tools) in the background.
       if (!generated) genLimit.abort();
     }
+    // A stop can end her voice first: what the answer spent and the turn it
+    // saved only exist once the model has let go, which a stop makes quick.
+    await modelDone;
     const timedOut = genLimit.signal.aborted && !generated && !outer.aborted && !!failure;
     if (usage && autoMemory) autoMemory.afterTurn(userId, nameOf(userId));
     // Stopped or replaced mid-answer: the next turn must not pick it back up.
-    if (outer.aborted) sessions.markCutOff(userId);
+    // Nothing to mark if the model never ran, or stayed out of it (SILENT).
+    if (outer.aborted && usage && !silent) sessions.markCutOff(userId);
     const cost = usage ? costUsd(usage) : 0;
     ledger.addCost(cost);
     const rec: AnswerRecord = {
@@ -894,12 +912,21 @@ export async function startVoiceStack(
     minSpeech: listen.minSpeech,
     maxSpeech: listen.maxSpeech,
   };
-  /** In the voice channel she's in, and audible there (not muted or deafened). */
+  /** In the voice channel she's in, and audible there (not muted or deafened),
+   *  with her voice link up: a dropped link leaves `spot` set but nobody answering. */
   function inHerCall(userId: UserId): boolean {
-    if (!spot) return false;
+    if (!spot || !ready) return false;
     const vs = client.guilds.cache.get(spot.guildId)?.voiceStates.cache.get(userId);
     return !!vs && vs.channelId === spot.channelId && !vs.mute && !vs.deaf;
   }
+  /** Stops so far, per room and person. They skip the second listens, so one
+   *  can overtake the question it's for: that question checks this before it goes on. */
+  const stops = new Map<string, number>();
+  const stopsFrom = (rm: Room, userId: UserId) => stops.get(`${rm.key}:${userId}`) ?? 0;
+  const noteStop = (rm: Room, userId: UserId) => void stops.set(`${rm.key}:${userId}`, stopsFrom(rm, userId) + 1);
+  /** Until when a person's words belong to their PC (push-to-talk). Her call
+   *  hears the same words, sometimes first, and has to leave them alone. */
+  const pcHasWords = new Map<UserId, number>();
   /** Listen to one room's audio. `direct()` true: the next thing heard is a question for her (push-to-talk). */
   function listenTo(source: VoiceTransport, rm: Room, ctl: ConversationController, direct?: () => boolean): ListeningPipeline {
   // At a PC, a pause mid-sentence shouldn't split it in two (Discord keeps the snappier default).
@@ -908,24 +935,33 @@ export async function startVoiceStack(
     : new ListeningPipeline(source, stt, wakeDetector, vad);
   pipeline.on('heard', (e) => void heard(e).catch((err: Error) => log.warn('heard failed', { error: err.message })));
   async function heard(e: HeardEvent): Promise<void> {
-    if (!e.woke && direct?.()) e = { ...e, woke: true, command: e.text };
+    // Asking whether push-to-talk is on also uses it up, whatever was said.
+    const ptt = direct?.() ?? false;
+    if (!e.woke && ptt) e = { ...e, woke: true, command: e.text };
+    const first = classify(e.woke ? e.command : e.text);
+    const stop = first?.kind === 'stop';
+    if (stop) noteStop(rm, e.userId);
     // In her Discord call too: the call hears the same words, and that's
     // where a group wants her (music for everyone). The call answers; it can
     // still reach this PC through the PC tools. Push-to-talk and typing in
     // the window stay with the PC, and so does everything while muted there.
-    else if (rm.ui && inHerCall(e.userId)) {
+    // A stop isn't handed over: it's for whichever room she's talking in.
+    if (!ptt && rm.ui && inHerCall(e.userId) && !(stop && ctl.busy)) {
       if (e.woke) {
         log.info('pc deferred to discord', { room: rm.key });
         rm.ui.transcript('her', 'Answering in the Discord call.');
       }
       return;
     }
-    const forBot = e.woke || ctl.listeningTo(e.userId);
+    if (!rm.ui && !stop && (pcHasWords.get(e.userId) ?? 0) > performance.now()) return;
+    // The windows are judged from when they started talking, not when the words land.
+    const startedAt = e.segmentClosedAt - e.audioSeconds * 1000;
+    const forBot = e.woke || ctl.listeningTo(e.userId, startedAt);
     const before = userLang.get(e.userId) ?? 'en';
     // Said to her: a second, more accurate listen in the cloud for the words
     // (the local model already decided it was for her). Stops and her name
     // alone don't need it.
-    const first = classify(e.woke ? e.command : e.text);
+    const stopsBefore = stopsFrom(rm, e.userId);
     const local = e.text;
     let cloud: string | undefined;
     if (forBot && e.samples && first?.kind !== 'stop' && first?.kind !== 'name' && cloudSttFor(rm, e.userId)) {
@@ -968,6 +1004,13 @@ export async function startVoiceStack(
       }
     }
     if (forBot && (userLang.get(e.userId) ?? 'en') !== before) log.info('language', { user: e.userId, from: before, to: userLang.get(e.userId) });
+    // They said stop while this waited on a second listen: it's already cancelled.
+    if (stopsFrom(rm, e.userId) !== stopsBefore) {
+      log.info('stopped before it started', { user: e.userId });
+      return;
+    }
+    // The PC went away while this waited: nothing could stop music started now.
+    if (rm.ui && !rm.ui.isReady()) return;
     const pl = rm.place();
     if (pl.channelId) room.add(pl.channelId, e.userId, nameOf(e.userId), e.text);
     if (forBot && rm.ui) rm.ui.transcript('you', e.woke ? e.command || e.text : e.text);
@@ -990,7 +1033,7 @@ export async function startVoiceStack(
     lastHeard.set(e.userId, { segmentClosedAt: e.segmentClosedAt, sttLatencyMs: e.sttLatencyMs });
     if (e.woke) rm.mixer.duckFor(8_000);
     if (e.woke) log.info('wake', { user: e.userId, sttLatencyMs: e.sttLatencyMs, audioSeconds: e.audioSeconds, ...(e.loose ? { loose: true } : {}) });
-    ctl.heard({ userId: e.userId, text: e.text, woke: e.woke, command: e.command, ...(e.loose ? { loose: true } : {}) });
+    ctl.heard({ userId: e.userId, text: e.text, woke: e.woke, command: e.command, startedAt, ...(e.loose ? { loose: true } : {}) });
   }
   pipeline.on('voiceActivity', (id, ms) => ctl.voiceActivity(id, ms));
   pipeline.on('error', (id, err) => log.warn('listen error', { user: id, error: err.message }));
@@ -1131,11 +1174,17 @@ export async function startVoiceStack(
         listenTo(conn, rm, ctl, () => {
           const on = performance.now() < pttUntil;
           pttUntil = 0;
+          // The call's copy of these words may still be on its way.
+          if (on) pcHasWords.set(conn.owner, performance.now() + 3_000);
           return on;
         });
-        conn.on('ptt', () => (pttUntil = performance.now() + 15_000));
+        conn.on('ptt', () => {
+          pttUntil = performance.now() + 15_000;
+          pcHasWords.set(conn.owner, pttUntil);
+        });
         conn.on('text', (text) => ctl.heard({ userId: conn.owner, text, woke: true, command: text }));
         conn.on('stop', () => {
+          noteStop(rm, conn.owner);
           ctl.cancelAll();
           rm.sound.stop();
         });

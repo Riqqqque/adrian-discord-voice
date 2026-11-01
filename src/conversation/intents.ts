@@ -24,7 +24,7 @@ const PHRASES: [Intent, string[]][] = [
   [
     { kind: 'stop' },
     [
-      'stop', 'stop it', 'stop that', 'stop stop', 'stop talking', 'stop speaking',
+      'stop', 'stop it', 'stop that', 'stop stop', 'stop stop stop', 'i said stop', 'stop talking', 'stop speaking',
       'stop talking to me', 'quit it', 'quit talking', 'shut up', 'shut it', 'shush', 'shh', 'sh', 'hush', 'quiet',
       'be quiet', 'silence', 'zip it', 'pipe down', 'enough', 'that is enough', 'thats enough', 'enough talking',
       'cancel', 'cancel that', 'never mind', 'nevermind', 'forget it', 'forget about it', 'forget that', 'scratch that',
@@ -44,7 +44,7 @@ const PHRASES: [Intent, string[]][] = [
     { kind: 'stop', hold: true },
     [
       'wait', 'wait wait', 'wait stop', 'hold on', 'hold up', 'hold on a sec', 'hold on a second', 'wait a sec', 'wait a second',
-      'one sec', 'one second', 'stop for a sec', 'stop for a second', 'hang on', 'hang on a sec',
+      'one sec', 'one second', 'stop for a sec', 'stop for a second', 'stop it for a sec', 'stop it for a second', 'hang on', 'hang on a sec',
     ],
   ],
   [
@@ -79,7 +79,7 @@ const PHRASES: [Intent, string[]][] = [
 const WEAK_STOP = new Set([
   'done', 'end', 'nothing', 'quiet', 'mute', 'enough', 'not now', 'im done', 'we are done', 'were done', 'thats it', 'that is it',
   'thats all', 'that is all', 'ya', 'para', 'suficiente', 'dung', 'im', 'thoi', 'thoi di',
-  'wait', 'one sec', 'one second', 'hold on', 'hang on',
+  'wait', 'wait wait', 'wait a sec', 'wait a second', 'one sec', 'one second', 'hold on', 'hold up', 'hold on a sec', 'hold on a second', 'hang on', 'hang on a sec',
 ]);
 
 const TABLE = new Map<string, Intent>();
@@ -105,18 +105,43 @@ const CJK: [RegExp, Intent][] = [
 ];
 
 /** Classify a whole utterance (or the command after the wake phrase). */
-/** "Shut the fuck up", "bro just stop talking", "stfu": stop phrases inside a
- *  short utterance that isn't a question about them. */
-const STOP_INSIDE = /\b(shut (the )?(fuck |hell |heck )?up|stfu|stop (talking|speaking|it|that|now)|be quiet|quiet down|shush|shh+|stop stop|enough|cállate|callate|basta)\b/i;
+/** "Shut the fuck up", "bro just stop talking", "stfu": a stop given as an order,
+ *  so it opens the words it's in. "Stop it" has to end them ("stop that guy"). */
+const STOP_ORDER = /^((shut (the )?(fuck |hell |heck )?up|stfu|stop (talking|speaking|stop)|be quiet|quiet down|shush|shh+|(ya )?(callate|basta)|(thats |that is )?enough (talking|of (that|this|it)))\b|stop (it|that|now)( right now)?( please)?$|(thats |that is )enough( for (now|today))?$)/;
+/** "Enough" as the whole order. Still only an everyday word, so it stays weak. */
+const WEAK_ORDER = /^enough( enough| for (now|today))?$/;
+/** Said to her, not about someone: "can you shut up", "you need to stop talking". */
+const TO_HER = /^((can|could|would|will) you|i said( to)?|i (told|asked) you( to)?|im telling you to|i (need|want) you to|you( really)?( (need|have|got) to| gotta| better| should| can)?)( please| just)* /;
 const QUESTION_START = /^(what|how|why|does|do|is|are|can you (tell|explain)|who|when|where|which|define|translate|spell)\b/i;
+/** Interjections a stop can follow: "oh my god shut up", "come on stop it". */
+const BEFORE_STOP = new Set([
+  'my', 'god', 'gods', 'omg', 'jesus', 'christ', 'for', 'the', 'love', 'of', 'sake', 'real', 'seriously', 'literally', 'honestly', 'come', 'on', 'yeah', 'ugh', 'bruh',
+  'damn', 'dang', 'jeez', 'geez', 'wow', 'holy', 'shit', 'fuck', 'fucks', 'fucking', 'lol', 'sorry', 'listen', 'guys', 'everyone', 'everybody', 'oye', 'por', 'favor', 'ay', 'bueno',
+]);
+
+/** Does a clause of this open with a stop, after fillers and the name? Anywhere
+ *  else it's about something else: "not enough ammo", "i told her to shut up". */
+function ordersStop(text: string): Intent | undefined {
+  let found: Intent | undefined;
+  for (const clause of text.split(/[.,!;:]+/)) {
+    let w = words(clause);
+    while (w.length && (LEAD.has(w[0]!) || NAMES.has(w[0]!) || w[0]!.startsWith('adri') || BEFORE_STOP.has(w[0]!))) w = w.slice(1);
+    const said = w.join(' ').replace(TO_HER, '');
+    if (/^(stop|quit) listening( to me)?$/.test(said)) return { kind: 'stop', listen: true };
+    if (STOP_ORDER.test(said)) return { kind: 'stop' };
+    if (WEAK_ORDER.test(said)) found = { kind: 'stop', weak: true };
+  }
+  return found;
+}
 
 export function classify(text: string): Intent | undefined {
   const raw = text.trim().replace(/^(嘿|喂|ねえ|ねぇ)?\s*(adrian|阿德里安|エイドリアン)?[，,、\s]*/i, '');
   for (const [re, intent] of CJK) if (re.test(raw)) return intent;
   const plain = text.trim();
-  if (STOP_INSIDE.test(plain) && plain.split(/\s+/).length <= 8 && !plain.includes('?')) {
+  const order = ordersStop(plain);
+  if (order && plain.split(/\s+/).length <= 8 && !plain.includes('?')) {
     const afterName = plain.replace(/^\W*(hey|ok(ay)?|yo)?\W*(adri[a-zà-ÿ]*)?\W*/i, '');
-    if (!QUESTION_START.test(afterName)) return { kind: 'stop' };
+    if (!QUESTION_START.test(afterName) && classifyMusic(plain)?.kind !== 'play') return order;
   }
   let w = words(text);
   if (w.length === 0 || w.length > 10) return undefined;

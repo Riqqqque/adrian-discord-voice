@@ -148,8 +148,12 @@ export class Reminders {
     return `${r.kind} "${r.text}" due ${at} (in ${left})`;
   }
 
-  tools(): Tool[] {
+  /** `english`: does this person speak English to her? The tools' short
+   *  confirmations are in English, so for anyone else the model says them. */
+  tools(english: (userId: UserId) => boolean = () => true): Tool[] {
     const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : 0);
+    /** How long until it fires, from a "... (in 5 minutes)." result. */
+    const left = (raw: string) => /\(in ([^()]+)\)\.$/.exec(raw)?.[1];
     return [
       {
         spec: {
@@ -174,6 +178,7 @@ export class Reminders {
           const r = this.add(ctx, 'timer', label, this.now() + ms);
           return typeof r === 'string' ? r : `Timer set: ${this.describe(r)}.`;
         },
+        speak: (_a, raw, ctx) => (english(ctx.userId) && raw.startsWith('Timer set:') ? `Timer set for ${left(raw)}.` : undefined),
       },
       {
         spec: {
@@ -202,6 +207,7 @@ export class Reminders {
           const r = this.add(ctx, 'reminder', text, due);
           return typeof r === 'string' ? r : `Reminder set: ${this.describe(r)}.`;
         },
+        speak: (_a, raw, ctx) => (english(ctx.userId) && raw.startsWith('Reminder set:') ? `Reminder set, in ${left(raw)}.` : undefined),
       },
       {
         spec: {
@@ -229,6 +235,7 @@ export class Reminders {
           const hit = this.cancel(ctx.userId, typeof a.which === 'string' ? a.which : '');
           return hit.length ? `Cancelled: ${hit.map((r) => `${r.kind} "${r.text}"`).join(', ')}.` : 'Nothing matched; list them first.';
         },
+        speak: (_a, raw, ctx) => (english(ctx.userId) && raw.startsWith('Cancelled:') ? 'Cancelled.' : undefined),
       },
     ];
   }

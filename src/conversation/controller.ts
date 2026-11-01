@@ -58,6 +58,9 @@ export interface HeardInput {
   text: string;
   woke: boolean;
   command: string;
+  /** When they started saying it (default: now). The listening windows are
+   *  judged at this moment, not when the transcript lands. */
+  startedAt?: number;
   /** Woken loosely (bare name / mid-sentence): the model decides. */
   loose?: boolean;
 }
@@ -68,12 +71,16 @@ interface Request {
   at: number;
   /** A fixed announcement (timer done) instead of a question. */
   announce?: string;
+  /** The reply to a stop: she doesn't listen on after saying it. */
+  closes?: boolean;
   /** Said without the wake phrase, in the follow-up window. */
   followUp?: boolean;
 }
 
 /** Talking on within this long of a request, before she answers, continues it. */
 const CONTINUE_MS = 12_000;
+/** How long the next words are the question after "Yes?". */
+const EXPECT_MS = 20_000;
 
 /** A per-person deadline map that reports every change. */
 class Deadlines extends Map<UserId, number> {
@@ -97,8 +104,9 @@ class Deadlines extends Map<UserId, number> {
 }
 
 export class ConversationController {
-  /** spokeAt: when her answer became audible (unset while she's thinking). */
-  private active: (Request & { ctl: AbortController; started: number; spokeAt?: number; working?: boolean }) | undefined;
+  /** spokeAt: when her answer became audible (unset while she's thinking).
+   *  acted: a tool finished for this request, so running it again would do it twice. */
+  private active: (Request & { ctl: AbortController; started: number; spokeAt?: number; working?: boolean; acted?: boolean }) | undefined;
   private readonly queue: Request[] = [];
   private readonly followUpUntil = new Deadlines((u) => this.d.listenChanged?.(u));
   /** After "Yes?": who it is waiting for, until when. */
@@ -106,6 +114,8 @@ export class ConversationController {
   /** When the bot last finished saying something (for "shut up" right after). */
   private lastSpoke = -Infinity;
   private lastAcceptedWake: { userId: UserId; at: number } | undefined;
+  /** onStopped is running: what it announces is the reply to the stop. */
+  private stopping = false;
 
   constructor(
     private readonly d: ControllerDeps,
@@ -135,15 +145,17 @@ export class ConversationController {
   }
 
   /** She's carrying out this person's order: a song being found, a timer being
-   *  set. Talk or noise now doesn't cancel it or change it; "stop" still does. */
+   *  set. Talk or noise now doesn't cancel it or change it; "stop" still does.
+   *  Once it's over the order has been carried out and is never run again. */
   working(userId: UserId, on: boolean): void {
-    if (this.active?.userId === userId) this.active.working = on;
+    if (this.active?.userId !== userId) return;
+    this.active.working = on;
+    if (!on) this.active.acted = true;
   }
 
-  /** Would words from this person (without the wake phrase) be taken as a request? */
-  listeningTo(userId: UserId): boolean {
-    const now = this.d.now();
-    return (this.expecting.get(userId) ?? 0) > now || (this.followUpUntil.get(userId) ?? 0) > now;
+  /** Would words from this person (without the wake phrase), begun at `at`, be taken as a request? */
+  listeningTo(userId: UserId, at = this.d.now()): boolean {
+    return (this.expecting.get(userId) ?? 0) > at || (this.followUpUntil.get(userId) ?? 0) > at;
   }
 
   /** How much longer words from this person count without the wake phrase (0: not listening). */
@@ -156,14 +168,24 @@ export class ConversationController {
    *  being said. It goes ahead of waiting questions and can be stopped like
    *  an answer by the person it's for. */
   announce(userId: UserId, text: string): void {
-    const req: Request = { userId, command: '', at: this.d.now(), announce: text };
+    const req: Request = { userId, command: '', at: this.d.now(), announce: text, ...(this.stopping ? { closes: true } : {}) };
     if (!this.active) void this.run(req);
     else this.queue.unshift(req);
+  }
+
+  private stopped(userId: UserId): void {
+    this.stopping = true;
+    try {
+      this.d.onStopped?.(userId);
+    } finally {
+      this.stopping = false;
+    }
   }
 
   /** A transcript arrived for a user. */
   heard(e: HeardInput): void {
     const now = this.d.now();
+    const spokenAt = e.startedAt ?? now;
     const text = e.text.trim();
 
     // "stop", "shut up", "never mind", "stop listening", or just the name:
@@ -179,33 +201,42 @@ export class ConversationController {
       if (i >= 0 && a?.userId !== e.userId) {
         this.queue.splice(i, 1);
         this.d.log?.('dequeued', { user: e.userId });
-        if (intent.kind === 'stop') this.d.onStopped?.(e.userId);
+        if (intent.kind === 'stop') this.stopped(e.userId);
         return;
       }
       const mayStop = this.d.isPriority(e.userId) || (this.d.canStop?.(e.userId) ?? false);
       // Anyone may stop it with a clear stop ("stop", "shut up") or with the
       // name; an everyday word ("done", "quiet") only counts from the asker.
       const clearStop = intent.kind === 'stop' && (!intent.weak || e.woke);
-      if (a && (a.userId === e.userId || mayStop || clearStop)) {
+      if (a && (a.userId === e.userId || clearStop || (mayStop && intent.kind === 'name'))) {
         const hold = intent.kind === 'stop' && intent.hold;
         this.d.log?.('cancelled', { user: e.userId, by: hold ? 'wait' : intent.kind === 'stop' ? 'stop phrase' : 'name' });
         a.ctl.abort();
         this.followUpUntil.delete(a.userId);
         this.followUpUntil.delete(e.userId);
+        // What was queued to replace this answer goes with it: their stop is the newest word.
+        if (intent.kind === 'stop') {
+          for (let q = this.queue.length - 1; q >= 0; q--) if (this.queue[q]!.userId === a.userId && !this.queue[q]!.announce) this.queue.splice(q, 1);
+        }
         // "Wait", "hold on": quiet now, but whatever they say next is for her.
         if (hold) this.followUpUntil.set(e.userId, now + this.o.followUpMs);
-        else if (intent.kind === 'stop') this.d.onStopped?.(e.userId);
+        else if (intent.kind === 'stop') {
+          this.expecting.delete(a.userId);
+          this.expecting.delete(e.userId);
+          this.stopped(e.userId);
+        }
         return;
       }
       if (intent.kind === 'stop' && intent.hold) {
         // "Wait" with nothing to stop: keep listening, leave the music alone.
-        if (e.woke || this.listeningTo(e.userId)) this.followUpUntil.set(e.userId, now + this.o.followUpMs);
+        if (e.woke || this.listeningTo(e.userId, spokenAt)) this.followUpUntil.set(e.userId, now + this.o.followUpMs);
         return;
       }
       if (intent.kind === 'stop') {
         // Nothing playing. Still acknowledge when it was clearly meant for the
-        // bot: said with the name, during a follow-up, or right after it spoke.
-        const forBot = e.woke || this.listeningTo(e.userId) || now - this.lastSpoke < 15_000;
+        // bot: said with the name, during a follow-up, or (unless it's just an
+        // everyday word) right after it spoke.
+        const forBot = e.woke || this.listeningTo(e.userId, spokenAt) || (!intent.weak && now - this.lastSpoke < 15_000);
         this.followUpUntil.delete(e.userId); // "stop listening" after an answer
         this.expecting.delete(e.userId);
         // Nothing being said, but music on: "stop" meant the music.
@@ -213,7 +244,7 @@ export class ConversationController {
         // name, or by someone it's talking with, and not just an everyday word.
         // "Stop listening" is about her, not the music.
         if ((e.woke || this.listeningTo(e.userId)) && (!intent.weak || e.woke) && !intent.listen) this.d.stopOther?.(e.userId);
-        if (forBot) this.d.onStopped?.(e.userId);
+        if (forBot) this.stopped(e.userId);
         return;
       }
       if (!e.woke) return;
@@ -222,15 +253,15 @@ export class ConversationController {
     // Still talking while she works on the answer (a pause mid-sentence):
     // it's the rest of the same request, not a new one.
     const a = this.active;
-    if (!e.woke && text && a && a.userId === e.userId && a.command && !a.announce && !a.working && a.spokeAt === undefined && now - a.at < CONTINUE_MS) {
+    if (!e.woke && text && a && a.userId === e.userId && a.command && !a.announce && !a.working && !a.acted && a.spokeAt === undefined && now - a.at < CONTINUE_MS) {
       this.d.log?.('continued', { user: e.userId });
       this.queue.unshift({ userId: e.userId, command: `${a.command} ${text}`, at: now, ...(a.followUp ? { followUp: true } : {}) });
       a.ctl.abort();
       return;
     }
 
-    const inFollowUp = (this.followUpUntil.get(e.userId) ?? 0) > now;
-    if (!e.woke && !inFollowUp) return;
+    const wasExpecting = (this.expecting.get(e.userId) ?? 0) > spokenAt;
+    if (!e.woke && !wasExpecting && (this.followUpUntil.get(e.userId) ?? 0) <= spokenAt) return;
     const command = e.woke ? e.command : text;
 
     // Several people waking at once: only the first valid wake counts.
@@ -247,7 +278,6 @@ export class ConversationController {
     if (e.woke) this.lastAcceptedWake = { userId: e.userId, at: now };
     this.followUpUntil.delete(e.userId);
 
-    const wasExpecting = (this.expecting.get(e.userId) ?? 0) > now;
     this.expecting.delete(e.userId);
     const direct = wasExpecting && !e.woke;
     const judge = (e.woke && e.loose) || (!e.woke && !direct);
@@ -266,7 +296,7 @@ export class ConversationController {
       this.d.log?.('owner first', { user: e.userId, over: bumped.userId });
       const i = this.queue.findIndex((r) => r.userId === e.userId);
       if (i >= 0) this.queue.splice(i, 1);
-      if (!bumped.announce && bumped.command && !this.queue.some((r) => r.userId === bumped.userId)) {
+      if (!bumped.announce && !bumped.acted && bumped.command && !this.queue.some((r) => r.userId === bumped.userId)) {
         this.queue.unshift({ userId: bumped.userId, command: bumped.command, at: this.d.now(), ...(bumped.followUp ? { followUp: true } : {}) });
       }
       this.queue.unshift(req);
@@ -318,8 +348,10 @@ export class ConversationController {
       if (req.announce) await this.d.say(req.announce, ctl.signal);
       else if (req.command) outcome = await this.d.respond(req.userId, req.command, ctl.signal, req.followUp);
       else {
+        // Listening from the start of "Yes?": the words can overlap it.
+        this.expecting.set(req.userId, this.d.now() + EXPECT_MS);
         await this.d.say(this.d.ack?.(req.userId) ?? 'Yes?', ctl.signal);
-        this.expecting.set(req.userId, this.d.now() + 20_000);
+        if (!ctl.signal.aborted) this.expecting.set(req.userId, this.d.now() + EXPECT_MS);
       }
     } catch (e) {
       if (!ctl.signal.aborted) {
@@ -340,7 +372,7 @@ export class ConversationController {
         // An order carried out ("play Drake"): she stops listening, so talk
         // to someone else afterwards isn't taken as more for her.
         this.followUpUntil.delete(req.userId);
-      } else if (!ctl.signal.aborted || req.command === '') {
+      } else if (!ctl.signal.aborted && !req.closes) {
         this.followUpUntil.set(req.userId, this.d.now() + this.o.followUpMs);
       }
       this.next();

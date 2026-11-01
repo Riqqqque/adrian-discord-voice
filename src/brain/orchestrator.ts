@@ -111,6 +111,20 @@ async function quickly(run: Promise<unknown>, ms: number): Promise<boolean> {
   return done;
 }
 
+/** The tool's result, or a rejection the moment `signal` aborts: a stopped
+ *  answer doesn't wait for a tool that ignores it (that tool ends on its own). */
+function untilStopped<T>(run: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const stop = () => reject(new Error('cancelled'));
+    if (signal.aborted) stop();
+    signal.addEventListener('abort', stop, { once: true });
+    void run.then(resolve, reject).finally(() => signal.removeEventListener('abort', stop));
+  });
+}
+
+/** Tokens in some text, roughly: about four characters each. */
+const roughTokens = (text: string) => Math.ceil(text.length / 4);
+
 export class ConversationOrchestrator {
   constructor(
     private readonly llm: LlmProvider,
@@ -189,8 +203,12 @@ export class ConversationOrchestrator {
 
     try {
       for (let round = 0; round <= this.o.maxToolRounds; round++) {
+        // Stopped during a tool or the retry wait: no next model call. An abort
+        // listener added below would never fire for a signal already aborted.
+        if (signal.aborted) throw new Error('cancelled');
         const lastRound = round === this.o.maxToolRounds;
         let roundText = '';
+        let metered = false;
         let calls: { id: string; name: string; arguments: string; extra?: unknown }[] = [];
         const roundCtl = new AbortController();
         const endRound = () => roundCtl.abort();
@@ -233,6 +251,7 @@ export class ConversationOrchestrator {
             } else if (ev.type === 'toolCalls') {
               calls = ev.calls;
             } else {
+              metered = true;
               usage.inputTokens += ev.inputTokens;
               usage.cachedTokens += ev.cachedTokens;
               usage.cacheWriteTokens += ev.cacheWriteTokens ?? 0;
@@ -240,6 +259,14 @@ export class ConversationOrchestrator {
             }
           }
         } catch (e) {
+          // Usage only comes at the end of a stream, so a round stopped partway
+          // never reports it, though the model still bills it. This is an
+          // estimate: everything at the plain input price, no cache discount,
+          // which errs high for the spend caps.
+          if (signal.aborted && !metered) {
+            usage.inputTokens += roughTokens(JSON.stringify([messages, tools.map((t) => t.spec)]));
+            usage.outputTokens += roughTokens(roundText);
+          }
           // One retry with jitter, only for transient errors and only if
           // nothing has been said yet.
           if (!retried && !spoken && !signal.aborted && e instanceof LlmHttpError && e.transient) {
@@ -287,6 +314,7 @@ export class ConversationOrchestrator {
         // Lines the tools say for themselves; null once any tool leaves it to the model.
         let lines: string[] | null = calls.length > 0 ? [] : null;
         for (const c of calls) {
+          if (signal.aborted) throw new Error('cancelled');
           const tool = tools.find((t) => t.spec.name === c.name);
           let result: string;
           if (!tool) {
@@ -301,7 +329,7 @@ export class ConversationOrchestrator {
               if (acts) opts.onWorking?.(true);
               let raw: string;
               try {
-                const run = tool.run(args, ctl, ctx);
+                const run = untilStopped(tool.run(args, ctl, ctx), signal);
                 // A slow lookup (music, search) with nothing said yet: a quick line
                 // so the silence doesn't feel like it didn't hear.
                 if (!spoken && tool.slow && (tool.filler || this.o.filler) && !(await quickly(run, this.o.fillerAfterMs ?? 900))) {
@@ -315,7 +343,7 @@ export class ConversationOrchestrator {
               }
               result = asUntrustedData(c.name, raw);
               if (acts) opts.onActed?.();
-              const line = tool.speak?.(args, raw);
+              const line = tool.speak?.(args, raw, ctx);
               if (line !== undefined && lines) lines.push(line);
               else lines = null;
             } catch (e) {

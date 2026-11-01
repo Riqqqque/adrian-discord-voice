@@ -3,7 +3,7 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import type { StackManager } from '../src/app/manager.js';
+import { StackManager } from '../src/app/manager.js';
 import { createLogger } from '../src/core/logger.js';
 import { UsageLedger } from '../src/limits/usage-ledger.js';
 import { AdminAuth } from '../src/web/auth.js';
@@ -222,6 +222,36 @@ describe('admin web server', () => {
     expect((await call('PUT', '/api/settings', { timezone: 'Mars/Olympus' })).status).toBe(400);
     expect((await call('POST', '/api/restart', {})).status).toBe(200);
     expect(restarts).toBe(1);
+  });
+
+  it('will not save over a config file that does not parse', async () => {
+    const real = new StackManager(configFile, secrets, ledger, log, { secretsFile: secrets.path, stateDir, modelsDir: join(dir, 'models') });
+    const fake = { rawConfig: stack.rawConfig, problems: stack.problems };
+    stack.rawConfig = () => real.rawConfig();
+    stack.problems = () => real.problems();
+    const good = readFileSync(configFile, 'utf8');
+    const broken = good.replace(/\n}\n$/, ',\n}\n');
+    expect(broken).not.toBe(good);
+    writeFileSync(configFile, broken);
+    try {
+      const put = await call('PUT', '/api/settings', { timezone: 'UTC' });
+      expect(put.status).toBe(409);
+      expect(put.data.error).toContain('config.json');
+      expect(readFileSync(configFile, 'utf8')).toBe(broken);
+      const get = await call('GET', '/api/settings');
+      expect(get.status).toBe(409);
+      expect(get.data.error).toContain('config.json');
+      const status = await call('GET', '/api/status');
+      expect(status.status).toBe(200);
+      expect(String(status.data.problems)).toContain('config.json');
+      const restart = await call('POST', '/api/restart', {});
+      expect(restart.status).toBe(200);
+      expect(String(restart.data.problems)).toContain('config.json');
+    } finally {
+      Object.assign(stack, fake);
+      writeFileSync(configFile, good);
+    }
+    expect((await call('PUT', '/api/settings', { timezone: 'UTC' })).status).toBe(200);
   });
 
   it('never returns or logs a secret value', async () => {

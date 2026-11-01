@@ -1,8 +1,10 @@
+import { randomBytes } from 'node:crypto';
 import { mkdtempSync } from 'node:fs';
+import { connect } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { WebSocket } from 'ws';
 import type { SatelliteConnection } from '../src/satellite/connection.js';
 import { SatelliteDevices } from '../src/satellite/devices.js';
@@ -36,8 +38,34 @@ async function rig() {
         setTimeout(() => resolve({ ws, got, bins, closed }), 80);
       });
     });
-  return { d, token, device, server, conns, client };
+  return { d, token, device, server, conns, client, port };
 }
+
+/** Frames the ws client refuses to send, so they go out over a plain socket. */
+const BAD_FRAMES = {
+  unmasked: Buffer.from([0x81, 0x01, 0x41]),
+  'a reserved opcode': Buffer.from([0x83, 0x80, 0, 0, 0, 0]),
+  'more than the size limit': Buffer.from([0x82, 0xff, 0, 0, 0, 0, 0, 0x10, 0, 0]),
+  'broken UTF-8': Buffer.from([0x81, 0x82, 0, 0, 0, 0, 0xff, 0xff]),
+};
+
+/** A correct text frame, masked with zeros. */
+const textFrame = (text: string) => Buffer.concat([Buffer.from([0x81, 0x80 | text.length, 0, 0, 0, 0]), Buffer.from(text)]);
+
+/** A plain TCP client past the upgrade: it sends whatever bytes it's given. */
+function rawClient(port: number) {
+  return new Promise<{ write: (b: Buffer) => void; closed: () => boolean }>((resolve, reject) => {
+    let closed = false;
+    const socket = connect(port, '127.0.0.1', () => {
+      socket.write(`GET /satellite HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: ${randomBytes(16).toString('base64')}\r\n\r\n`);
+    });
+    socket.on('error', () => undefined);
+    socket.on('close', () => (closed = true));
+    socket.once('data', (d) => (String(d).startsWith('HTTP/1.1 101') ? resolve({ write: (b) => socket.write(b), closed: () => closed }) : reject(new Error(String(d)))));
+  });
+}
+
+const settle = () => new Promise((res) => setTimeout(res, 150));
 
 describe('satellite pairing', () => {
   it('keeps only a hash, and checks tokens', () => {
@@ -124,6 +152,111 @@ describe('satellite connection', () => {
     const pending = conn.action('pc_info', {});
     c.ws.close();
     expect(await pending).toEqual({ ok: false, result: 'The PC disconnected.' });
+    await r.server.close();
+  });
+});
+
+describe('satellite bad frames', () => {
+  // Vitest carries on after an uncaught throw; the bot wouldn't, so catch it here.
+  const crashes: string[] = [];
+  const crashed = (e: Error) => crashes.push(e.message);
+  beforeEach(() => {
+    crashes.length = 0;
+    process.on('uncaughtException', crashed);
+  });
+  afterEach(() => {
+    process.off('uncaughtException', crashed);
+  });
+
+  it.each(Object.entries(BAD_FRAMES))('%s before the hello closes that socket and nothing else', async (_name, frame) => {
+    const r = await rig();
+    const other = await r.client({ type: 'hello', token: r.token });
+    const raw = await rawClient(r.port);
+    raw.write(frame);
+    await settle();
+    expect(crashes).toEqual([]);
+    expect(raw.closed()).toBe(true);
+
+    other.ws.send(JSON.stringify({ type: 'ping' }));
+    await settle();
+    expect(other.got).toContainEqual({ type: 'pong' });
+    const { token } = r.d.add('Laptop', OWNER);
+    const good = await r.client({ type: 'hello', token });
+    expect(good.got[0]).toMatchObject({ type: 'welcome', name: 'Laptop' });
+    expect(r.server.connections()).toHaveLength(2);
+    other.ws.close();
+    good.ws.close();
+    await r.server.close();
+  });
+
+  it('survives one sent after a rejected hello', async () => {
+    const r = await rig();
+    const raw = await rawClient(r.port);
+    raw.write(textFrame(JSON.stringify({ type: 'hello', token: 'sat_nope' })));
+    await settle();
+    raw.write(BAD_FRAMES.unmasked);
+    await settle();
+    expect(crashes).toEqual([]);
+    expect(raw.closed()).toBe(true);
+    const good = await r.client({ type: 'hello', token: r.token });
+    expect(good.got[0]).toMatchObject({ type: 'welcome' });
+    good.ws.close();
+    await r.server.close();
+  });
+
+  it('survives one from an address that is shut out', async () => {
+    const r = await rig();
+    const other = await r.client({ type: 'hello', token: r.token });
+    for (let i = 0; i < 5; i++) await (await r.client({ type: 'hello', token: 'sat_wrong' })).closed;
+    const raw = await rawClient(r.port);
+    raw.write(BAD_FRAMES.unmasked);
+    await settle();
+    expect(crashes).toEqual([]);
+    expect(raw.closed()).toBe(true);
+    other.ws.send(JSON.stringify({ type: 'ping' }));
+    await settle();
+    expect(other.got).toContainEqual({ type: 'pong' });
+    other.ws.close();
+    await r.server.close();
+  });
+
+  it('drops a connected PC at once, closes its room, and lets it come back', async () => {
+    const r = await rig();
+    const raw = await rawClient(r.port);
+    raw.write(textFrame(JSON.stringify({ type: 'hello', token: r.token })));
+    await settle();
+    let closed = 0;
+    r.conns[0]!.on('closed', () => closed++);
+    raw.write(BAD_FRAMES.unmasked);
+    await settle();
+    expect(crashes).toEqual([]);
+    expect(closed).toBe(1);
+    expect(raw.closed()).toBe(true);
+    expect(r.server.connections()).toEqual([]);
+    const good = await r.client({ type: 'hello', token: r.token });
+    expect(good.got[0]).toMatchObject({ type: 'welcome' });
+    good.ws.close();
+    await r.server.close();
+  });
+
+  it('treats the text "null" before the hello as a failed hello', async () => {
+    const r = await rig();
+    const bad = await r.client(null);
+    expect(crashes).toEqual([]);
+    expect(bad.got).toContainEqual({ type: 'denied', reason: 'bad token' });
+    expect(await bad.closed).toBe(1008);
+    await r.server.close();
+  });
+
+  it('ignores the text "null" after the hello', async () => {
+    const r = await rig();
+    const good = await r.client({ type: 'hello', token: r.token });
+    good.ws.send('null');
+    good.ws.send(JSON.stringify({ type: 'ping' }));
+    await settle();
+    expect(crashes).toEqual([]);
+    expect(good.got).toContainEqual({ type: 'pong' });
+    good.ws.close();
     await r.server.close();
   });
 });

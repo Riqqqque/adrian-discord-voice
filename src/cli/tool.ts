@@ -20,13 +20,21 @@ import { dirname, join, resolve } from 'node:path';
 import { configProblems } from '../app/manager.js';
 import { AdminAuth } from '../web/auth.js';
 import { KOKORO_VOICES } from '../speech/voices.js';
-import { readJsonFile, SecretsFile, writeJsonFile } from '../web/secrets-file.js';
+import { readConfigFile, readJsonFile, SecretsFile, writeConfigFile } from '../web/secrets-file.js';
 import { SatelliteDevices } from '../satellite/devices.js';
 import { baseConfig } from '../web/settings.js';
 
 const configFile = resolve(process.env.ADRIAN_CONFIG ?? '/etc/adrian/config.json');
 const stateDir = resolve(process.env.ADRIAN_STATE ?? '/var/lib/adrian');
-const raw = readJsonFile<Record<string, unknown>>(configFile) ?? {};
+// A config.json that can't be read must never count as empty: `config` and
+// `voice` save what they read. Keys and the health check keep working, though.
+let raw: Record<string, unknown> = {};
+let rawError: string | undefined;
+try {
+  raw = readConfigFile(configFile) ?? {};
+} catch (e) {
+  rawError = (e as Error).message;
+}
 const secrets = new SecretsFile(
   resolve((typeof raw.secretsFile === 'string' && raw.secretsFile) || process.env.ADRIAN_SECRETS || join(dirname(configFile), 'secrets.env')),
 );
@@ -105,6 +113,7 @@ switch (cmd) {
     break;
   }
   case 'check': {
+    if (rawError) fail(rawError);
     const modelsDir = resolve(process.env.ADRIAN_MODELS ?? join(stateDir, 'models'));
     const p = configProblems(baseConfig({ secretsFile: secrets.path, stateDir, modelsDir }, { secretsFile: secrets.path, ...raw }), secrets.read());
     if (!p.length) console.log('Config is complete.');
@@ -113,11 +122,13 @@ switch (cmd) {
     break;
   }
   case 'port': {
+    if (rawError) process.stderr.write(`warning: ${rawError} Using the default address.\n`);
     const s = (raw.server ?? {}) as { port?: number; host?: string; tls?: unknown };
     console.log(`${s.tls ? 'https' : 'http'} ${s.host ?? '127.0.0.1'} ${s.port ?? 8790}`);
     break;
   }
   case 'voice': {
+    if (rawError) fail(`${rawError} Nothing was changed.`);
     const cur = (raw.voice ?? {}) as { voice?: string; speed?: number };
     if (!arg) {
       console.log(`${cur.voice ?? 'af_heart'} at speed ${cur.speed ?? 1}`);
@@ -126,7 +137,7 @@ switch (cmd) {
     if (!(KOKORO_VOICES as readonly string[]).includes(arg)) fail(`unknown voice "${arg}". English voices: ${KOKORO_VOICES.filter((v) => /^[ab][fm]_/.test(v)).join(' ')}`);
     const speed = process.argv[4] === undefined ? (cur.speed ?? 1) : Number(process.argv[4]);
     if (!(speed >= 0.7 && speed <= 1.4)) fail('speed must be between 0.7 and 1.4');
-    writeJsonFile(configFile, { ...raw, voice: { ...cur, voice: arg, speed } }, 0o640);
+    writeConfigFile(configFile, { ...raw, voice: { ...cur, voice: arg, speed } });
     console.log(`Voice set to ${arg} at speed ${speed}.`);
     break;
   }
@@ -134,6 +145,7 @@ switch (cmd) {
     // config KEY            show a value      config KEY VALUE      set it
     // KEY is a dotted path (brain.extraBody.reasoning_effort, gameServers.2.name).
     if (!arg) fail('usage: config KEY [VALUE]');
+    if (rawError) fail(`${rawError} Nothing was changed.`);
     const path = arg.split('.');
     const ALLOWED = ['brain', 'voice', 'limits', 'identity', 'gameServers', 'timezone', 'priorityRoleIds', 'playbackVolume', 'guildId', 'channelId', 'media', 'silenceMs', 'listen', 'mature', 'languages', 'owners', 'ownerStopReply', 'ownerAck', 'ownerAffection', 'nicknames', 'botGender', 'textChat', 'serverInfo', 'messaging', 'satellite', 'cloudStt', 'autoMemory', 'cloudVoice', 'music'];
     if (!ALLOWED.includes(path[0]!) || /(file|dir)$|^vadmodel$|^secrets/i.test(path[path.length - 1]!)) fail(`"${arg}" can't be changed here (file paths belong to the installer).`);
@@ -160,7 +172,7 @@ switch (cmd) {
     const full = baseConfig({ secretsFile: secrets.path, stateDir, modelsDir }, { secretsFile: secrets.path, ...next });
     const problems = configProblems(full, secrets.read()).filter((p) => p.startsWith('Config '));
     if (problems.length) fail(`Not saved:\n${problems.join('\n')}`);
-    writeJsonFile(configFile, next, 0o640);
+    writeConfigFile(configFile, next);
     console.log(`${arg} = ${JSON.stringify(value)}. Restart to apply: sudo adrian restart`);
     break;
   }

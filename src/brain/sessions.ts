@@ -30,7 +30,9 @@ export class SessionMemory implements MemoryStore {
   append(userId: UserId, turn: Turn): void {
     const s = this.turns.get(userId) ?? { turns: [], lastUsed: 0 };
     s.turns.push({ ...turn });
-    if (s.turns.length > this.maxTurns) s.turns.splice(0, s.turns.length - this.maxTurns);
+    // Dropped in a block, not a turn at a time: the start of the history stays
+    // the same for the next several calls, so its prompt cache keeps hitting.
+    if (s.turns.length > this.maxTurns) s.turns.splice(0, s.turns.length - Math.ceil(this.maxTurns / 2));
     s.lastUsed = this.now();
     this.turns.set(userId, s);
   }

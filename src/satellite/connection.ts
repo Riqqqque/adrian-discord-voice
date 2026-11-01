@@ -70,7 +70,8 @@ export class SatelliteConnection extends EventEmitter implements VoiceTransport 
   private onJson(text: string): void {
     let m: Record<string, unknown>;
     try {
-      m = JSON.parse(text) as Record<string, unknown>;
+      // "null" parses fine, and reading m.type off it would throw.
+      m = (JSON.parse(text) ?? {}) as Record<string, unknown>;
     } catch {
       return;
     }

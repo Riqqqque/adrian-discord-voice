@@ -48,7 +48,8 @@ fetch() { # fetch url sha256 dest
     say "cached $name has the wrong checksum; downloading again"
   fi
   say "Downloading $name"
-  curl -fL --retry 3 --proto '=https' --tlsv1.2 -o "$dest" "$url"
+  # Limits on a stall, not on total time: a big model on a slow line is fine.
+  curl -fL --retry 3 --connect-timeout 30 --speed-time 60 --speed-limit 1024 --proto '=https' --tlsv1.2 -o "$dest" "$url"
   echo "$sha  $dest" | sha256sum -c --status || die "checksum mismatch for $name"
 }
 

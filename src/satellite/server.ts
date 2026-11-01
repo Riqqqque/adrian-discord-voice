@@ -34,6 +34,12 @@ export function startSatelliteServer(o: SatelliteServerOptions): { close(): Prom
 
   wss.on('connection', (ws, req: IncomingMessage) => {
     const addr = req.socket.remoteAddress ?? '?';
+    // A bad frame arrives as 'error', even before a hello or after a refusal.
+    // With nobody listening that throws and takes the whole bot down.
+    ws.on('error', (e) => {
+      o.log.warn('satellite socket error', { addr, error: e.message });
+      ws.terminate();
+    });
     const f = fails.get(addr);
     if (f && f.until > Date.now()) {
       ws.close(1008, 'too many failed attempts');
@@ -56,7 +62,8 @@ export function startSatelliteServer(o: SatelliteServerOptions): { close(): Prom
       clearTimeout(timer);
       let m: Record<string, unknown> = {};
       try {
-        if (!isBinary) m = JSON.parse(String(data)) as Record<string, unknown>;
+        // "null" parses fine, and reading m.type off it would throw.
+        if (!isBinary) m = (JSON.parse(String(data)) ?? {}) as Record<string, unknown>;
       } catch {
         /* falls through to the check below */
       }

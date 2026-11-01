@@ -9,7 +9,7 @@ import type { Logger } from '../core/interfaces.js';
 import type { UsageLedger } from '../limits/usage-ledger.js';
 import { KokoroTts } from '../speech/kokoro.js';
 import { ParakeetStt } from '../speech/sherpa.js';
-import { readJsonFile } from '../web/secrets-file.js';
+import { readConfigFile } from '../web/secrets-file.js';
 import type { SecretsFile } from '../web/secrets-file.js';
 import { baseConfig, type InstallPaths } from '../web/settings.js';
 import { startVoiceStack, type VoiceStack } from './stack.js';
@@ -92,7 +92,7 @@ export class StackManager {
   rawConfig(): Record<string, unknown> {
     // Paths are fixed by the installer; fill them in even before the first
     // settings save (and for setups done only with the CLI).
-    const raw = { secretsFile: this.secrets.path, ...readJsonFile<Record<string, unknown>>(this.configFile) };
+    const raw = { secretsFile: this.secrets.path, ...readConfigFile(this.configFile) };
     return this.paths ? baseConfig(this.paths, raw) : raw;
   }
 
@@ -120,16 +120,16 @@ export class StackManager {
           this.log.warn('stop failed', { error: (e as Error).message });
         }
       }
-      const problems = this.problems();
-      if (problems.length) {
-        this._state = 'setup';
-        this._error = undefined;
-        this.log.info('setup mode', { missing: problems.length });
-        return this._state;
-      }
-      this._state = 'starting';
-      this._error = undefined;
       try {
+        const problems = this.problems(); // throws on a config file that can't be read
+        if (problems.length) {
+          this._state = 'setup';
+          this._error = undefined;
+          this.log.info('setup mode', { missing: problems.length });
+          return this._state;
+        }
+        this._state = 'starting';
+        this._error = undefined;
         const config = this.config()!;
         this.stack = await startVoiceStack(config, this.secrets.read(), this.log, this.ledger, this.models, this.paths?.stateDir);
         this.startedAt = Date.now();

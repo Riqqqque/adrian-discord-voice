@@ -165,8 +165,13 @@ case "$cmd" in
   restore)
     need_root restore
     f=${1:-}; [ -f "$f" ] || die "usage: adrian restore FILE"
-    tar -tzf "$f" | grep -qvE '^(etc/adrian|var/lib/adrian)(/|$)' && die "backup contains paths outside etc/adrian and var/lib/adrian; refusing"
-    tar -tvzf "$f" | grep -q '^[lh]' && die "backup contains links; refusing"
+    # Listed first, never piped: grep -q quits at its first match, tar dies of SIGPIPE,
+    # and pipefail then skips the very die that match should have reached.
+    names=$(tar -tzf "$f") || die "can't read $f; is it a complete backup?"
+    long=$(tar -tvzf "$f") || die "can't read $f; is it a complete backup?"
+    grep -qvE '^(etc/adrian|var/lib/adrian)(/|$)' <<<"$names" && die "backup contains paths outside etc/adrian and var/lib/adrian; refusing"
+    grep -qE '(^|/)\.\.(/|$)' <<<"$names" && die "backup contains .. paths; refusing"
+    grep -q '^[lh]' <<<"$long" && die "backup contains links; refusing"
     refuse_symlinks "$ETC" "$VAR" "$VAR/models"
     systemctl stop "$SERVICE"
     tar -xzf "$f" -C / --no-same-owner
