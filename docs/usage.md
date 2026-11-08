@@ -135,8 +135,8 @@ All read-only.
 ## Steam
 
 From Discord (voice or text) and from a PC:
-- "Which of my friends are online?" / "What are my friends playing?"
-- "Is anyone playing Elden Ring?" Steam only sees games launched through Steam, so Valorant, League or Fortnite won't show unless a friend added them to Steam.
+- "Which of my Steam friends are online?" / "What are my Steam friends playing?" These and wishlists need your account in `steam.accounts`; while no account is linked at all, she only does store prices.
+- "Are any of my Steam friends playing Elden Ring?" "Is anyone playing Valorant?" on its own means people in the Discord server (game nights), not your Steam friends. Steam only sees games launched through Steam, so Valorant, League or Fortnite won't show unless a friend added them to Steam.
 - "Is anything on my wishlist on sale?" Biggest discounts first: five by voice ("and 7 more"), up to twelve in text with the end dates.
 - "Is Elden Ring on sale?" / "How much is Hades II on Steam?" Free-to-play, not out yet, taken off the store, not sold in your region, DLC, and other editions on sale are all said as such. A store link or app number works in text.
 
