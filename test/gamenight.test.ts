@@ -280,19 +280,59 @@ describe('game-night pings', () => {
 
   it('one ping per game per cooldown; another game can go', async () => {
     const r = rig({ optIn: [id(1)] });
+    r.signups.join(id(2), 'Minecraft');
     await r.run({ action: 'ping', game: 'Valorant' }, 'ping everyone');
     r.tick(5 * 60_000);
     expect(await r.run({ action: 'ping', game: 'VALORANT' }, 'ping everyone')).toMatch(/^Not sent: VALORANT pings already went out 5 minutes ago\. The next one can go in 10 minutes\./);
-    expect(await r.run({ action: 'ping', game: 'Minecraft' }, 'ping everyone')).toMatch(/^Pinged/);
+    // Alex was just pinged for Valorant: Minecraft reaches only Sam.
+    expect(await r.run({ action: 'ping', game: 'Minecraft' }, 'ping everyone')).toBe('Pinged 1 person in #general for Minecraft (left out 1 pinged in the last 15 minutes).');
+    expect(r.sent()[1]!.msg.allowedMentions.users).toEqual([id(2)]);
     r.tick(10 * 60_000);
     expect(await r.run({ action: 'ping', game: 'Valorant' }, 'ping everyone')).toMatch(/^Pinged/);
     expect(r.sent()).toHaveLength(3);
   });
 
+  it('a new name for the same game never pings the same people again within the cooldown', async () => {
+    const r = rig({ optIn: [id(1), id(2)] });
+    expect(await r.run({ action: 'ping', game: 'Valorant' }, 'ping everyone')).toMatch(/^Pinged 2 people/);
+    for (const game of ['val', 'valo', 'VCT']) expect(await r.run({ action: 'ping', game }, 'ping everyone')).toBe('Nobody to ping: 2 pinged in the last 15 minutes.');
+    expect(r.sent()).toHaveLength(1);
+    // A ping that pinged nobody costs no cooldown for that game.
+    r.tick(15 * 60_000);
+    expect(await r.run({ action: 'ping', game: 'val' }, 'ping everyone')).toMatch(/^Pinged 2 people/);
+  });
+
+  it('two asks at once (the call and a chat) send one ping', async () => {
+    const r = rig({ optIn: [id(1), id(2)] });
+    let release!: () => void;
+    r.chans.general.send.mockImplementationOnce(() => new Promise((res) => (release = () => res({}))));
+    const first = r.run({ action: 'ping', game: 'Valorant' }, 'ping everyone');
+    const second = r.run({ action: 'ping', game: 'Valorant' }, 'ping everyone', { userId: id(3), speaker: 'Kim' });
+    const other = r.run({ action: 'ping', game: 'Minecraft' }, 'ping everyone', { userId: id(4), speaker: 'Lee' });
+    await new Promise((res) => setTimeout(res, 10));
+    release();
+    expect(await first).toMatch(/^Pinged 2 people/);
+    expect(await second).toMatch(/^Not sent: Valorant pings already went out/);
+    expect(await other).toMatch(/^Nobody to ping: 2 pinged in the last 15 minutes/);
+    expect(r.sent()).toHaveLength(1);
+  });
+
+  it('a bare "ping", a no, or "ping me" never sends without a yes', async () => {
+    const r = rig({ optIn: [id(1)] });
+    expect(await r.run({ action: 'ping', game: 'Valorant' }, "don't ping anyone for valorant yet")).toBe('Ping the people signed up for Valorant?');
+    expect(await r.run({ action: 'ping', game: 'Valorant' }, 'no')).toBe('Ping the people signed up for Valorant?');
+    expect(await r.run({ action: 'ping', game: 'Valorant' }, 'did the ping go out for valorant')).toBe('Ping the people signed up for Valorant?');
+    expect(await r.run({ action: 'ping', game: 'Valorant' }, 'nah')).toBe('Ping the people signed up for Valorant?');
+    expect(await r.run({ action: 'ping', game: 'Valorant' }, 'ping me for valorant')).toBe('Nothing sent: "ping me" is them signing up (join), not pinging others.');
+    expect(r.sent()).toHaveLength(0);
+  });
+
   it('one person can only send so many an hour', async () => {
     const r = rig({ optIn: [id(1)], perUserPerHour: 2 });
     await r.run({ action: 'ping', game: 'A' }, 'ping everyone');
+    r.tick(15 * 60_000); // each person is pinged once per cooldown
     await r.run({ action: 'ping', game: 'B' }, 'ping everyone');
+    r.tick(15 * 60_000);
     expect(await r.run({ action: 'ping', game: 'C' }, 'ping everyone')).toBe("Not sent: that's 2 game-night pings from you in the last hour.");
   });
 
@@ -370,6 +410,37 @@ describe('signing up', () => {
     const out = await r.run({ action: 'signed_up' });
     expect(out).toBe('Signed up for game-night pings: Alex, Sam.');
     expect(out).not.toContain('<@');
+  });
+
+  it('signed_up and who_free look up people not seen since a restart, in one request', async () => {
+    const r = rig({ optIn: [id(1), id(40), id(41), id(42)] });
+    const fetch = vi.fn(async (x: unknown) => {
+      if (typeof x === 'string') return r.members.get(x);
+      // id(42) left the server: Discord returns nobody for it.
+      for (const u of (x as { user: string[] }).user) if (u !== id(42)) r.members.set(u, member(u, `New${u.slice(-2)}`));
+      return r.members;
+    });
+    r.guild.members.fetch = fetch as never;
+    expect(await r.run({ action: 'signed_up' })).toBe('Signed up for game-night pings: Alex, New40, New41.');
+    expect(fetch.mock.calls.filter(([x]) => typeof x !== 'string')[0]![0]).toMatchObject({ user: [id(40), id(41), id(42)] });
+    const fresh = rig({ optIn: [id(40)] });
+    fresh.guild.members.fetch = (async (x: unknown) => {
+      if (typeof x === 'string') return fresh.members.get(x);
+      fresh.members.set(id(40), member(id(40), 'Late'));
+      return fresh.members;
+    }) as never;
+    expect(await fresh.run({ action: 'who_free' })).toContain('Signed up for game-night pings: Late.');
+  });
+
+  it('a lookup that fails says how many it could not name, never "nobody"', async () => {
+    const r = rig({ optIn: [id(40), id(41)] });
+    r.guild.members.fetch = (async (x: unknown) => {
+      if (typeof x === 'string') return r.members.get(x);
+      throw new Error('timed out');
+    }) as never;
+    expect(await r.run({ action: 'signed_up' })).toBe("2 signed up for game-night pings, but I couldn't look up who right now.");
+    r.signups.join(id(1));
+    expect(await r.run({ action: 'signed_up' })).toBe("Signed up for game-night pings: Alex (and 2 more I couldn't look up right now).");
   });
 
   it('a PC with no server of its own uses the home server; someone not in it gets nothing', async () => {

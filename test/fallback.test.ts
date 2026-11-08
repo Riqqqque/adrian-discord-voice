@@ -45,6 +45,33 @@ const counted = (name: string, events: LlmEvent[]): LlmProvider & { calls: numbe
 const answer: LlmEvent[] = [{ type: 'text', delta: 'B' }];
 
 describe('fallback LLM', () => {
+  it('a round with a picture waits for the primary past the stall deadline; without one it falls back', async () => {
+    const slow = (): LlmProvider => ({
+      model: 'slow',
+      async *stream(_m, opts) {
+        await new Promise<void>((res, rej) => {
+          const t = setTimeout(res, 60);
+          opts.signal?.addEventListener('abort', () => (clearTimeout(t), rej(new Error('aborted'))), { once: true });
+        });
+        yield { type: 'text', delta: 'A' };
+      },
+    });
+    const withPicture = [
+      { role: 'user' as const, content: "what's this error" },
+      { role: 'assistant' as const, content: '', toolCalls: [{ id: 's', name: 'pc_screen', arguments: '{}' }] },
+      { role: 'tool' as const, content: 'Here is Notepad.', toolCallId: 's', image: { mime: 'image/jpeg' as const, data: '/9j/2Q==' } },
+    ];
+    let fellBack = 0;
+    const f = new FallbackLlm(slow(), counted('b', answer), () => fellBack++, 20);
+    expect(await collect(f.stream(withPicture, {}))).toEqual(['A']);
+    expect(fellBack).toBe(0);
+    expect(await collect(f.stream([{ role: 'user', content: 'hi' }], {}))).toEqual(['B']);
+    expect(fellBack).toBe(1);
+    // A primary that fails outright still falls back, picture or not.
+    const broken = new FallbackLlm(provider('a', [], 0), counted('b', answer), () => fellBack++, 20);
+    expect(await collect(broken.stream(withPicture, {}))).toEqual(['B']);
+  });
+
   it('uses the primary when it works', async () => {
     const f = new FallbackLlm(provider('a', [{ type: 'text', delta: 'A' }]), provider('b', [{ type: 'text', delta: 'B' }]));
     expect(await collect(f.stream([], {}))).toEqual(['A']);

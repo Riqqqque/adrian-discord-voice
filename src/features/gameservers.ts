@@ -102,7 +102,7 @@ export function gameServerTool(servers: GameServer[], ping = pingMinecraft): Too
   return {
     spec: {
       name: 'game_server_status',
-      description: `Check whether the household's Minecraft servers are up and who is playing. Servers: ${servers.map((s) => s.name).join(', ')}. Leave server empty to check all.`,
+      description: `Check whether the household's Minecraft servers are up and which players are on them (only Minecraft; who in this Discord server is playing a game is game_night). Servers: ${servers.map((s) => s.name).join(', ')}. Leave server empty to check all.`,
       parameters: { type: 'object', properties: { server: { type: 'string' } }, additionalProperties: false },
     },
     run: async (a) => {

@@ -352,6 +352,21 @@ export function whichLine(raw: string): string {
   return `Which one: ${items.slice(0, -1).join(', ')}, or ${items.at(-1)}?`;
 }
 
+/** The question before someone else's link opens. */
+const CONFIRM = 'Open ';
+
+/** "Open "Kim"'s link to example.com on their PC? Ask them..." as she asks it. */
+export function confirmLine(raw: string): string {
+  return raw.replace(/ on their PC\? Ask them, then call .*$/s, ' on your PC?').replace(/"([^"]*)"/g, '$1');
+}
+
+/** "Opened "Kim"'s link to example.com on their PC." as she says it: whose it
+ *  was and where it goes, when it was someone else's. */
+function openedLine(raw: string): string {
+  const other = /^Opened "([^"]*)"'s (.+) on their PC\.$/s.exec(raw);
+  return other ? `Opening ${other[1]}'s ${other[2]} on your PC.` : 'Opening it on your PC.';
+}
+
 /** Their PC's tools for the PC and the call together. */
 export function handoffTools(d: HandoffDeps): Tool[] {
   const now = d.now ?? Date.now;
@@ -435,6 +450,12 @@ export function handoffTools(d: HandoffDeps): Tool[] {
       choices.set(ctx.userId, { list: offer, until: now() + CHOICE_MS });
       return `Which one? ${offer.map((c, i) => `${i + 1}: ${c.label}`).join('; ')}. Ask them, then call send_to_pc again with choice set to the number.`;
     }
+    // Someone else's link, and they didn't say whose: it only opens on their
+    // yes, so a link posted after theirs can't open in their browser unasked.
+    if (first!.thing?.by === 'other' && !hint.trim()) {
+      choices.set(ctx.userId, { list: [first!], until: now() + CHOICE_MS });
+      return `${CONFIRM}${first!.label} on their PC? Ask them, then call send_to_pc again with choice set to 1.`;
+    }
     const r = await open(pc, first!, signal);
     // A newer message she couldn't read may be the one they mean.
     const hidden = !d.readable && first!.thing?.by !== 'self' ? d.things.hiddenSince(guildId, ctx.userId, first!.at) : undefined;
@@ -509,14 +530,15 @@ export function handoffTools(d: HandoffDeps): Tool[] {
     acts: true,
     speak: (a, raw) => {
       if (raw.startsWith('Which one?')) return whichLine(raw);
+      if (raw.startsWith(CONFIRM)) return confirmLine(raw);
       if (raw.startsWith(NOT_DONE) || raw.startsWith('No PC')) return undefined;
-      if (a.action === 'send_to_pc' && raw.startsWith('Opened ') && !raw.includes('(There are')) return 'Opening it on your PC.';
+      if (a.action === 'send_to_pc' && raw.startsWith('Opened ') && !raw.includes('(There are')) return openedLine(raw);
       if (a.action === 'music_to_pc' && raw.startsWith('Moved ')) return "It's on your PC now.";
       if (a.action === 'pc_to_call' && raw.startsWith('Now playing')) return '';
       return undefined;
     },
     // Said as is, and their next words are the answer (the list waits for them).
-    asks: (raw) => raw.startsWith('Which one?'),
+    asks: (raw) => raw.startsWith('Which one?') || (raw.startsWith(CONFIRM) && raw.endsWith('choice set to 1.')),
     run: async (a, signal, ctx) => {
       if (a.action === 'music_to_pc') return musicToPc(signal, ctx);
       if (a.action === 'pc_to_call') return pcToCall(signal, ctx);
@@ -585,6 +607,15 @@ const TO_THE_CALL =
 
 const READ_BACK = 'Tell the call: ';
 
+/** The line opens with their name as a whole word ("Al says...", not "Attention
+ *  all..."): a name anywhere else would let a line sound like hers. */
+export function startsWithName(line: string, name: string | undefined): boolean {
+  const n = name?.trim();
+  if (!n) return false;
+  const head = line.trimStart();
+  return head.toLowerCase().startsWith(n.toLowerCase()) && !/^[\p{L}\p{N}]/u.test(head.slice(n.length));
+}
+
 /** Messages from the PC (or a DM) to the voice call she's in. */
 export function tellCallTool(d: TellCallDeps): Tool {
   const now = d.now ?? Date.now;
@@ -644,7 +675,7 @@ export function tellCallTool(d: TellCallDeps): Tool {
       let spoken = plainText(String(a.spoken ?? ''), d.maxChars + 40);
       // Always from them, by name: a line without it reads as hers. The model
       // may use their Discord name rather than the one the call knows.
-      if (!spoken || ![name, ctx.speaker].some((n) => !!n && spoken.toLowerCase().includes(n.toLowerCase()))) spoken = `${name} says: ${message}`;
+      if (!spoken || ![name, ctx.speaker].some((n) => startsWithName(spoken, n))) spoken = `${name} says: ${message}`;
       const text = `**${escapeMarkdown(name)}** asked me to tell you: ${message}`;
       if (TO_THE_CALL.test(ctx.said ?? '')) return deliver(ctx, spoken, text);
       // Their words never asked for it: only their yes sends it.
@@ -656,4 +687,4 @@ export function tellCallTool(d: TellCallDeps): Tool {
 
 /** Prompt line: when to use these. */
 export const HANDOFF_RULE =
-  "pc_handoff moves things between someone's PC and Discord: \"send that link to my PC\", \"open that on my PC\" and \"put that video on my PC\" are send_to_pc (it works out what \"that\" is; don't ask first, and if it lists choices, ask which); \"play this on my PC instead\" or \"move the music to my PC\" is music_to_pc; \"put what I'm watching into the call\" is pc_to_call. \"Tell the call ...\" or \"ask them if ...\" from someone who isn't in your voice call is tell_call. Say what it did in a few words.";
+  "pc_handoff moves things between someone's PC and Discord: \"send that link to my PC\", \"open that on my PC\" and \"put that video on my PC\" are send_to_pc (it works out what \"that\" is; don't ask first: if it lists choices or asks about someone else's link, ask them that); \"play this on my PC instead\" or \"move the music to my PC\" is music_to_pc; \"put what I'm watching into the call\" is pc_to_call. \"Tell the call ...\" or \"ask them if ...\" from someone who isn't in your voice call is tell_call. Say what it did in a few words.";

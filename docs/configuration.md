@@ -40,7 +40,7 @@ sudo adrian restart                        # most settings apply on restart
 | `satellite.enabled` | `false` | The endpoint PCs connect to (see [pc-app.md](pc-app.md)) |
 | `satellite.bind` | `"0.0.0.0"` | Address that endpoint listens on |
 | `satellite.port` | `8791` | Port that endpoint listens on |
-| `satellite.logTranscripts` | `false` | For fixing misunderstandings: log what PCs hear and what she answers. Leave off otherwise. |
+| `satellite.logTranscripts` | `false` | For fixing misunderstandings: log what PCs hear and what she answers (only the length of an answer after reading the clipboard or the screen, and no window titles). Leave off otherwise. |
 | `satellite.recordDays` | `0` | Keep recordings of requests made at a PC (never side talk) for this many days, in `<state>/pc-recordings`, to test speech-to-text on your own voice. 0 = off. |
 | `satellite.unfinishedWaitMs` | `1200` | At a PC, when a pause sounds mid-sentence (the Smart Turn model), wait this much longer before answering, in ms. 0 = off (only the plain silence wait). |
 | `satellite.quietWhileGaming` | `true` | While a PC app (0.15.6 and later) says its owner is in a game: her name for every turn at that PC, short answers there, and reminders, with their DMs, held until the match ends (timers still ring). See [satellite.md](satellite.md#quiet-while-gaming). |
@@ -126,7 +126,7 @@ With Claude, the bot uses prompt caching. The rules, the tool descriptions and e
 | `gameNight.enabled` | `true` | "Who's free for Valorant?", "who's playing?", "ping everyone for Valorant in 10", "ping me for game night" |
 | `gameNight.channelId` | (unset) | Where pings go. Unset: the chat it's asked from, else the one she last wrote in, else her voice channel's chat, else the system channel. A set channel she can't post in is an error, not a fallback |
 | `gameNight.optIn` | `[]` | Discord IDs always signed up for every game, until they say "stop pinging me" |
-| `gameNight.cooldownMinutes` | `15` | Minutes between pings for the same game (1-240) |
+| `gameNight.cooldownMinutes` | `15` | Minutes between pings for the same game, and before the same person is pinged again for any game (1-240) |
 | `gameNight.maxMentions` | `10` | Most people one ping mentions (1-10) |
 | `gameNight.perUserPerHour` | `4` | Pings one person may send per hour (1-20) |
 | `botGender` | `"none"` | `female` (she/her), `male` (he/him) or `none`: how it talks about itself |
@@ -191,7 +191,7 @@ sudo adrian restart
 | `media.plexUrl` | `http://127.0.0.1:32400` | |
 | `media.sonarrUrl` | `http://127.0.0.1:8989` | |
 | `media.radarrUrl` | `http://127.0.0.1:7878` | |
-| `steam.enabled` | `true` | Steam questions: friends online, wishlist sales, store prices (read-only) |
+| `steam.enabled` | `true` | Steam questions: friends online, wishlist sales, store prices (read-only). Friends and wishlists are offered only once `steam.accounts` has an account; prices work without one |
 | `steam.accounts` | `{}` | Discord user ID → that person's SteamID64, in quotes: `{"123456789012345678": "76561198000000000"}`. A `steamcommunity.com/profiles/…` or `/id/…` link or a custom profile name also works; profile names need `STEAM_API_KEY` to look up |
 | `steam.country` | `"US"` | Store country (two letters). Prices come in its currency |
 | `steam.shareWithServer` | `false` | Let members ask about each other's Steam ("is anything on Alex's wishlist on sale"). Only members with an account in `steam.accounts` can be asked about. Off: everyone gets only their own |
