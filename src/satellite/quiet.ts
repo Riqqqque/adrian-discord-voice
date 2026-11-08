@@ -85,7 +85,7 @@ export class HeldItems {
 
   /** Undefined when their list is full: then it goes out the normal way. */
   add(i: Omit<HeldItem, 'id' | 'at'>): HeldItem | undefined {
-    if (this.list.filter((x) => x.owner === i.owner).length >= HELD_MAX || this.list.length >= HELD_TOTAL_MAX) return undefined;
+    if (this.count(i.owner) >= HELD_MAX || this.list.length >= HELD_TOTAL_MAX) return undefined;
     const item: HeldItem = { ...i, id: randomUUID().slice(0, 8), at: this.now() };
     this.list.push(item);
     this.save();
