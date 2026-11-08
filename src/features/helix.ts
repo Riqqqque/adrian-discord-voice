@@ -77,6 +77,31 @@ const MAX_PAUSE_SEC = 15 * 60;
 /** Helix's wait route is capped at 12 s so it stays inside the gateway's 15 s. */
 export const MAX_WAIT_SEC = 12;
 
+/** The body as text, or undefined once it passes `max` bytes: read in
+ *  pieces and dropped there, so an oversized answer is never held whole. */
+export async function readCapped(res: Response, max: number): Promise<string | undefined> {
+  const declared = Number(res.headers.get('content-length'));
+  if (Number.isFinite(declared) && declared > max) {
+    await res.body?.cancel().catch(() => undefined);
+    return undefined;
+  }
+  if (!res.body) return '';
+  const reader = res.body.getReader();
+  const parts: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > max) {
+      await reader.cancel().catch(() => undefined);
+      return undefined;
+    }
+    parts.push(value);
+  }
+  return Buffer.concat(parts).toString('utf8');
+}
+
 export class HelixClient {
   private readonly base: string;
   private readonly f: typeof fetch;
@@ -128,8 +153,8 @@ export class HelixClient {
     return typeof r.response === 'string' ? r.response : '';
   }
 
-  jobStatus(jobId: string): Promise<HelixJob> {
-    return this.run({ operation: 'job_status', job_id: jobId }, false);
+  jobStatus(jobId: string, signal?: AbortSignal): Promise<HelixJob> {
+    return this.run({ operation: 'job_status', job_id: jobId }, false, signal);
   }
 
   /** The jobs this token started (newest 256): job and server IDs. */
@@ -141,12 +166,12 @@ export class HelixClient {
   }
 
   /** Wait up to `seconds` (max 12) for a job to finish. Doesn't hold the request line. */
-  async waitJob(jobId: string, seconds: number): Promise<HelixJob> {
+  async waitJob(jobId: string, seconds: number, signal?: AbortSignal): Promise<HelixJob> {
     const s = Math.max(1, Math.min(MAX_WAIT_SEC, Math.round(seconds)));
     while (this.waiting >= 2) await new Promise<void>((r) => this.waitQueue.push(r));
     this.waiting++;
     try {
-      return await this.send<HelixJob>('GET', `/api/v1/automation/jobs/${encodeURIComponent(jobId)}/wait?timeout_seconds=${s}`, undefined, false, undefined, (s + 4) * 1000);
+      return await this.send<HelixJob>('GET', `/api/v1/automation/jobs/${encodeURIComponent(jobId)}/wait?timeout_seconds=${s}`, undefined, false, signal, (s + 4) * 1000);
     } finally {
       this.waiting--;
       this.waitQueue.shift()?.();
@@ -179,14 +204,14 @@ export class HelixClient {
         if (NOT_SENT.has(code) || !changes) throw new HelixError({ kind: 'unreachable' });
         throw new HelixError({ kind: 'lost' });
       }
-      let text = '';
+      let text: string | undefined;
       try {
-        text = await res.text();
+        text = await readCapped(res, MAX_BODY);
       } catch {
         if (changes) throw new HelixError({ kind: 'lost' });
         throw new HelixError({ kind: 'unreachable' });
       }
-      if (text.length > MAX_BODY) throw new HelixError({ kind: 'other', status: res.status, code: 'too_large' });
+      if (text === undefined) throw new HelixError({ kind: 'other', status: res.status, code: 'too_large' });
       let json: unknown;
       try {
         json = text ? JSON.parse(text) : {};

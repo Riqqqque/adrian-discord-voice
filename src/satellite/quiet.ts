@@ -6,7 +6,9 @@
 // notification pops up over the game. When the match ends the DMs go and they
 // hear one line about what came in. Held items are kept on disk, per owner, at
 // most 50 for at most 12 hours, and never dropped without going out some
-// other way.
+// other way: an item leaves the file only once its release has run, so one
+// cut short by a restart goes out again after it (its DM only if that hadn't
+// gone yet).
 
 import { readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
@@ -40,9 +42,15 @@ export interface HeldItem {
   dmSent: boolean;
   /** The DM to send when it's released (the record, worded as it was due). */
   dm?: string;
+  /** Being released now. Still on disk until that's done; a restart in
+   *  between releases it again. */
+  releasing?: boolean;
 }
 
+/** Most items held per owner. */
 export const HELD_MAX = 50;
+/** Most held for everyone together, so the file stays small. */
+export const HELD_TOTAL_MAX = 500;
 export const HELD_TTL_MS = 12 * 3_600_000;
 
 /** Held items, saved to disk on every change. */
@@ -56,48 +64,78 @@ export class HeldItems {
     if (!file) return;
     try {
       const d = JSON.parse(readFileSync(file, 'utf8')) as unknown;
-      if (Array.isArray(d)) this.list = d.filter(isItem).slice(-HELD_MAX);
+      if (Array.isArray(d)) {
+        // Newest kept, HELD_MAX per owner. One that was being released when
+        // the process stopped waits to be released again.
+        const per = new Map<UserId, number>();
+        const kept: HeldItem[] = [];
+        for (const i of d.filter(isItem).reverse()) {
+          const n = per.get(i.owner) ?? 0;
+          if (n >= HELD_MAX || kept.length >= HELD_TOTAL_MAX) continue;
+          per.set(i.owner, n + 1);
+          delete i.releasing;
+          kept.push(i);
+        }
+        this.list = kept.reverse();
+      }
     } catch {
       /* none yet */
     }
   }
 
-  /** Undefined when the list is full: then it goes out the normal way. */
+  /** Undefined when their list is full: then it goes out the normal way. */
   add(i: Omit<HeldItem, 'id' | 'at'>): HeldItem | undefined {
-    if (this.list.length >= HELD_MAX) return undefined;
+    if (this.count(i.owner) >= HELD_MAX || this.list.length >= HELD_TOTAL_MAX) return undefined;
     const item: HeldItem = { ...i, id: randomUUID().slice(0, 8), at: this.now() };
     this.list.push(item);
     this.save();
     return item;
   }
 
+  /** Waiting for this person (not counting what is being released). */
   count(owner: UserId): number {
-    return this.list.filter((i) => i.owner === owner).length;
+    return this.list.filter((i) => i.owner === owner && !i.releasing).length;
   }
 
   owners(): UserId[] {
-    return [...new Set(this.list.map((i) => i.owner))];
+    return [...new Set(this.list.filter((i) => !i.releasing).map((i) => i.owner))];
   }
 
-  /** Take everything held for this person, oldest first. */
+  /** Take everything held for this person, oldest first. They stay on disk,
+   *  marked as being released, until `done`. */
   take(owner: UserId): HeldItem[] {
-    const mine = this.list.filter((i) => i.owner === owner);
+    const mine = this.list.filter((i) => i.owner === owner && !i.releasing);
     if (!mine.length) return [];
-    this.list = this.list.filter((i) => i.owner !== owner);
+    for (const i of mine) i.releasing = true;
     this.save();
     return mine;
   }
 
-  /** Take what has waited too long, by owner. */
+  /** Take what has waited too long, by owner (marked like `take`). */
   takeExpired(): Map<UserId, HeldItem[]> {
     const cutoff = this.now() - HELD_TTL_MS;
     const out = new Map<UserId, HeldItem[]>();
-    const old = this.list.filter((i) => i.at <= cutoff);
+    const old = this.list.filter((i) => i.at <= cutoff && !i.releasing);
     if (!old.length) return out;
-    for (const i of old) out.set(i.owner, [...(out.get(i.owner) ?? []), i]);
-    this.list = this.list.filter((i) => i.at > cutoff);
+    for (const i of old) {
+      i.releasing = true;
+      out.set(i.owner, [...(out.get(i.owner) ?? []), i]);
+    }
     this.save();
     return out;
+  }
+
+  /** A taken item changed (its DM went): saved, so a restart won't send it twice. */
+  changed(): void {
+    this.save();
+  }
+
+  /** Their release has run: off the disk. */
+  done(items: readonly HeldItem[]): void {
+    const ids = new Set(items.map((i) => i.id));
+    const before = this.list.length;
+    this.list = this.list.filter((i) => !ids.has(i.id));
+    if (this.list.length !== before) this.save();
   }
 
   private save(): void {
@@ -112,7 +150,7 @@ export class HeldItems {
 
 function isItem(x: unknown): x is HeldItem {
   const i = x as HeldItem;
-  return !!i && typeof i.id === 'string' && typeof i.owner === 'string' && (i.kind === 'reminder' || i.kind === 'message') && typeof i.line === 'string' && typeof i.brief === 'string' && typeof i.at === 'number' && typeof i.dmSent === 'boolean' && (i.dm === undefined || typeof i.dm === 'string');
+  return !!i && typeof i.id === 'string' && typeof i.owner === 'string' && (i.kind === 'reminder' || i.kind === 'message') && typeof i.line === 'string' && typeof i.brief === 'string' && typeof i.at === 'number' && typeof i.dmSent === 'boolean' && (i.dm === undefined || typeof i.dm === 'string') && (i.releasing === undefined || typeof i.releasing === 'boolean');
 }
 
 const GENERIC_REMINDER = 'a reminder came up';
@@ -181,8 +219,8 @@ export class GameQuiet {
   private readonly playing = new Map<string, { pc: QuietPc; game?: string }>();
   /** When each PC connected. */
   private readonly seen = new Map<string, number>();
-  /** When an owner's playing PC went away. */
-  private readonly lost = new Map<UserId, number>();
+  /** When an owner's playing PC went away, and which one. */
+  private readonly lost = new Map<UserId, { at: number; device: string }>();
   private readonly recent = new Map<UserId, { items: HeldItem[]; until: number }>();
   private readonly startedAt: number;
   private timer: NodeJS.Timeout | undefined;
@@ -228,7 +266,19 @@ export class GameQuiet {
 
   disconnected(pc: QuietPc): void {
     this.seen.delete(pc.device.id);
-    if (this.playing.delete(pc.device.id)) this.lost.set(pc.owner, this.now());
+    if (this.playing.delete(pc.device.id)) this.lost.set(pc.owner, { at: this.now(), device: pc.device.id });
+  }
+
+  /** Connected long enough to have said whether it's in a game. */
+  private settled(p: QuietPc, now: number): boolean {
+    return p.isReady() && now - (this.seen.get(p.device.id) ?? -Infinity) >= SETTLE_MS;
+  }
+
+  /** Their PC dropped mid-game under LOST_MS ago and isn't back and settled:
+   *  they may still be playing there, so nothing goes out at another PC yet. */
+  private waitingForLost(owner: UserId, now = this.now()): boolean {
+    const l = this.lost.get(owner);
+    return !!l && now - l.at < LOST_MS && !this.d.pcs().some((p) => p.device.id === l.device && this.settled(p, now));
   }
 
   /** An `activity` message. True when it changed whether that PC is playing. */
@@ -240,7 +290,7 @@ export class GameQuiet {
     } else this.playing.delete(pc.device.id);
     if (was === a.gaming) return false;
     this.d.log?.(a.gaming ? 'pc game started' : 'pc game ended', { device: pc.device.id, held: this.held.count(pc.owner) });
-    if (!a.gaming && !this.ownerPlaying(pc.owner)) this.release(pc.owner, pc);
+    if (!a.gaming && !this.ownerPlaying(pc.owner) && !this.waitingForLost(pc.owner)) this.release(pc.owner, pc);
     return true;
   }
 
@@ -266,6 +316,7 @@ export class GameQuiet {
     for (const i of items) {
       if (i.dmSent || !i.dm || !this.d.dm) continue;
       i.dmSent = await this.d.dm(owner, i.dm).catch(() => false);
+      if (i.dmSent) this.held.changed();
     }
   }
 
@@ -283,16 +334,19 @@ export class GameQuiet {
         await sent;
         if (!heard) await this.d.elsewhere(owner, items, text);
       })
-      .catch(() => undefined);
+      .catch(() => undefined)
+      .finally(() => this.held.done(items));
   }
 
   private away(owner: UserId, items: HeldItem[]): void {
+    if (!items.length) return;
     const text = releaseText(items);
     this.recent.set(owner, { items, until: this.now() + TOLD_MS });
     this.d.log?.('held items released', { count: items.length, at: 'elsewhere' });
     void this.records(owner, items)
       .then(() => this.d.elsewhere(owner, items, text))
-      .catch(() => undefined);
+      .catch(() => undefined)
+      .finally(() => this.held.done(items));
   }
 
   /** Expired items, owners no longer playing, PCs that went away. Runs every
@@ -300,18 +354,24 @@ export class GameQuiet {
   sweep(): void {
     const now = this.now();
     for (const [owner, items] of this.held.takeExpired()) this.away(owner, items);
-    for (const [owner, at] of this.lost) if (now - at > LOST_MS * 4) this.lost.delete(owner);
+    for (const [owner, l] of this.lost) if (now - l.at > LOST_MS * 4) this.lost.delete(owner);
     for (const [id, t] of this.recent) if (t.until <= now) this.recent.delete(id);
     for (const owner of this.held.owners()) {
       if (this.ownerPlaying(owner)) continue;
-      // A PC of theirs that has had time to say whether it's in a game.
-      const pc = this.d.pcs().find((p) => p.owner === owner && p.isReady() && now - (this.seen.get(p.device.id) ?? -Infinity) >= SETTLE_MS);
+      // The PC they were playing on dropped: give it LOST_MS to come back,
+      // even when another of their PCs is here (it would pop the DMs up over the game).
+      if (this.waitingForLost(owner, now)) continue;
+      // A PC of theirs that has had time to say whether it's in a game: the
+      // one that dropped first, if it's back.
+      const lostAt = this.lost.get(owner)?.device;
+      const mine = this.d.pcs().filter((p) => p.owner === owner && this.settled(p, now));
+      const pc = mine.find((p) => p.device.id === lostAt) ?? mine[0];
       if (pc) {
         this.release(owner, pc);
         continue;
       }
       if (this.d.pcs().some((p) => p.owner === owner && p.isReady())) continue; // one is settling
-      if (now - (this.lost.get(owner) ?? this.startedAt) >= LOST_MS) this.away(owner, this.held.take(owner));
+      if (now - (this.lost.get(owner)?.at ?? this.startedAt) >= LOST_MS) this.away(owner, this.held.take(owner));
     }
   }
 }

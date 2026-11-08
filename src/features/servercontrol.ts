@@ -3,11 +3,17 @@
 // model names a server; the config maps it to a Helix instance, so the model
 // never sees or sends an instance ID. Console commands are built only from
 // checked parts. Stop and restart wait for the person's own yes.
+//
+// A job that outlasts the tool's own wait is watched in the background, and
+// the people waiting for it are kept on disk (stateFile): after a restart,
+// in-process or not, the new instance picks the watch up and tells them.
 
+import { readFileSync } from 'node:fs';
 import { PendingYes } from '../brain/tools.js';
 import type { Logger, Tool, ToolContext, UserId } from '../core/interfaces.js';
 import { describeStatus, pingMinecraft, type GameServer, type McStatus } from './gameservers.js';
 import { HelixError, type HelixClient, type HelixDetail, type HelixFailure, type HelixJob } from './helix.js';
+import { writeJsonFile } from '../web/secrets-file.js';
 
 export interface ControlledServer extends GameServer {
   helix?: { instanceId: string; bedrock: boolean; bedrockPrefix: string } | undefined;
@@ -46,6 +52,8 @@ export interface ServerControlDeps {
   ping?: (host: string, port: number) => Promise<McStatus>;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
+  /** Where watched jobs are kept across restarts (`<state>/game-server-jobs.json`). */
+  stateFile?: string | undefined;
   /** For tests: how long the tool itself waits for a job, the poll gap, and so on. */
   timing?: Partial<{ inlineSec: number; pollMs: number; retryMs: number; verifyMs: number; statusCacheMs: number }>;
 }
@@ -210,6 +218,56 @@ interface Running {
   at: number;
   stage?: string;
   askers: Asker[];
+  /** Set once it's watched in the background: then it's saved. */
+  jobId?: string;
+  deadline?: number;
+}
+
+/** A watched job as saved. */
+interface Saved {
+  instanceId: string;
+  action: Lifecycle;
+  name: string;
+  by: string;
+  at: number;
+  jobId: string;
+  deadline: number;
+  askers: Asker[];
+}
+
+/** "Starting" this long means it may be stuck: then stop and restart are allowed. */
+export const STUCK_MS = 10 * 60_000;
+/** A saved watch whose time ran out longer ago than this isn't worth a word. */
+const RESUME_STALE_MS = 60 * 60_000;
+const SAVED_MAX = 20;
+
+/** Minutes it has been starting, when Helix says since when. */
+function startingFor(d: HelixDetail, now: number): number | undefined {
+  const since = Date.parse(d.container_state?.StartedAt ?? '');
+  return Number.isFinite(since) ? Math.max(0, Math.floor((now - since) / 60_000)) : undefined;
+}
+
+const str = (x: unknown): x is string => typeof x === 'string';
+function isAsker(x: unknown): x is Asker {
+  const a = x as Asker;
+  return !!a && str(a.userId) && str(a.speaker) && (a.channelId === undefined || str(a.channelId)) && (a.guildId === undefined || str(a.guildId));
+}
+function isSaved(x: unknown): x is Saved {
+  const j = x as Saved;
+  return (
+    !!j &&
+    str(j.instanceId) &&
+    (j.action === 'start' || j.action === 'stop' || j.action === 'restart') &&
+    str(j.name) &&
+    str(j.by) &&
+    str(j.jobId) &&
+    typeof j.at === 'number' &&
+    typeof j.deadline === 'number' &&
+    Array.isArray(j.askers) &&
+    j.askers.length > 0 &&
+    j.askers.length <= 20 &&
+    j.askers.every(isAsker)
+  );
 }
 
 export class ServerControl {
@@ -223,6 +281,11 @@ export class ServerControl {
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly ping: (host: string, port: number) => Promise<McStatus>;
   private readonly t: { inlineSec: number; pollMs: number; retryMs: number; verifyMs: number; statusCacheMs: number };
+  /** stop() ran: watches end quietly and stay saved for the next instance. */
+  private closed = false;
+  private readonly stopping = new AbortController();
+  /** Saved watches from before a restart, not resumed yet. */
+  private saved: Saved[] = [];
 
   constructor(private readonly d: ServerControlDeps) {
     this.now = d.now ?? Date.now;
@@ -230,6 +293,81 @@ export class ServerControl {
     this.ping = d.ping ?? ((h, p) => pingMinecraft(h, p));
     this.yes = new PendingYes<string>(this.now);
     this.t = { inlineSec: 4, pollMs: 3000, retryMs: 5000, verifyMs: 2500, statusCacheMs: 10_000, ...d.timing };
+    if (d.stateFile) {
+      try {
+        const list = JSON.parse(readFileSync(d.stateFile, 'utf8')) as unknown;
+        if (Array.isArray(list)) this.saved = list.filter(isSaved).slice(0, SAVED_MAX);
+      } catch {
+        /* none yet */
+      }
+    }
+  }
+
+  /** The stack is going away (a restart, a settings save): watches stop
+   *  without a word and stay saved, so the next instance tells them. */
+  stop(): void {
+    this.closed = true;
+    this.stopping.abort();
+  }
+
+  /** Pick up the watches saved before a restart. Call once she can talk
+   *  (after login): a job that finished meanwhile is announced at once. */
+  resume(): void {
+    if (this.closed) return;
+    const list = this.saved;
+    this.saved = [];
+    for (const j of list) {
+      const s = this.d.servers.find((x) => x.helix?.instanceId === j.instanceId);
+      if (!s || !this.d.client || this.running.has(j.instanceId) || this.now() - j.deadline > RESUME_STALE_MS) {
+        this.d.log.info('game server watch dropped after restart', { server: j.name, job: j.jobId, reason: !s ? 'server gone' : !this.d.client ? 'no token' : this.running.has(j.instanceId) ? 'busy' : 'too old' });
+        continue;
+      }
+      const entry: Running = { action: j.action, name: s.name, by: j.by, at: j.at, askers: j.askers };
+      this.running.set(j.instanceId, entry);
+      this.d.log.info('game server watch resumed', { server: s.name, job: j.jobId });
+      void this.watch(j.instanceId, s, entry, j.jobId, j.deadline);
+    }
+    this.persist();
+  }
+
+  /** Save what's watched (and what's still waiting to be resumed). */
+  private persist(): void {
+    if (!this.d.stateFile || this.closed) return;
+    const out: Saved[] = [...this.saved];
+    for (const [instanceId, r] of this.running) {
+      if (!r.jobId || r.deadline === undefined) continue;
+      out.push({ instanceId, action: r.action, name: r.name, by: r.by, at: r.at, jobId: r.jobId, deadline: r.deadline, askers: r.askers.slice(0, 20) });
+    }
+    try {
+      writeJsonFile(this.d.stateFile, out.slice(0, SAVED_MAX));
+    } catch (e) {
+      this.d.log.warn('game server jobs not saved', { error: (e as Error).message.slice(0, 120) });
+    }
+  }
+
+  /** Waits, but ends early when stop() runs. */
+  private pause(ms: number): Promise<void> {
+    if (this.closed) return Promise.resolve();
+    return new Promise((r) => {
+      const done = () => r();
+      this.stopping.signal.addEventListener('abort', done, { once: true });
+      void this.sleep(ms).then(() => {
+        this.stopping.signal.removeEventListener('abort', done);
+        r();
+      });
+    });
+  }
+
+  /** The others who joined this job hear how it went too. */
+  private async tellOthers(entry: Running, first: Asker, text: string): Promise<void> {
+    for (const a of entry.askers) {
+      if (a === first) continue;
+      try {
+        await this.d.announce(a, text);
+      } catch (e) {
+        this.d.log.warn('game server announcement failed', { server: entry.name, user: a.userId, error: (e as Error).message.slice(0, 120) });
+      }
+    }
   }
 
   /** Is a job running on this server (for tests and the status line)? */
@@ -325,9 +463,13 @@ export class ServerControl {
     let doing: Lifecycle = action;
     let lead = '';
     if (action === 'start' && state === 'online') return `${s.name} is already up${players ? `, with ${players} on` : ''}.`;
-    if (action === 'start' && state === 'starting') return `${s.name} is already starting.`;
+    // Starting for a long time may be stuck: then it can be stopped or
+    // restarted (with the usual yes). Fresh starts are left alone.
+    const startMins = state === 'starting' ? startingFor(detail, this.now()) : undefined;
+    const stuck = startMins !== undefined && startMins * 60_000 >= STUCK_MS;
+    if (action === 'start' && state === 'starting') return `${s.name} is already starting${stuck ? `, for ${startMins} minutes now, so it may be stuck. A restart may help` : ''}.`;
     if (action === 'stop' && state === 'stopped') return `${s.name} is already stopped.`;
-    if (action !== 'start' && state === 'starting') return `${s.name} is still starting. Try again once it's up.`;
+    if (action !== 'start' && state === 'starting' && !stuck) return `${s.name} is still starting. Try again once it's up.`;
     if (action === 'restart' && state === 'stopped') {
       // Nobody's on a stopped server: starting it needs no yes.
       doing = 'start';
@@ -338,7 +480,11 @@ export class ServerControl {
       const key = `${doing}:${id}`;
       if (yesFor !== key) {
         const n = players ?? 0;
-        const q = n > 0 ? `${n} ${n === 1 ? 'person is' : 'people are'} on ${s.name}. ${cap(VERB[doing].verb)} it anyway?` : `${cap(VERB[doing].verb)} ${s.name}?`;
+        const q = stuck
+          ? `${s.name} has been starting for ${startMins} minutes, so it may be stuck. ${cap(VERB[doing].verb)} it?`
+          : n > 0
+            ? `${n} ${n === 1 ? 'person is' : 'people are'} on ${s.name}. ${cap(VERB[doing].verb)} it anyway?`
+            : `${cap(VERB[doing].verb)} ${s.name}?`;
         const about = [...new Set([...(doing === 'stop' ? ['stop', 'shut', 'down', 'turn', 'off'] : ['restart', 'reboot']), 'it', 'the', 'server', 'anyway', ...words(s.name)])];
         if (!this.yes.hold(ctx, key, about, 4000)) return 'A question is already waiting for their answer.';
         this.audit(doing, s, a, 'asked', { players: n });
@@ -380,12 +526,15 @@ export class ServerControl {
       if (!jobId) {
         this.running.delete(id);
         this.audit(doing, s, a, `failed: ${f.kind}`);
-        return f.kind === 'lost' ? `I didn't hear back from Helix, so I can't tell whether ${s.name} ${VERB[doing].past}. Check the panel before asking again.` : failText(f, s.name, doing);
+        const text = f.kind === 'lost' ? `I didn't hear back from Helix, so I can't tell whether ${s.name} ${VERB[doing].past}. Check the panel before asking again.` : failText(f, s.name, doing);
+        void this.tellOthers(entry, a, text);
+        return text;
       }
     }
     if (!jobId) {
       this.running.delete(id);
       this.audit(doing, s, a, 'sent, no job');
+      void this.tellOthers(entry, a, `Sent to ${s.name}.`);
       return `${lead ? `${lead} ` : ''}Sent to ${s.name}.`;
     }
     this.audit(doing, s, a, reused ? 'joined running job' : 'started', { job: jobId });
@@ -402,6 +551,8 @@ export class ServerControl {
       this.statusCache.delete(id);
       const text = this.outcome(doing, s.name, job);
       this.audit(doing, s, a, job.status, { job: jobId, ms: this.now() - started });
+      // Anyone who joined while it ran was promised an answer.
+      void this.tellOthers(entry, a, text);
       return lead && job.status === 'complete' ? `${lead} ${text}` : text;
     }
     if (job?.stage) entry.stage = job.stage;
@@ -417,7 +568,10 @@ export class ServerControl {
     const r = this.running.get(id);
     if (!r) return undefined;
     if (r.action === action) {
-      if (!r.askers.some((x) => x.userId === a.userId && x.channelId === a.channelId)) r.askers.push(a);
+      if (!r.askers.some((x) => x.userId === a.userId && x.channelId === a.channelId) && r.askers.length < 20) {
+        r.askers.push(a);
+        this.persist();
+      }
       return `${r.name} is already ${VERB[action].ing}. I'll tell you when ${VERB[action].when}.`;
     }
     const mins = Math.floor((this.now() - r.at) / 60_000);
@@ -441,18 +595,24 @@ export class ServerControl {
    *  job_status polling where the wait route is refused (Helix 1.10.0). */
   private async watch(id: string, s: ControlledServer, entry: Running, jobId: string, deadline: number): Promise<void> {
     const client = this.d.client!;
+    if (this.closed) return void (this.running.get(id) === entry && this.running.delete(id));
+    entry.jobId = jobId;
+    entry.deadline = deadline;
+    this.persist();
+    const signal = this.stopping.signal;
     let useWait = true;
     let text: string | undefined;
     let result = 'gave up';
     try {
-      while (this.now() < deadline && !text) {
+      while (this.now() < deadline && !text && !this.closed) {
         try {
           let job: HelixJob;
           if (useWait) {
-            job = await client.waitJob(jobId, Math.min(12, Math.max(1, Math.ceil((deadline - this.now()) / 1000))));
+            job = await client.waitJob(jobId, Math.min(12, Math.max(1, Math.ceil((deadline - this.now()) / 1000))), signal);
           } else {
-            await this.sleep(this.t.pollMs);
-            job = await client.jobStatus(jobId);
+            await this.pause(this.t.pollMs);
+            if (this.closed) break;
+            job = await client.jobStatus(jobId, signal);
           }
           if (job.stage) entry.stage = job.stage;
           if (job.status === 'complete' || job.status === 'failed') {
@@ -460,6 +620,7 @@ export class ServerControl {
             result = job.status;
           }
         } catch (e) {
+          if (this.closed) break;
           const f = e instanceof HelixError ? e.failure : undefined;
           if (useWait && (f?.kind === 'denied' || (f?.kind === 'gateway' && (f.status === 403 || f.status === 404)))) {
             useWait = false;
@@ -470,9 +631,11 @@ export class ServerControl {
             result = `lost access: ${f.kind}`;
             break;
           }
-          await this.sleep(f?.kind === 'rate' ? Math.min(f.retryAfterSec * 1000, Math.max(0, deadline - this.now())) : this.t.retryMs);
+          await this.pause(f?.kind === 'rate' ? Math.min(f.retryAfterSec * 1000, Math.max(0, deadline - this.now())) : this.t.retryMs);
         }
       }
+      // Stopped: the next instance (or the next start) finishes this one.
+      if (this.closed) return;
       if (!text) {
         // Out of time: look once more before calling it.
         const d = await client.detail(id).catch(() => undefined);
@@ -486,8 +649,9 @@ export class ServerControl {
         if (done) result = 'complete';
       }
     } finally {
-      this.running.delete(id);
+      if (this.running.get(id) === entry) this.running.delete(id);
       this.statusCache.delete(id);
+      this.persist();
     }
     this.d.log.info('game server action', { action: entry.action, server: s.name, by: entry.askers[0]?.userId, result, job: jobId, ms: this.now() - entry.at });
     for (const a of entry.askers) {
@@ -521,9 +685,8 @@ export class ServerControl {
       }
       line = describeStatus(s.name, st) + doing;
     } else if (d.status === 'starting') {
-      const since = Date.parse(d.container_state?.StartedAt ?? '');
-      const mins = Number.isFinite(since) ? Math.floor((this.now() - since) / 60_000) : 0;
-      line = `${s.name}: starting${mins >= 10 ? `, for ${mins} minutes now, so it may be stuck` : ''}${doing}`;
+      const mins = startingFor(d, this.now()) ?? 0;
+      line = `${s.name}: starting${mins * 60_000 >= STUCK_MS ? `, for ${mins} minutes now, so it may be stuck` : ''}${doing}`;
     } else {
       line = `${s.name}: stopped${crashNote(d)}${doing}`;
     }
@@ -640,7 +803,7 @@ export class ServerControl {
       {
         spec: {
           name: 'game_server_status',
-          description: `Check the household's Minecraft servers: up, starting, stopped or crashed, and who is playing. Servers: ${names}. Leave server empty to check all.`,
+          description: `Check the household's Minecraft servers: up, starting, stopped or crashed, and which players are on them (only Minecraft; who in this Discord server is playing a game is game_night). Servers: ${names}. Leave server empty to check all.`,
           parameters: { type: 'object', properties: { server: { type: 'string' } }, additionalProperties: false },
         },
         timeoutMs: 8000,

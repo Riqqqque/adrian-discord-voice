@@ -64,6 +64,7 @@ import { SatelliteDevices } from '../satellite/devices.js';
 import { PcRecorder } from '../satellite/recorder.js';
 import { startSatelliteServer } from '../satellite/server.js';
 import { PC_RULE, pcTools, PowerDownWindow } from '../satellite/tools.js';
+import { answerForLog, PRIVATE_TOOLS } from '../satellite/senses.js';
 import { GameQuiet, gamingLine, HeldItems, reminderBrief, toldLine } from '../satellite/quiet.js';
 import { pcDiscordTools, watchDiscord } from '../features/handoff-discord.js';
 import { MusicStarts, notingStarts } from '../features/handoff.js';
@@ -494,6 +495,11 @@ export async function startVoiceStack(
   let orchestrator: ConversationOrchestrator | undefined;
   let dmOrchestrator: ConversationOrchestrator | undefined;
   let autoMemory: AutoMemory | undefined;
+  /** People whose answer being made read their clipboard or screen: the
+   *  transcript log keeps only its length (cleared when it's logged). */
+  const privateTurns = new Set<UserId>();
+  /** Minecraft server control, when Helix is set up: stopped with the stack. */
+  let control: ServerControl | undefined;
   const brain = config.brain;
   if (brain) {
     const apiKey = brain.apiKeySecret ? secrets.get(brain.apiKeySecret) : undefined;
@@ -514,7 +520,8 @@ export async function startVoiceStack(
             onPowerCancelled: (id, pc) => power.calledOff(id, pc),
             ...(ytForSounds ? { findVideo: (q: string, signal: AbortSignal) => ytForSounds.videoId(q, signal) } : {}),
             ...(searchKey ? { findUrl: (q: string, signal: AbortSignal) => topResultUrl(searchKey, q, signal) } : {}),
-            onCall: (name, args, result) => {
+            onCall: (name, args, result, ctx) => {
+              if (ctx && PRIVATE_TOOLS.has(name)) privateTurns.add(ctx.userId);
               if (config.satellite.logTranscripts) log.info('pc action', { name, args, result: result.slice(0, 200) });
             },
           }),
@@ -560,8 +567,9 @@ export async function startVoiceStack(
       if (config.gameServers.length && config.helix) {
         const hx = config.helix;
         const helixToken = secrets.get('HELIX_TOKEN');
-        const control = new ServerControl({
+        control = new ServerControl({
           servers: config.gameServers,
+          stateFile: stateDir ? join(stateDir, 'game-server-jobs.json') : undefined,
           client: helixToken ? new HelixClient({ url: hx.url, token: helixToken }) : undefined,
           settings: hx,
           isOwner: (id) => isOwner(id),
@@ -997,13 +1005,14 @@ export async function startVoiceStack(
         } finally {
           finished();
           clearTimeout(genTimer);
+          const privateTurn = privateTurns.delete(userId);
           if (said.length) {
             saidAll = said.join(' ');
             lastSpoken.set(userId, said.join(' '));
             const pl = rm.place();
             if (pl.channelId) room.add(pl.channelId, 'bot', `You (answering ${nameOf(userId)})`, said.join(' '));
             rm.ui?.transcript('her', said.join(' '));
-            if (rm.ui && config.satellite.logTranscripts) log.info('pc answer', { room: rm.key, asked: command.slice(0, 300), said: said.join(' ').slice(0, 500) });
+            if (rm.ui && config.satellite.logTranscripts) log.info('pc answer', { room: rm.key, asked: command.slice(0, 300), ...answerForLog(said.join(' '), privateTurn) });
           }
         }
         })(),
@@ -1493,6 +1502,8 @@ export async function startVoiceStack(
     // After the join, so one that came due while offline can be said in the call.
     if (!closing) reminders.start();
     if (!closing) recap.start();
+    // Server jobs watched before a restart: told now that she can talk.
+    if (!closing) control?.resume();
   });
 
   // The manager tries again after a passing failure, every 30 s to 5 min, so a
@@ -1623,6 +1634,7 @@ export async function startVoiceStack(
       reminders.stop();
       quiet.stop();
       recap.stop();
+      control?.stop();
       headsUp.left();
       headsUp.flush();
       music?.stop();

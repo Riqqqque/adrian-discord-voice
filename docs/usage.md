@@ -110,14 +110,14 @@ Everything else goes to the language model.
 With `gameServers` set, you can ask "Is the server up?", "who's on the survival server?" and "how many players are on?". On their own these are read-only status pings.
 
 With Helix server control set up (see [configuration.md](configuration.md#minecraft-server-control-helix)), she also knows when a server is starting, stopped, stuck or crashed, and the owners (plus anyone in `helix.allow`) can say:
-- "Start the survival server." She starts it right away. If that takes more than a few seconds she says "Starting Survival. I'll tell you when it's up." and tells you once it is, or why it failed: in the call, at your PC, in the chat you asked in, or by DM. She stops watching after `helix.startWaitSec` and says so.
-- "Restart Survival." / "Stop Creative." These always ask first: "3 people are on Survival. Restart it anyway?" Only your own yes on your very next turn counts ("yes", "yeah, restart it"); anything else, or someone else's yes, and nothing happens. A stopped server is just started, without the question.
+- "Start the survival server." She starts it right away. If that takes more than a few seconds she says "Starting Survival. I'll tell you when it's up." and tells you once it is, or why it failed: in the call, at your PC, in the chat you asked in, or by DM. She stops watching after `helix.startWaitSec` and says so. If the bot restarts meanwhile (or someone saves the settings), she picks the watch up once she's back and still tells you; if your PC isn't connected again yet, that comes in the chat you asked in or by DM.
+- "Restart Survival." / "Stop Creative." These always ask first: "3 people are on Survival. Restart it anyway?" Only your own yes on your very next turn counts ("yes", "yeah, restart it"); anything else, or someone else's yes, and nothing happens. A stopped server is just started, without the question. While a server is starting she won't stop or restart it, unless it has been starting for 10 minutes or more (it may be stuck): then she asks the same way.
 - "Whitelist Steve on Survival", "take Steve off the whitelist", "who's on the whitelist?". Java names are 3 to 16 letters, numbers or underscores; anything else is refused. For a Bedrock player on a server with `bedrock` on, say it's a Bedrock player, or use the in-game name with its dot (".Gamer_Tag"). She adds the gamertag through Floodgate and checks the whitelist afterwards.
 - "Tell everyone on Survival dinner's ready." She posts it in the game chat as "Alex: dinner's ready": one line, without color codes or @ selectors, up to `helix.sayMaxChars` characters.
 
 Good to know:
 - With one server she uses it; with several and no name, she asks which. A half-heard name ("survivor") finds the closest one.
-- One job per server. If someone asks while a restart runs, she says it's already restarting and tells them too when it's back. A different order has to wait until it's done.
+- One job per server. If someone asks while a restart runs, she says it's already restarting and tells them too when it's back, even when it was quick. A different order has to wait until it's done.
 - If Helix is busy with a backup, an update or a restore on that server, she says so and does nothing; ask again when it's finished.
 - If Helix doesn't answer a start, stop or restart, she never sends it again. She looks for the job, and if she can't find it she says she can't tell and asks you to check the panel.
 - Every order is logged as `game server action`: what, which server, who asked and how it went. A chat message is logged only by its length.
@@ -135,8 +135,8 @@ All read-only.
 ## Steam
 
 From Discord (voice or text) and from a PC:
-- "Which of my friends are online?" / "What are my friends playing?"
-- "Is anyone playing Elden Ring?" Steam only sees games launched through Steam, so Valorant, League or Fortnite won't show unless a friend added them to Steam.
+- "Which of my Steam friends are online?" / "What are my Steam friends playing?" These and wishlists need your account in `steam.accounts`; while no account is linked at all, she only does store prices.
+- "Are any of my Steam friends playing Elden Ring?" "Is anyone playing Valorant?" on its own means people in the Discord server (game nights), not your Steam friends. Steam only sees games launched through Steam, so Valorant, League or Fortnite won't show unless a friend added them to Steam.
 - "Is anything on my wishlist on sale?" Biggest discounts first: five by voice ("and 7 more"), up to twelve in text with the end dates.
 - "Is Elden Ring on sale?" / "How much is Hades II on Steam?" Free-to-play, not out yet, taken off the store, not sold in your region, DLC, and other editions on sale are all said as such. A store link or app number works in text.
 
@@ -242,7 +242,7 @@ With the PC app connected: "send that link to my PC" (the newest link or video y
 
 - **"Who's playing right now?"**, **"who's free for Valorant?"**: who's in voice (muted, deafened, the AFK channel), and with the **Presence** intent on, who's online, idle or on do not disturb, what they're playing, and whether they look like they're in a match or in the menus. That last part is a guess from the game's status text, and she says so. Without the Presence intent she answers from voice alone and says once that she can't see games.
 - **"Ping me for game night"** (or "ping me for Valorant") signs you up; **"stop pinging me"** (or "for Minecraft") takes you off. Only for yourself. People in `gameNight.optIn` start signed up for everything, and their "stop" sticks.
-- **"Get the squad on"**, **"ping everyone for Valorant in 10"**: one message in a text channel, "**Alex** is getting Valorant going in 10 minutes. Who's in?", that @mentions only people signed up for that game. Never @everyone, @here or roles; at most 10 people; not the person asking, bots, people already in voice, people on do not disturb, or anyone who can't see the channel. One ping per game every 15 minutes, and 4 per person an hour. When your words didn't ask for a ping, she asks first.
+- **"Get the squad on"**, **"ping everyone for Valorant in 10"**: one message in a text channel, "**Alex** is getting Valorant going in 10 minutes. Who's in?", that @mentions only people signed up for that game. Never @everyone, @here or roles; at most 10 people; not the person asking, bots, people already in voice, people on do not disturb, or anyone who can't see the channel. One ping per game every 15 minutes, nobody is pinged twice in 15 minutes whatever the game is called, and 4 pings per person an hour. When your words didn't ask for a ping (or said not to), she asks first.
 - From a PC or a DM it means the bot's home server.
 - Turn it off with `gameNight.enabled false`.
 

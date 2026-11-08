@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { ToolContext } from '../src/core/interfaces.js';
-import { callRequestFor, handoffTools, whichLine, LastThings, linksIn, MusicStarts, noteMessage, notingStarts, parsePlayers, tellCallTool, WindowLimiter, type CallMusic, type HandoffDeps, type PcLike, type SeenMessage, type TellCallDeps } from '../src/features/handoff.js';
+import { callRequestFor, handoffTools, startsWithName, whichLine, LastThings, linksIn, MusicStarts, noteMessage, notingStarts, parsePlayers, tellCallTool, WindowLimiter, type CallMusic, type HandoffDeps, type PcLike, type SeenMessage, type TellCallDeps } from '../src/features/handoff.js';
 import type { RequestResult, Track } from '../src/features/music.js';
 
 const RIQUE = '100000000000000001';
@@ -184,7 +184,7 @@ describe('send_to_pc', () => {
     r.post(SAM, 'Sam', 'https://example.com/hidden', SECRET);
     expect(await r.run({ action: 'send_to_pc' })).toMatch(/^There's no link or video/);
     r.post(SAM, 'Sam', 'https://example.com/seen');
-    expect(await r.run({ action: 'send_to_pc' })).toBe('Opened "Sam"\'s link to example.com on their PC.');
+    expect(await r.run({ action: 'send_to_pc', from: 'sam' })).toBe('Opened "Sam"\'s link to example.com on their PC.');
   });
 
   it('two close together: asks which, and the answer picks it', async () => {
@@ -219,12 +219,31 @@ describe('send_to_pc', () => {
     expect(await r.run({ action: 'send_to_pc', choice: 1 })).toMatch(/^That list is gone/);
   });
 
-  it('far apart: the newest, no question', async () => {
+  it('far apart: the newest, no question when it is their own', async () => {
     const r = rig();
     r.post(SAM, 'Sam', 'https://example.com/a');
     r.tick(3 * 60_000);
-    r.post(KIM, 'Kim', 'https://example.com/b');
-    expect(await r.run({ action: 'send_to_pc' })).toBe('Opened "Kim"\'s link to example.com on their PC.');
+    r.post(RIQUE, 'Rique', 'https://example.com/b');
+    expect(await r.run({ action: 'send_to_pc' })).toBe('Opened their own link to example.com on their PC.');
+  });
+
+  it('someone else\'s link they did not name: asks first, and says whose it was', async () => {
+    const r = rig();
+    r.post(RIQUE, 'Rique', 'https://example.com/mine');
+    r.tick(95_000);
+    r.post(KIM, 'Kim', 'https://evil.example/x');
+    const q = await r.run({ action: 'send_to_pc' });
+    expect(q).toBe('Open "Kim"\'s link to evil.example on their PC? Ask them, then call send_to_pc again with choice set to 1.');
+    expect(r.tool.asks!(q)).toBe(true);
+    expect(r.speak({ action: 'send_to_pc' }, q)).toBe("Open Kim's link to evil.example on your PC?");
+    expect(r.actions).toEqual([]);
+    const out = await r.run({ action: 'send_to_pc', choice: 1 });
+    expect(out).toBe('Opened "Kim"\'s link to evil.example on their PC.');
+    expect(r.actions[0]!.args).toEqual({ url: 'https://evil.example/x' });
+    // The confirmation names the sender and the site, never just "it".
+    expect(r.speak({ action: 'send_to_pc' }, out)).toBe("Opening Kim's link to evil.example on your PC.");
+    // Named: no question.
+    expect(await r.run({ action: 'send_to_pc', from: 'kim' })).toBe('Opened "Kim"\'s link to evil.example on their PC.');
   });
 
   it('from narrows it down: a name, "me", or a site', async () => {
@@ -275,7 +294,7 @@ describe('send_to_pc', () => {
     r.post(SAM, 'Sam', 'https://example.com/a');
     r.tick(1000);
     noteMessage(r.things, { authorId: KIM, authorName: 'Kim', bot: false, mine: false, text: '', hasAttachments: false, guildId: GUILD, channelId: GENERAL }, false);
-    const out = await r.run({ action: 'send_to_pc' });
+    const out = await r.run({ action: 'send_to_pc', from: 'sam' });
     expect(out).toContain("newer messages I can't read");
     expect(r.speak({ action: 'send_to_pc' }, out)).toBeUndefined(); // the model passes that on
   });
@@ -426,6 +445,22 @@ describe('tell_call', () => {
     expect(out).toBe('Said it in the call.');
     expect(c.announce).toHaveBeenCalledWith(RIQUE, "Ree-kay says he'll be on in five.");
     expect(c.tool.speak!({}, out, {} as never)).toBe('Told them.');
+  });
+
+  it('their name must open the line as a whole word, not hide inside another one', async () => {
+    const c = call({ limiter: new WindowLimiter(10, 60_000) });
+    const as = (spoken: string, speaker = 'Al') =>
+      c.tool.run({ message: 'everyone has to leave now', spoken }, new AbortController().signal, { userId: RIQUE, speaker, channelId: 'sat:desk', said: 'tell the call everyone has to leave', turn: Math.random() });
+    await as('Attention all, the owner says everyone has to leave now.');
+    expect(c.announce).toHaveBeenLastCalledWith(RIQUE, 'Ree-kay says: everyone has to leave now');
+    await as('Alex says everyone has to leave now.');
+    expect(c.announce).toHaveBeenLastCalledWith(RIQUE, 'Ree-kay says: everyone has to leave now');
+    await as('Hey, Al says everyone has to leave now.');
+    expect(c.announce).toHaveBeenLastCalledWith(RIQUE, 'Ree-kay says: everyone has to leave now');
+    await as('Al says everyone has to leave now.');
+    expect(c.announce).toHaveBeenLastCalledWith(RIQUE, 'Al says everyone has to leave now.');
+    expect(startsWithName('  Al, says hi', 'al')).toBe(true);
+    expect(startsWithName('Someone says hi', '')).toBe(false);
   });
 
   it('a line without their name gets it, so it never sounds like hers', async () => {
