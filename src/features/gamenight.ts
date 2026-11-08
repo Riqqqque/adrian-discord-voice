@@ -295,7 +295,10 @@ export function gameNightTool(d: GameNightDeps): Tool {
     if ('error' in where) return `Not sent: ${where.error}`;
     const ch = where.channel;
     const ids = d.signups.everyone().filter((id) => id !== ctx.userId && d.signups.wants(id, game));
-    const found = await Promise.all(ids.slice(0, 200).map(async (id) => guild.members.cache.get(id) ?? (await guild.members.fetch(id).catch(() => undefined))));
+    // The ones not seen yet, in one request (works without the Server Members intent).
+    const missing = ids.filter((id) => !guild.members.cache.has(id)).slice(0, 100);
+    if (missing.length) await guild.members.fetch({ user: missing, time: 5_000 }).catch(() => undefined);
+    const found = ids.map((id) => guild.members.cache.get(id));
     const present = d.presences ? (id: UserId) => guild.presences.cache.get(id)?.status : () => undefined;
     let skippedVoice = 0;
     let skippedDnd = 0;
@@ -364,7 +367,8 @@ export function gameNightTool(d: GameNightDeps): Tool {
       },
     },
     timeoutMs: 12_000,
-    acts: (a) => a.action === 'ping' || a.action === 'join' || a.action === 'leave',
+    // "Which game?" is a question back: their answer must still be heard.
+    acts: (a) => (a.action === 'ping' && !!String(a.game ?? '').trim()) || a.action === 'join' || a.action === 'leave',
     speak: (a, raw) => (raw.startsWith('Ping ') && raw.endsWith('?') ? raw : a.action === 'ping' && raw.startsWith('Pinged ') && !raw.includes('(') ? 'Pinged them.' : undefined),
     asks: (raw) => raw.startsWith('Ping ') && raw.endsWith('?'),
     run: async (a, _signal, ctx) => {

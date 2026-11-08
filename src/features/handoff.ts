@@ -334,6 +334,24 @@ function describeThing(t: Thing): string {
   return `${JSON.stringify(t.who ?? 'someone')}'s ${what}`;
 }
 
+/** "Which one? 1: "Kim"'s link to example.com; 2: their own YouTube video. Ask
+ *  them..." as she asks it: "Which one: Kim's link to example.com, or your own
+ *  YouTube video?" */
+export function whichLine(raw: string): string {
+  const body = raw.replace(/^Which one\? /, '').replace(/\. Ask them, then call .*$/s, '');
+  const items = body
+    .split(/;\s*(?=\d+: )/)
+    .map((x) =>
+      x
+        .replace(/^\d+: /, '')
+        .replace(/"([^"]*)"/g, '$1')
+        .replace(/^the (.+) you sent them$/, 'the $1 I sent you')
+        .replace(/^their own /, 'your own '),
+    );
+  if (items.length < 2) return 'Which one?';
+  return `Which one: ${items.slice(0, -1).join(', ')}, or ${items.at(-1)}?`;
+}
+
 /** Their PC's tools for the PC and the call together. */
 export function handoffTools(d: HandoffDeps): Tool[] {
   const now = d.now ?? Date.now;
@@ -490,12 +508,15 @@ export function handoffTools(d: HandoffDeps): Tool[] {
     timeoutMs: 25_000,
     acts: true,
     speak: (a, raw) => {
-      if (raw.startsWith(NOT_DONE) || raw.startsWith('No PC') || raw.startsWith('Which one?')) return undefined;
+      if (raw.startsWith('Which one?')) return whichLine(raw);
+      if (raw.startsWith(NOT_DONE) || raw.startsWith('No PC')) return undefined;
       if (a.action === 'send_to_pc' && raw.startsWith('Opened ') && !raw.includes('(There are')) return 'Opening it on your PC.';
       if (a.action === 'music_to_pc' && raw.startsWith('Moved ')) return "It's on your PC now.";
       if (a.action === 'pc_to_call' && raw.startsWith('Now playing')) return '';
       return undefined;
     },
+    // Said as is, and their next words are the answer (the list waits for them).
+    asks: (raw) => raw.startsWith('Which one?'),
     run: async (a, signal, ctx) => {
       if (a.action === 'music_to_pc') return musicToPc(signal, ctx);
       if (a.action === 'pc_to_call') return pcToCall(signal, ctx);
@@ -621,8 +642,9 @@ export function tellCallTool(d: TellCallDeps): Tool {
       const message = plainText(String(a.message ?? ''), d.maxChars);
       if (!message) return 'What should I tell them?';
       let spoken = plainText(String(a.spoken ?? ''), d.maxChars + 40);
-      // Always from them, by name: a line without it reads as hers.
-      if (!spoken || !spoken.toLowerCase().includes(name.toLowerCase())) spoken = `${name} says: ${message}`;
+      // Always from them, by name: a line without it reads as hers. The model
+      // may use their Discord name rather than the one the call knows.
+      if (!spoken || ![name, ctx.speaker].some((n) => !!n && spoken.toLowerCase().includes(n.toLowerCase()))) spoken = `${name} says: ${message}`;
       const text = `**${escapeMarkdown(name)}** asked me to tell you: ${message}`;
       if (TO_THE_CALL.test(ctx.said ?? '')) return deliver(ctx, spoken, text);
       // Their words never asked for it: only their yes sends it.
