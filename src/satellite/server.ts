@@ -27,7 +27,8 @@ export function startSatelliteServer(o: SatelliteServerOptions): { close(): Prom
   const live = new Set<SatelliteConnection>();
   const fails = new Map<string, { n: number; until: number }>();
   // Audio frames are small; anything big is not a satellite.
-  const wss = new WebSocketServer({ host: o.bind, port: o.port, path: '/satellite', maxPayload: 256 * 1024 });
+  // Room for one screen picture (pc_screen: up to 1.5 MB, sent as base64 in JSON).
+  const wss = new WebSocketServer({ host: o.bind, port: o.port, path: '/satellite', maxPayload: 2 * 1024 * 1024 + 64 * 1024 });
 
   wss.on('listening', () => o.log.info('satellite server listening', { bind: o.bind, port: o.port }));
   wss.on('error', (e) => o.log.error('satellite server error', { error: e.message }));

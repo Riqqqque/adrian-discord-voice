@@ -48,7 +48,17 @@ export function toClaude(messages: ChatMessage[]): { system: Anthropic.TextBlock
         out.push({ role: 'assistant', content: m.cache ? [{ type: 'text', text: m.content, ...cc }] : m.content });
       }
     } else if (m.role === 'tool') {
-      const block: Anthropic.ToolResultBlockParam = { type: 'tool_result', tool_use_id: m.toolCallId, content: m.content };
+      // A picture goes beside the text, in the same result.
+      const block: Anthropic.ToolResultBlockParam = m.image
+        ? {
+            type: 'tool_result',
+            tool_use_id: m.toolCallId,
+            content: [
+              { type: 'text', text: m.content },
+              { type: 'image', source: { type: 'base64', media_type: m.image.mime, data: m.image.data } },
+            ],
+          }
+        : { type: 'tool_result', tool_use_id: m.toolCallId, content: m.content };
       const last = out[out.length - 1];
       if (last?.role === 'user' && Array.isArray(last.content) && last.content.every((b) => b.type === 'tool_result')) {
         (last.content as Anthropic.ToolResultBlockParam[]).push(block);

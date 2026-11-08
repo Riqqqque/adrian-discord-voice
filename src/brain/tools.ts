@@ -158,6 +158,8 @@ export function cachedTool(tool: Tool, ttlMs: number, now: () => number = Date.n
       const hit = memo.get(key);
       if (hit && now() - hit.at < ttlMs) return hit.result;
       const result = await tool.run(args, signal, ctx);
+      // Pictures are never kept.
+      if (typeof result !== 'string') return result;
       memo.set(key, { at: now(), result });
       if (memo.size > 50) memo.delete(memo.keys().next().value!);
       return result;

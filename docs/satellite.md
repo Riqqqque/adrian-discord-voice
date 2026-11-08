@@ -50,7 +50,7 @@ Text frames are JSON objects with a `type`. Binary frames are audio.
 | `ptt` | `down: bool` | Push-to-talk: the next thing said is for her, no wake phrase needed (for 15 seconds). |
 | `text` | `text` | A typed question from the window. |
 | `stop` | | Stop talking (button or hotkey). |
-| `action_result` | `id`, `ok`, `result` | Outcome of an `action`. `result` is text for the model. |
+| `action_result` | `id`, `ok`, `result`, optional `image` | Outcome of an `action`. `result` is text for the model (the server keeps at most 9000 characters). `image` (`pc_screen` only): `{ mime, data }`, `mime` `image/jpeg` or `image/png`, `data` base64 of at most 1.5 MB. See [Pictures](#pictures). |
 | `ping` | | Keep-alive; answered with `pong`. |
 
 ### Service → satellite
@@ -91,11 +91,35 @@ a running game.
 | `pc_media` | `play_pause`, `play`, `pause`, `next`, `previous`, `stop`, `status`; optional `app` | Through Windows media sessions (Spotify, browsers, players). `app` picks a player or site by name, and a YouTube, Netflix or Twitch tab counts. Without it, pause, skip and stop go to what's playing, and play to the last one used. `status` says what's playing, and without `app` it lists every player. |
 | `pc_volume` | `get`, `set` (`level` 0-100), `up`, `down`, `mute`, `unmute`; optional `app` or `playing` | Master volume, one app's volume ("mute Discord"), or with `playing: true` every app making sound that could be music or video ("turn my music down"). Games, Discord and other voice chat are left alone. PC apps before 0.15.4 ignore `playing` and change the master volume. |
 | `pc_system` | `lock`, `screen_off`, `sleep`, `restart`, `shutdown`, `cancel_shutdown`; `confirmed` | `sleep`, `restart` and `shutdown` need `confirmed: true`, which isn't in the tool the model sees. The server drops any the model sends, and sets it only when the person's very next turn, in the same place and within 20 seconds, is a plain yes to the fixed question. Restart and shutdown wait 30 seconds and can be cancelled. Each can be turned off on the PC. |
-| `pc_info` | `summary`, `processes` | CPU, memory, disk space, uptime, battery; the busiest programs. |
+| `pc_info` | `summary`, `processes`, `health` | CPU, memory, disk space, uptime, battery; the busiest programs. `health` ("why is my PC slow?") takes one 250 ms sample: CPU load and the busiest programs by CPU, memory and its biggest users, NVIDIA GPU load, video memory and temperature (through the driver's NVML library, loaded only for the call; other GPUs: "GPU stats aren't available"), free space per drive, and a one-line verdict first ("Nothing's struggling.", "Chrome is using 40% CPU."). CPU temperature is never reported: Windows only shows it to admin tools. Closing a hog is `pc_apps close`, which the model only offers. PC apps 0.15.5 and earlier answer `health` with `summary`. |
+| `pc_clipboard` | `read` | The clipboard's text (`CF_UNICODETEXT`), up to 8000 characters, with a note when cut. Refused, without reading it, when a password manager marked it: an `ExcludeClipboardContentFromMonitorProcessing` or `Clipboard Viewer Ignore` format, or `CanIncludeInClipboardHistory` / `CanUploadToCloudClipboard` set to 0. Images and copied files are only described ("an image", "3 copied files"). Retries briefly when another program has the clipboard open. The text is never logged: the transcript log shows only the first line ("The clipboard text (120 characters):"). |
+| `pc_screen` | `window` (default), `monitor`; optional `name` | A JPEG of the window in front (or the next one down when A.D.R.I.A.N.'s own window is in front), of the window `name` matches, or with `monitor` of the whole screen that window is on. Refused while a full-screen app is in front, for games and programs that can't be identified, and for the app's own window (left out of `monitor` pictures). Windows are drawn with `PrintWindow(PW_RENDERFULLCONTENT)`, so a window partly covered still comes out whole; a black picture (DRM) is refused with a reason. Long side at most 1568 px, under 1 MB. |
 
-The satellite's settings list which tools are on, which power actions are
-allowed, and its own named shortcuts (for example a launcher script), which
+The satellite's settings list which tools are on (`clipboard` and `screen`
+included, both on by default), which power actions are allowed, and its own named shortcuts (for example a launcher script), which
 `pc_apps open` can start. Nothing else on the PC can be run.
 
 When no satellite is connected for the asker, every PC tool answers "no PC is
-connected", so the model can say so.
+connected", so the model can say so. A PC app that doesn't know a tool yet
+answers `Unknown PC action …`, which the server turns into "Your PC app needs
+an update for that."
+
+The model only calls `pc_clipboard` and `pc_screen` when the person asks about
+what they copied or what's on their screen, never on its own; what either
+returns is treated as data, not instructions.
+
+### Pictures
+
+A `pc_screen` result carries the picture in `action_result.image`. The server
+checks it before the model sees it: `image/jpeg` or `image/png` only, at most
+1.5 MB decoded (the base64 length is checked first), and the first bytes must
+match the type. A picture that fails is dropped, and the result text says why,
+so the model can say it couldn't see the screen. WebSocket frames may be up to
+2 MiB for this (256 KB in 0.15.5 and earlier).
+
+Claude gets the picture as an image block inside the tool result, for the one
+model call that follows; later tool rounds in the same answer carry only a
+note that it was shown. An OpenAI-compatible model (the fallback) never gets
+it: its tool result says the screen couldn't be read right now, so it says so
+instead of guessing. Pictures are never logged, cached or kept in the
+conversation memory, which holds only what was said.
