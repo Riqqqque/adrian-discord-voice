@@ -47,7 +47,8 @@ import { creatorLines, genderLines, memberLabel } from './identity.js';
 import { registerTextChat } from './textchat.js';
 import { discordTools, RelayLimiter } from '../features/discordinfo.js';
 import { MusicTaste } from '../features/taste.js';
-import { deezerTopTracks, describe as trackName, ffmpegDecoder, MusicPlayer, musicRules, musicState, musicTools, PlexMusicSource, type MusicSource, YoutubeSource, YTM_API } from '../features/music.js';
+import { deezerTopTracks, describe as trackName, ffmpegDecoder, MusicPlayer, musicRules, musicState, musicTools, PlexMusicSource, type MusicSource, whoAsked, YoutubeSource, YTM_API } from '../features/music.js';
+import { modelJudge, type QuizRoom, Quizzes } from '../features/quiz.js';
 import { linksLine, PLAY_THAT_LINK, RecentLinks } from '../features/links.js';
 import { ParakeetStt } from '../speech/sherpa.js';
 import { DiscordVoiceTransport } from '../transport/discord.js';
@@ -340,6 +341,22 @@ export async function startVoiceStack(
   const links = new RecentLinks();
   const games = new PartyGames();
   const room = new RoomTalk();
+  // --- music quiz: one per room, its clips through the room's music player ---
+  const quizTops = mc.topSongs ? deezerTopTracks() : undefined;
+  const quizzes = new Quizzes({ settings: mc.quiz, log, sources: (r) => ({ ...(ytForSounds ? { yt: ytForSounds } : {}), ...(quizTops ? { topTracks: quizTops } : {}), recent: () => r.music.recent, log }) });
+  /** A room as the quiz sees it: it speaks there like a timer going off. */
+  const quizRoom = (rm: Room): QuizRoom | undefined =>
+    rm.music && {
+      key: rm.key,
+      music: rm.music,
+      say: async (text, to) => {
+        if (rm.ui ? !rm.ui.isReady() : !transport.isReady()) return;
+        rm.ui?.transcript('her', text);
+        await (rm.ctl ?? controller).announce(to, text);
+      },
+      people: () => (rm.ui ? Number(rm.ui.isReady()) : spot && transport.isReady() ? humansIn(client.channels.cache.get(spot.channelId) as VoiceBasedChannel | undefined) : 0),
+      nameOf: (id) => (nameOf(id) === 'someone' ? undefined : nameOf(id)),
+    };
   /** Who's in the voice call, so it can talk about and to everyone by name. */
   function rosterLines(channelId: string | undefined, askerId: string): string[] {
     const any = channelId ? client.channels.cache.get(channelId) : undefined;
@@ -371,7 +388,7 @@ export async function startVoiceStack(
       const searchKey = brain.search ? secrets.get(brain.search.apiKeySecret) : undefined;
       if (searchKey) tools.push(tavilySearchTool(searchKey, brain.search?.maxResults));
       tools.push(...reminders.tools((id) => (userLang.get(id) ?? 'en') === 'en'), ...notes.tools((id) => (userLang.get(id) ?? 'en') === 'en'), ...games.tools());
-      if (music) tools.push(...musicTools((ctx) => roomFor(ctx).music, taste, (id) => (userLang.get(id) ?? 'en') === 'en').map(inRoomOnly), ...taste.tools());
+      if (music) tools.push(...musicTools((ctx) => roomFor(ctx).music, taste, (id) => (userLang.get(id) ?? 'en') === 'en').map(inRoomOnly), ...taste.tools(), inRoomOnly(quizzes.tool((ctx) => quizRoom(roomFor(ctx)))));
       if (sounds) tools.push(inRoomOnly(soundTool(sounds)));
       if (satEnabled)
         tools.push(
@@ -435,6 +452,7 @@ export async function startVoiceStack(
           ledger.addCost((inTok * brain.priceInPerM + outTok * brain.priceOutPerM) / 1e6),
         );
       }
+      quizzes.useJudge(modelJudge(llm, (inTok, outTok) => ledger.addCost((inTok * brain.priceInPerM + outTok * brain.priceOutPerM) / 1e6)));
       const brainOptions: OrchestratorOptions = {
         spokenName: 'Adrian',
         writtenName: 'A.D.R.I.A.N.',
@@ -453,7 +471,7 @@ export async function startVoiceStack(
           ...room.context(ctx.channelId, ctx.userId),
           ...notes.context(ctx.userId, ctx.speaker, ctx),
           ...games.context(ctx),
-          ...(roomFor(ctx).music ? [musicState(roomFor(ctx).music!), ...linksLine(links.forPrompt(ctx.userId, ctx.guildId)), ...taste.context(ctx.userId, ctx.speaker)] : []),
+          ...(roomFor(ctx).music ? [musicState(roomFor(ctx).music!), ...quizzes.context(roomFor(ctx).key), ...linksLine(links.forPrompt(ctx.userId, ctx.guildId)), ...taste.context(ctx.userId, ctx.speaker)] : []),
           ...(roomFor(ctx).ui ? [`${ctx.speaker} is talking to you through their PC (A.D.R.I.A.N. satellite), not in the Discord call. Music and sounds play on that PC.`] : []),
         ],
         selectTools: (text, ctx, all) =>
@@ -539,6 +557,8 @@ export async function startVoiceStack(
 
   /** Everyday phrases answered locally (no model call, no cost). True if handled. */
   async function local(rm: Room, userId: UserId, command: string, signal: AbortSignal, onWorking?: (on: boolean) => void): Promise<boolean> {
+    const qr = quizRoom(rm);
+    if (qr && (await quizzes.local(qr, userId, command))) return true;
     if (rm.music && (await localMusic(rm, userId, command, signal, onWorking))) return true;
     if (isTimeQuestion(command)) {
       const t = dateFormat('en-US', { timeZone: config.timezone, hour: 'numeric', minute: '2-digit' }).format(new Date());
@@ -617,7 +637,7 @@ export async function startVoiceStack(
       const fillerTimer = setTimeout(() => (filler = say('On it.').catch(() => undefined)), 900);
       onWorking?.(true);
       const r = await music
-        .playNamed(m.query, m.mode, signal, m.source)
+        .playNamed(m.query, m.mode, signal, m.source, nameOf(userId))
         .catch((e: Error) => ({ ok: false as const, message: signal.aborted ? '' : (log.warn('music failed', { error: e.message }), "I couldn't play that.") }))
         .finally(() => {
           clearTimeout(fillerTimer);
@@ -646,6 +666,24 @@ export async function startVoiceStack(
       case 'stop':
         if (!music.stop()) await say("Nothing's playing.");
         return true;
+      case 'back': {
+        onWorking?.(true);
+        const b = await music
+          .back(signal)
+          .catch(() => undefined)
+          .finally(() => onWorking?.(false));
+        if (b === false) await say("Nothing played before this one.");
+        else if (!b && !signal.aborted) await say("I couldn't play that one again.");
+        return true;
+      }
+      case 'who':
+        await say(whoAsked(music));
+        return true;
+      case 'volume': {
+        const to = music.setVolume(m.level / 100);
+        log.info('music volume', { to, by: userId });
+        return true;
+      }
       case 'skip': {
         // The next song may need a lookup, and the skip can't be taken back.
         onWorking?.(true);
@@ -1142,6 +1180,8 @@ export async function startVoiceStack(
     const gapMs = prev ? Math.round(e.segmentClosedAt - (e.audioSeconds ?? 0) * 1000 - prev.segmentClosedAt) : undefined;
     if (gapMs !== undefined && gapMs >= 0 && gapMs < 1_200) log.info('quick continuation', { user: e.userId, gapMs, woke: e.woke });
     lastHeard.set(e.userId, { segmentClosedAt: e.segmentClosedAt, sttLatencyMs: e.sttLatencyMs, vadClosedAt: e.vadClosedAt, closedBy: e.closedBy, turnCheckMs: e.turnCheckMs, holdMs: e.holdMs, groqMs });
+    // A music quiz round is open: anyone's answer counts without her name.
+    if (!e.woke && quizzes.heard(rm.key, e.userId, e.text)) return;
     if (e.woke) rm.mixer.duckFor(8_000);
     if (e.woke) log.info('wake', { user: e.userId, sttLatencyMs: e.sttLatencyMs, audioSeconds: e.audioSeconds, ...(e.loose ? { loose: true } : {}) });
     ctl.heard({ userId: e.userId, text: e.text, woke: e.woke, command: e.command, startedAt, ...(e.loose ? { loose: true } : {}) });
@@ -1222,9 +1262,20 @@ export async function startVoiceStack(
   const voiceCommands = registerVoiceCommands({ client, log, current: () => spot, voiceReady: () => transport.isReady(), moveTo: (s) => moveTo(s), leave: () => moveTo(undefined), allowedGuilds: config.allowedGuilds });
   // Outside the home channel, leave after 10 minutes with nobody else there.
   let emptySince: number | undefined;
+  /** Since when music (or a quiz) has played to an empty call. */
+  let unheardSince: number | undefined;
   const idleTimer = setInterval(() => {
     const away = spot && (spot.guildId !== config.guildId || spot.channelId !== config.channelId);
     const ch = spot ? (client.channels.cache.get(spot.channelId) as VoiceBasedChannel | undefined) : undefined;
+    // Nobody left to hear it: after 2 minutes the music stops, autoplay with it.
+    if ((music?.nowPlaying || quizzes.of(discordRoom.key)) && humansIn(ch) === 0) {
+      unheardSince ??= Date.now();
+      if (Date.now() - unheardSince >= 120_000) {
+        unheardSince = undefined;
+        quizzes.end(discordRoom.key);
+        if (music?.stop()) log.info('music stopped', { how: 'empty call' });
+      }
+    } else unheardSince = undefined;
     if (!away || humansIn(ch) > 0) {
       emptySince = undefined;
       return;

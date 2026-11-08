@@ -52,7 +52,16 @@ describe('artist requests', () => {
     expect(r).toMatchObject({ ok: true, artist: 'Drake', added: 24 });
     expect(p.upNext).toHaveLength(24);
     expect(p.upNext.every((t) => t.artist === 'Drake' && !t.ref && t.query?.endsWith(' Drake'))).toBe(true);
-    expect(looked.filter((u) => u.includes('#songs'))).toHaveLength(2); // the first, and the next one getting ready
+    // Their top song (looked up beside Deezer; by someone else here, so not used), the first, and the next one getting ready.
+    expect(looked.filter((u) => u.includes('#songs'))).toHaveLength(3);
+  });
+
+  it("starts with their own top song, found while Deezer answered, and doesn't play it twice", async () => {
+    const { p } = player(async () => ({ artist: 'Artist', titles: songs(30).map((t, i) => (i === 3 ? 'Song' : t)), known: true }));
+    const r = await p.request('artist', 'artist', 'now', sig());
+    expect(r).toMatchObject({ ok: true, artist: 'Artist' });
+    expect(p.nowPlaying).toMatchObject({ title: 'Song', artist: 'Artist', id: 'vidsong0001' });
+    expect(p.upNext.some((t) => t.title === 'Song')).toBe(false);
   });
 
   it('changes the order between requests', async () => {
