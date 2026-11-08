@@ -14,7 +14,7 @@ export interface PcToolDeps {
   /** The address of the best web page for a description ("JEI mod on modrinth"). */
   findUrl?(query: string, signal: AbortSignal): Promise<string | undefined>;
   /** Every action sent to a PC (for the optional transcript log). */
-  onCall?(name: string, args: Record<string, unknown>, result: string): void;
+  onCall?(name: string, args: Record<string, unknown>, result: string, ctx?: ToolContext): void;
   /** This PC took a restart or shutdown: it can be called off for 30 seconds. */
   onPowerDown?(userId: UserId, pc: SatelliteConnection): void;
   /** This PC called one off, because the model asked it to. */
@@ -182,13 +182,13 @@ export function pcTools(d: PcToolDeps): Tool[] {
       delete args.play;
       if (name === 'pc_open' && typeof args.url === 'string' && args.url.trim() && !webUrl(args.url.trim())) {
         const refused = `${NOT_DONE}Only public http and https web addresses can be opened.`;
-        d.onCall?.(name, args, refused);
+        d.onCall?.(name, args, refused, ctx);
         return refused;
       }
       const r = await pc.action(name, args, name === 'pc_screen' ? 19_000 : undefined);
       const out = forModel(r, NOT_DONE);
       const result = typeof out === 'string' ? out : out.text;
-      d.onCall?.(name, args, forLog(name, result));
+      d.onCall?.(name, args, forLog(name, result), ctx);
       if (r.ok && name === 'pc_system' && (a.action === 'restart' || a.action === 'shutdown')) d.onPowerDown?.(ctx.userId, pc);
       if (r.ok && name === 'pc_system' && a.action === 'cancel_shutdown') d.onPowerCancelled?.(ctx.userId, pc);
       return out;
