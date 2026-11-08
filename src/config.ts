@@ -265,7 +265,7 @@ export const PocConfigSchema = z.object({
         /** The same server in Helix (its Advanced tab shows the ID). */
         helix: z
           .object({
-            instanceId: z.string().regex(/^[a-z][a-z0-9]{0,15}:[A-Za-z0-9._-]{1,128}$/, 'must be the exact Helix server ID, like helix:0b9a6c7e-...'),
+            instanceId: z.string().regex(/^[a-z][a-z0-9]{0,15}:[A-Za-z0-9._-]{1,128}$/, 'must be the exact Helix server ID from its Advanced tab, like helix:<instance id>'),
             /** Geyser and Floodgate let Bedrock players join. */
             bedrock: z.boolean().default(false),
             /** Floodgate's username-prefix: Bedrock names start with it in game. */
