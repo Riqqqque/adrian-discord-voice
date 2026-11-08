@@ -161,6 +161,58 @@ describe('satellite connection', () => {
   });
 });
 
+describe('satellite frame sizes', () => {
+  const big = 300 * 1024; // past the 256 KB a satellite gets before its welcome
+
+  it('closes a big first frame, even one with the right token, and keeps the PC out', async () => {
+    const r = await rig();
+    const c = await r.client({ type: 'hello', token: r.token, pad: 'x'.repeat(big) });
+    expect([1006, 1009]).toContain(await c.closed);
+    expect(c.got).not.toContainEqual(expect.objectContaining({ type: 'welcome' }));
+    expect(r.conns).toEqual([]);
+    // Not a token guess: the real PC still gets in at once.
+    const good = await r.client({ type: 'hello', token: r.token });
+    expect(good.got[0]).toMatchObject({ type: 'welcome' });
+    good.ws.close();
+    await r.server.close();
+  });
+
+  it('once welcomed, lets only an action_result be big', async () => {
+    const r = await rig();
+    const texts: string[] = [];
+    const c = await r.client({ type: 'hello', token: r.token });
+    r.conns[0]!.on('text', (t) => texts.push(t));
+    let closed = 0;
+    r.conns[0]!.on('closed', () => closed++);
+    // A big result for no pending action is ignored, not a reason to drop the PC.
+    c.ws.send(JSON.stringify({ type: 'action_result', id: '99', ok: true, result: 'x'.repeat(big) }));
+    c.ws.send(JSON.stringify({ type: 'ping' }));
+    await settle();
+    expect(c.got).toContainEqual({ type: 'pong' });
+    expect(closed).toBe(0);
+    c.ws.send(JSON.stringify({ type: 'text', text: 'y'.repeat(big) }));
+    expect([1006, 1009]).toContain(await c.closed);
+    expect(texts).toEqual([]);
+    expect(closed).toBe(1);
+    await r.server.close();
+  });
+
+  it('closes big audio and big junk from a welcomed PC', async () => {
+    const r = await rig();
+    const audio = await r.client({ type: 'hello', token: r.token });
+    let heard = 0;
+    r.conns[0]!.on('audio', () => heard++);
+    audio.ws.send(Buffer.alloc(big));
+    expect([1006, 1009]).toContain(await audio.closed);
+    expect(heard).toBe(0);
+    const junk = await r.client({ type: 'hello', token: r.token });
+    junk.ws.send(`{not json${' '.repeat(big)}`);
+    expect([1006, 1009]).toContain(await junk.closed);
+    expect(r.server.connections()).toEqual([]);
+    await r.server.close();
+  });
+});
+
 describe('satellite bad frames', () => {
   // Vitest carries on after an uncaught throw; the bot wouldn't, so catch it here.
   const crashes: string[] = [];
