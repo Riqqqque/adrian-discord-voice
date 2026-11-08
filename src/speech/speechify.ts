@@ -106,6 +106,8 @@ export interface SpeechifyOptions {
   model: string;
   /** Longest wait for one sentence before falling back, ms. */
   timeoutMs: number;
+  /** Speaking rate on top of the speed each call asks for. Default 1. */
+  speed?: number;
   budget: CharBudget;
   log: { info(m: string, f?: object): void; warn(m: string, f?: object): void };
   fetch?: typeof fetch;
@@ -168,12 +170,13 @@ export class SpeechifyTts implements TextToSpeech {
     this.lastCall = this.now();
     const timeout = AbortSignal.timeout(timeoutMs);
     const limit = signal ? AbortSignal.any([signal, timeout]) : timeout;
-    const bytes = await this.post(text, speed, limit).catch((e: Error) => {
+    const rate = speed * (this.o.speed ?? 1);
+    const bytes = await this.post(text, rate, limit).catch((e: Error) => {
       // A reused socket can die without warning. That says nothing about the
       // API, so one more try at once; only a second failure pauses the voice.
       if (limit.aborted || !connectionBroke(e)) throw e;
       this.o.log.info('cloud voice connection broke; trying again', { error: (e.cause as Error).message });
-      return this.post(text, speed, limit);
+      return this.post(text, rate, limit);
     });
     const samples = pcm16ToFloat(bytes);
     if (!samples.length) throw new Error('speechify returned no audio');

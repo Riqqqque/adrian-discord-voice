@@ -171,7 +171,7 @@ export async function startVoiceStack(
   const voiceBudget = new CharBudget(stateDir ? join(stateDir, 'voice-usage.json') : undefined, cv?.monthlyChars ?? 0, config.timezone);
   const cloud =
     cv && cloudKey
-      ? new SpeechifyTts({ apiKey: cloudKey, voiceId: cv.voiceId, model: cv.model, timeoutMs: cv.timeoutMs, budget: voiceBudget, log }, tts, voice.voice)
+      ? new SpeechifyTts({ apiKey: cloudKey, voiceId: cv.voiceId, model: cv.model, timeoutMs: cv.timeoutMs, speed: cv.speed, budget: voiceBudget, log }, tts, voice.voice)
       : undefined;
   if (cloud) log.info('cloud voice', { provider: cv!.provider, voice: cv!.voiceId, usedChars: voiceBudget.used(), monthlyChars: cv!.monthlyChars });
   const CLOUD = 'cloud:en';
@@ -1124,7 +1124,8 @@ export async function startVoiceStack(
         turnCheckMs: e.turnCheckMs,
         holdMs: e.holdMs,
         ...(e.loose ? { loose: true } : {}),
-        ...(config.satellite.logTranscripts ? { text: e.text } : {}),
+        // Side talk stays out of the log, even when transcripts are on.
+        ...(config.satellite.logTranscripts && forBot ? { text: e.text } : {}),
       });
     // Data for tuning the end-of-speech wait: the same person talking again
     // right after their last segment closed may mean it was cut mid-sentence.
@@ -1184,8 +1185,10 @@ export async function startVoiceStack(
                   },
                 });
               } finally {
-                // Side talk it stayed out of doesn't count toward the hourly limit (its cost does).
-                if (!silent) ledger.noteRequest(userId);
+                // Every model call counts toward the hourly limit, side talk she stayed
+                // out of too: otherwise "adrian" in every message spends the shared
+                // daily budget with no per-person check.
+                ledger.noteRequest(userId);
                 if (usage) ledger.addCost(costUsd(usage));
               }
             })();

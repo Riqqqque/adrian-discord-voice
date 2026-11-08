@@ -26,7 +26,7 @@ const result = (name, x) => {
   if (name === 'pc_apps')
     return x.action === 'open' ? `Opening ${x.name} (app).` : x.action === 'close' ? `Asked ${x.name} to close.` : x.action === 'focus' ? `Switched to ${x.name}.` : 'Open: Chrome, Discord, Spotify.';
   if (name === 'pc_volume')
-    return x.app ? `${x.app} ${x.action === 'mute' ? 'muted' : 'at 40%'}.` : x.action === 'set' ? `Volume ${x.level}%.` : x.action === 'get' ? 'Volume is 50%.' : `Volume ${x.action === 'up' ? 60 : 40}%.`;
+    return x.playing ? 'Spotify down to 40%.' : x.app ? `${x.app} ${x.action === 'mute' ? 'muted' : 'at 40%'}.` : x.action === 'set' ? `Volume ${x.level}%.` : x.action === 'get' ? 'Volume is 50%.' : `Volume ${x.action === 'up' ? 60 : 40}%.`;
   if (name === 'pc_media')
     return x.action === 'status' ? 'Spotify is playing “Nights” by Frank Ocean.' : x.action === 'next' ? 'Spotify is playing “Ivy” by Frank Ocean.' : 'Spotify is paused on “Nights” by Frank Ocean.';
   if (name === 'pc_info') return x.action === 'processes' ? 'Using the most memory: chrome 4.2 GB (24 processes), valorant 3.1 GB, discord 1.4 GB (6 processes).' : RESULTS.pc_info;
@@ -85,8 +85,13 @@ async function power(order, action, question, answer = 'yes', goes = true) {
 
 await ask('open spotify', call('pc_apps', (x) => a(x) === 'open' && /spotify/i.test(x.name)));
 await ask('close discord', call('pc_apps', (x) => a(x) === 'close' && /discord/i.test(x.name)));
-await ask('turn it down a little', call('pc_volume', (x) => a(x) === 'down' || a(x) === 'set'));
-await ask('set the volume to 30', call('pc_volume', (x) => a(x) === 'set' && Number(x.level) === 30));
+await ask('turn it down a little', call('pc_volume', (x) => (a(x) === 'down' || a(x) === 'set') && x.playing === true));
+// 2026-11-08: "turn my music down" turned the master volume down, game and Discord with it.
+await ask('turn down my music', call('pc_volume', (x) => (a(x) === 'down' || a(x) === 'set') && x.playing === true && !x.app));
+await ask('can you turn the music up a bit', call('pc_volume', (x) => a(x) === 'up' && x.playing === true));
+await ask('mute the video', call('pc_volume', (x) => a(x) === 'mute' && x.playing === true));
+await ask('turn the whole pc volume down', call('pc_volume', (x) => (a(x) === 'down' || a(x) === 'set') && !x.playing && !x.app));
+await ask('set the volume to 30', call('pc_volume', (x) => a(x) === 'set' && Number(x.level) === 30 && !x.playing));
 await ask('mute discord', call('pc_volume', (x) => a(x) === 'mute' && /discord/i.test(x.app ?? '')));
 await ask('skip this song', (cs) => call('pc_media', (x) => a(x) === 'next')(cs) || cs.some((k) => k.name === 'music.skip'));
 await ask('pause it', call('pc_media', (x) => ['pause', 'play_pause'].includes(a(x))));
@@ -105,7 +110,7 @@ await power('shut down my computer', 'shutdown', 'Shut down the PC?');
 await power('restart my pc', 'restart', 'Restart the PC?', 'yes restart it');
 await power('put my computer to sleep', 'sleep', 'Put the PC to sleep?', 'yeah go ahead');
 await power('shut down my computer', 'shutdown', 'Shut down the PC?', 'no wait', false);
-await ask('open valorant and turn my music down', (cs) => call('pc_apps', (x) => /valorant/i.test(x.name))(cs) && cs.some((k) => k.name === 'pc_volume' || k.name === 'pc_media'));
+await ask('open valorant and turn my music down', (cs) => call('pc_apps', (x) => /valorant/i.test(x.name))(cs) && cs.some((k) => (k.name === 'pc_volume' && k.args.playing === true) || k.name === 'pc_media'));
 // Chat: short, natural, no lists.
 await ask("how's it going", (cs, out) => cs.length === 0 && out.length > 0 && !/\n- |\*\*/.test(out), 35);
 await ask('tell me something interesting about octopuses', (cs, out) => cs.length === 0 && !/\n- |\*\*/.test(out), 70);

@@ -22,7 +22,10 @@ UNIT=/etc/systemd/system/adrian-voice.service
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 refuse_symlinks "$VAR" "$VAR/models"
-install -d -m 0750 -o adrian -g adrian "$VAR" "$VAR/models"
+install -d -m 0750 -o adrian -g adrian "$VAR"
+# Root's from the start: install -d would hand an existing folder to the service
+# account until the chown below, long enough to plant a link for root to follow.
+install -d -m 0750 -o root -g adrian "$VAR/models"
 install_models "$VAR/models" "$tmp"
 chown -R root:adrian "$VAR/models"
 chmod -R u=rwX,g=rX,o= "$VAR/models"

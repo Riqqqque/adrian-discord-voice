@@ -25,8 +25,9 @@ export function trimSilence(x: Float32Array, rate: number): Float32Array {
 /** Seconds of silence to put after a chunk that ends with this text. */
 export function pauseAfter(text: string): number {
   const t = text.trimEnd();
-  if (/[?!]["')\]]?$/.test(t)) return 0.36;
-  if (/[.]["')\]]?$/.test(t)) return 0.32;
-  if (/[,;:—–-]$/.test(t)) return 0.16;
-  return 0.08; // cut mid-phrase (very long sentence): barely a breath
+  // Shorter since 2026-11-08: the longer ones made her sound slow between sentences.
+  if (/[?!]["')\]]?$/.test(t)) return 0.26;
+  if (/[.]["')\]]?$/.test(t)) return 0.22;
+  if (/[,;:—–-]$/.test(t)) return 0.12;
+  return 0.06; // cut mid-phrase (very long sentence): barely a breath
 }

@@ -40,11 +40,6 @@ export function startSatelliteServer(o: SatelliteServerOptions): { close(): Prom
       o.log.warn('satellite socket error', { addr, error: e.message });
       ws.terminate();
     });
-    const f = fails.get(addr);
-    if (f && f.until > Date.now()) {
-      ws.close(1008, 'too many failed attempts');
-      return;
-    }
     const fail = (reason: string) => {
       const prev = fails.get(addr);
       const n = (prev && prev.until < Date.now() && prev.n >= MAX_FAILS ? 0 : (prev?.n ?? 0)) + 1;
@@ -68,7 +63,17 @@ export function startSatelliteServer(o: SatelliteServerOptions): { close(): Prom
         /* falls through to the check below */
       }
       const device = m.type === 'hello' ? o.devices.verify(m.token) : undefined;
-      if (!device) return fail('bad token');
+      if (!device) {
+        // The lockout is for wrong tokens only: behind a proxy every PC shares an
+        // address, and a stranger's guesses mustn't keep the real one out.
+        const f = fails.get(addr);
+        if (f && f.until > Date.now()) {
+          ws.close(1008, 'too many failed attempts');
+          return;
+        }
+        if (fails.size > 1000) for (const [k, v] of fails) if (v.until < Date.now()) fails.delete(k);
+        return fail('bad token');
+      }
       fails.delete(addr);
       // One live connection per device: a reconnect replaces the old one.
       for (const c of live) if (c.device.id === device.id) void c.disconnect();
