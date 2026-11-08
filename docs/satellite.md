@@ -157,7 +157,7 @@ What would reach the PC unasked, and what happens to it:
 | what | while playing |
 |---|---|
 | Timers they set | Ring as usual: they set them to ring. |
-| Reminders said at that PC | Held. The DM that goes with every PC reminder still goes at once, as the record. |
+| Reminders said at that PC | Held, and so is the DM that goes with every PC reminder (a Discord notification would pop up over the game). The DM goes when the reminder is released, worded as it was due ("late" if it was). |
 | Reminders due while they're audible in her call | Said in the call, as usual. |
 | Messages from other people (`message_member`) | Never spoken at a PC: they're a DM or an @mention in Discord, so nothing changes. |
 | Answers to their own stop ("Okay.", a restart called off) | Said: they asked. |
@@ -166,14 +166,16 @@ When the game ends, held items come as one line: "While you were playing:"
 and what they were, for one or two; for more, a summary ("...your laundry
 reminder came up, and 2 reminders came up. Ask me if you want the details.")
 with the details in her context for 30 minutes. If they're audible in her call
-then, she says it there. A line that isn't heard goes by DM (for items that
-don't have one yet).
+then, she says it there. Each held reminder's own DM goes out at the same
+time, whether or not the line was heard: it's the record. A line that isn't
+heard goes by DM too, for items whose DM didn't go.
 
 Held items are kept per owner in `<state>/held-while-gaming.json`, at most 50
 (another one is said at once), and survive a restart. If the PC drops in a
 game, they wait 2 minutes for it: back and still playing, they stay held; back
 and not playing, she says them there; still gone, they go out the way they
-would with no PC (her call if they're in it, else a DM of what had none).
+would with no PC: their DMs, then her call if they're in it, else a DM of
+what had none.
 Anything held for 12 hours goes out that way too, even mid-game. After a
 restart with nobody back, the saved ones go after 2 minutes the same way.
 
