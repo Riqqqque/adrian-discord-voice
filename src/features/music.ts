@@ -1026,6 +1026,7 @@ export class MusicPlayer {
     try {
       return await this.fulfil(kind, q, mode, signal, prefer, asked);
     } catch (e) {
+      if (e instanceof Unplayable && !signal.aborted) return { ok: false, message: e.said };
       // The bot check came up on this very request: it goes the way the next one will.
       if (!(e instanceof YoutubePaused) || signal.aborted) throw e;
       return this.fulfil(kind, q, mode, signal, prefer, asked);
