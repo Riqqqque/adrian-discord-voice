@@ -124,6 +124,9 @@ export class YoutubePaused extends Error {
   }
 }
 
+/** yt-dlp's words for a video that will never play here, whenever asked. */
+const WONT_PLAY = /confirm your age|age[- ]restrict|inappropriate|video unavailable|this video is (?:private|unavailable|no longer available)|private video|has been removed|removed by the uploader|account associated with this video has been terminated|not (?:made )?available in your country|blocked (?:it )?in your country|copyright (?:claim|grounds)|members[- ]only|join this channel/i;
+
 /** YouTube has the song but won't play it here (age-restricted, removed, blocked). */
 export class Unplayable extends Error {
   /** What to tell the person. */
@@ -302,8 +305,9 @@ export class YoutubeSource implements MusicSource {
       t = await this.resolve(hit.id, sig);
     } catch (e) {
       // Found, but YouTube won't play that one (age-restricted, removed, blocked
-      // here): another upload of the same song usually plays.
-      if (sig.aborted || e instanceof YoutubePaused) throw e;
+      // here): another upload of the same song usually plays. Anything else (a
+      // network blip, a throttled page) goes as it came: asking again may work.
+      if (sig.aborted || e instanceof YoutubePaused || !WONT_PLAY.test((e as Error).message)) throw e;
       t = await this.otherUpload(query, hit.id, sig, e as Error);
     }
     if (t) timings.set(t, { ...timings.get(t), via: hit.via, searchMs });
@@ -821,6 +825,8 @@ export interface PlayerOptions {
   stallMs?: number;
   /** A track started (the weekly recap counts them). */
   onPlayed?: (track: Track) => void;
+  /** See LEAD_WAIT_MS (tests). */
+  leadWaitMs?: number;
 }
 
 export type PlayResult = { ok: true; track: Track; queued: number } | { ok: false; message: string };
@@ -835,6 +841,9 @@ export type RequestResult =
 /** A stop came while this was being looked up. */
 const STOPPED = { ok: false, message: 'Stopped.' } as const;
 
+/** How long an artist's list waits for their top song's own lookup after
+ *  Deezer has answered. Past this, that lookup is retrying other uploads. */
+const LEAD_WAIT_MS = 1_500;
 /** Unplayable tracks in a row before giving up (like Yusic). */
 /** Unplayable tracks in a row before giving up (private or removed videos). */
 const MAX_FAILS = 5;
@@ -1069,17 +1078,27 @@ export class MusicPlayer {
         // so the wait for Deezer costs nothing.
         // Queued behind a song, nothing waits on it: no lookup ahead.
         const starts = mode === 'now' || !this.current;
+        const leadCtl = new AbortController();
+        const leadSig = AbortSignal.any([signal, leadCtl.signal]);
         const lead = starts
-          ? yt.find(q, signal).catch((e: Error) => {
+          ? yt.find(q, leadSig).catch((e: Error) => {
               if (signal.aborted || e instanceof YoutubePaused) throw e;
               return undefined;
             })
           : undefined;
         lead?.catch(() => {});
         const best = await this.topOf([q], 25, signal, asked);
-        if (best.tracks.length >= MIN_TOP) return this.artistList(lead ? this.withLead(best, await lead) : best, mode, signal, asked);
+        if (best.tracks.length >= MIN_TOP) {
+          const first = lead ? await this.briefly(lead) : undefined;
+          leadCtl.abort();
+          signal.throwIfAborted();
+          return this.artistList(this.withLead(best, first), mode, signal, asked);
+        }
         const top = lead ? await lead : await yt.find(q, signal);
-        if (!top?.id) return one(await this.find(q, signal));
+        if (!top?.id) {
+          const { track, why } = await this.lookup(q, signal);
+          return track || !why ? one(track) : { ok: false, message: why };
+        }
         // Their top song starts now: its radio takes another yt-dlp run, and follows.
         const r = await this.playList([top], mode, signal, `${top.artist ?? q} radio`, asked);
         if (r.ok) void this.topUp(top);
@@ -1166,21 +1185,29 @@ export class MusicPlayer {
     // before there's a list to play instead.
     const lookup = new AbortController();
     let foundAt: number | undefined;
-    const song = this.find(q, AbortSignal.any([signal, lookup.signal])).finally(() => (foundAt = performance.now()));
+    const song = this.lookup(q, AbortSignal.any([signal, lookup.signal])).finally(() => (foundAt = performance.now()));
     song.catch(() => {}); // it may never be asked for
     const best = await this.knownArtist(name, signal);
     if (best.tracks.length >= MIN_TOP) {
       asked.deezerMs = msSince(asked.at);
       // The search found their top song meanwhile (or is about to): it goes
-      // first. Queued behind a song, the list needn't wait for it.
-      if (mode === 'queue' && this.current) {
-        lookup.abort();
-        return this.artistList(best, mode, signal, asked);
-      }
-      return this.artistList(this.withLead(best, await song.catch(() => undefined)), mode, signal, asked);
+      // first. Queued behind a song, the list needn't wait for it, and it
+      // never waits long: a lookup still trying other uploads is dropped.
+      const lead = mode === 'queue' && this.current ? undefined : await this.briefly(song.then((r) => r.track));
+      lookup.abort();
+      signal.throwIfAborted();
+      return this.artistList(this.withLead(best, lead), mode, signal, asked);
     }
     asked.deezerMs = foundAt === undefined ? 0 : msSince(foundAt);
-    return said(await this.playFound(await song, q, mode, signal, asked));
+    const { track, why } = await song;
+    return said(await this.playFound(track, q, mode, signal, asked, undefined, why));
+  }
+
+  /** What `p` gives within the lead wait after Deezer's answer, else nothing. */
+  private briefly<T>(p: Promise<T | undefined>): Promise<T | undefined> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const late = new Promise<undefined>((r) => (timer = setTimeout(() => r(undefined), this.o.leadWaitMs ?? LEAD_WAIT_MS)));
+    return Promise.race([p.catch(() => undefined), late]).finally(() => clearTimeout(timer));
   }
 
   /** `name`'s top songs, if it's a well-known artist; anyone else costs one call. */
@@ -1578,6 +1605,9 @@ export class MusicPlayer {
       const id = t.id ?? (await yt.songId(t.query ?? `${t.title} ${t.artist ?? ''}`.trim(), signal))?.id;
       if (!id) throw new Error('not found on YouTube');
       found = await yt.resolve(id, signal, { peaks: true });
+    } else if (t.source === 'plex' && !t.ref) {
+      // Without its part (a song named from history), Plex finds it by name.
+      found = await this.o.sources.find((s) => s.name === 'plex')?.find(`${t.title} ${t.artist ?? ''}`.trim(), signal);
     } else if (t.source === 'plex' || !yt) {
       found = await this.ready({ ...t }, signal);
     }
@@ -1819,7 +1849,8 @@ export function musicTools(player: MusicPlayer | ((ctx: ToolContext) => MusicPla
           case 'volume': {
             const level = Number(a.level);
             if (!Number.isFinite(level) || level <= 0) return 'Give a level from 5 to 100.';
-            return `Music volume ${Math.round(p.setVolume((level > 1 ? level / 100 : level)) * 100)}%.`;
+            // Always a percentage, as the schema says: 1 is 1% (so 5%), never full volume.
+            return `Music volume ${Math.round(p.setVolume(Math.min(100, Math.max(5, level)) / 100) * 100)}%.`;
           }
           case 'louder':
           case 'quieter':
