@@ -294,7 +294,16 @@ export async function startVoiceStack(
   // --- languages: Whisper re-reads non-English questions --------------------
   const english = new EnglishWords(join(voice.modelDir, 'lexicon-us-en.txt'));
   const whisperDir = join(langModels, MODEL_LAYOUT.whisper);
-  let whisper: WhisperStt | undefined;
+  /** Whisper and the other languages' voices load the first time someone speaks
+   *  another language, not at start: together they held about 1.3 GB, unused for
+   *  weeks, on a server whose memory guard kills the bot first when it runs out. */
+  let whisper: Promise<WhisperStt | undefined> | undefined;
+  const languagesOn = !!config.languages && existsSync(join(whisperDir, 'small-encoder.int8.onnx'));
+  const whisperFor = () =>
+    (whisper ??= WhisperStt.load({ modelDir: whisperDir, threads: listen.asrThreads }).then(
+      (w) => (log.info('whisper loaded', { languages: Object.keys(LANGS) }), w),
+      (e: Error) => (log.warn('whisper failed to load; English only', { error: e.message }), undefined),
+    ));
   /** Language each person last spoke to the bot in. */
   const userLang = new Map<UserId, ReplyLang>();
   // Native @discordjs/opus when its prebuild matches this glibc, else opusscript (WebAssembly).
@@ -1088,8 +1097,8 @@ export async function startVoiceStack(
         userLang.set(e.userId, 'en');
       } else if (looksSpanish(said)) {
         userLang.set(e.userId, 'es');
-      } else if (whisper && e.samples) {
-        const w = await whisper.transcribe(e.samples);
+      } else if (languagesOn && e.samples && (await whisperFor())) {
+        const w = await (await whisperFor())!.transcribe(e.samples);
         const lang = replyLang(w.lang);
         userLang.set(e.userId, lang);
         log.info('second pass', { user: e.userId, lang: w.lang, decodeMs: w.decodeMs });
@@ -1260,23 +1269,6 @@ export async function startVoiceStack(
     throw e;
   }
 
-  if (config.languages && existsSync(join(whisperDir, 'small-encoder.int8.onnx'))) {
-    // Loaded in the background so startup isn't slower.
-    void WhisperStt.load({ modelDir: whisperDir, threads: listen.asrThreads })
-      .then((w) => {
-        whisper = w;
-        log.info('whisper loaded', { languages: Object.keys(LANGS) });
-        void (async () => {
-          for (const l of ['es', 'zh', 'ja', 'vi'] as const) {
-            const v = voiceFor(l);
-            if (v === voice.voice) continue;
-            await speaker.warm(v, voice.speed).catch((err: Error) => log.warn('voice warm-up failed', { voice: v, error: err.message }));
-          }
-          log.info('language voices ready');
-        })();
-      })
-      .catch((e: Error) => log.warn('whisper failed to load; English only', { error: e.message }));
-  }
   const turnModel = join(langModels, MODEL_LAYOUT.smartTurn);
   if (satEnabled && config.satellite.unfinishedWaitMs > 0 && existsSync(turnModel)) {
     try {

@@ -6,7 +6,7 @@ import { SmartTurn } from '../dist/speech/smart-turn.js';
 
 const [model, pyFile, ...wavs] = process.argv.slice(2);
 const py = JSON.parse(readFileSync(pyFile, 'utf8'));
-const st = await SmartTurn.load(model);
+const st = await SmartTurn.loadHere(model);
 const read = (f) => {
   const b = readFileSync(f);
   const n = (b.length - 44) / 2;

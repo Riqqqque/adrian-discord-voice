@@ -13,8 +13,11 @@ Environment=ADRIAN_CONFIG=/etc/adrian/config.json
 Environment=ADRIAN_STATE=/var/lib/adrian
 Environment=LD_LIBRARY_PATH=/opt/adrian/current/node_modules/sherpa-onnx-linux-x64
 ExecStart=/opt/adrian/node/bin/node /opt/adrian/current/dist/app/main.js
-Restart=on-failure
-RestartSec=5
+# always, not on-failure: a memory guard such as earlyoom sends SIGTERM, the bot
+# shuts down cleanly, and on-failure then left her offline for hours.
+# systemctl stop still stops it.
+Restart=always
+RestartSec=20
 TimeoutStopSec=20
 
 # Resources: at most 4 cores, low priority next to other services, hard
