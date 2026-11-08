@@ -164,6 +164,18 @@ It can look things up about the server it's in, by voice or text: "who's online?
 - It won't post in a channel you can't post in yourself.
 - Turn it off with `messaging.enabled false`, and the lookups with `serverInfo.enabled false`.
 
+## Your PC and Discord
+
+With the PC app connected: "send that link to my PC" (the newest link or video you posted, she sent you, or someone posted where you can see it), "move the music to my PC", "put what I'm watching into the call", and from the PC, "tell the call I'll be on in 5". Details and limits are in [satellite.md](satellite.md#pc-and-discord-together).
+
+## Game nights
+
+- **"Who's playing right now?"**, **"who's free for Valorant?"**: who's in voice (muted, deafened, the AFK channel), and with the **Presence** intent on, who's online, idle or on do not disturb, what they're playing, and whether they look like they're in a match or in the menus. That last part is a guess from the game's status text, and she says so. Without the Presence intent she answers from voice alone and says once that she can't see games.
+- **"Ping me for game night"** (or "ping me for Valorant") signs you up; **"stop pinging me"** (or "for Minecraft") takes you off. Only for yourself. People in `gameNight.optIn` start signed up for everything, and their "stop" sticks.
+- **"Get the squad on"**, **"ping everyone for Valorant in 10"**: one message in a text channel, "**Alex** is getting Valorant going in 10 minutes. Who's in?", that @mentions only people signed up for that game. Never @everyone, @here or roles; at most 10 people; not the person asking, bots, people already in voice, people on do not disturb, or anyone who can't see the channel. One ping per game every 15 minutes, and 4 per person an hour. When your words didn't ask for a ping, she asks first.
+- From a PC or a DM it means the bot's home server.
+- Turn it off with `gameNight.enabled false`.
+
 ## Disconnects
 
 - **Network drop or Discord hiccup:** it reconnects by itself.

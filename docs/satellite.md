@@ -99,3 +99,36 @@ allowed, and its own named shortcuts (for example a launcher script), which
 
 When no satellite is connected for the asker, every PC tool answers "no PC is
 connected", so the model can say so.
+
+## PC and Discord together
+
+These use the PC actions above, so they need nothing new from the PC app.
+Everything goes to the asker's own PC; nobody can reach someone else's.
+
+- **"Send that link to my PC"**, **"open that on my PC"**, **"put that video on
+  my PC"**: "that" is the newest link, video or song from the last 30 minutes
+  (`handoff.keepMinutes`): one you posted or she wrote you, one someone posted
+  in a channel you can see (last 10 minutes), or the song playing in the call
+  ("that song" means it, unless a song link is just as new). Two within 90
+  seconds of each other and she asks which. "The one Sam sent", "my link" and
+  "the reddit one" narrow it down. Only public `http`/`https` pages open.
+- **Message Content.** Without that intent, Discord hides the words of every
+  message that doesn't @mention her, links included. She says so when she
+  finds nothing, and when there are newer messages she couldn't read.
+- **"Play this on my PC instead"**, **"move the music to my PC"**: the call's
+  song opens on your PC (its YouTube page; a Plex song is found on YouTube). It
+  stops in the call if you started it, you're an owner, or whoever started it
+  has left the call; otherwise it keeps playing there. If the PC can't open it,
+  nothing stops. The rest of the queue isn't carried over.
+- **"Put what I'm watching into the call"**: she asks the PC what's playing
+  (`pc_media status`), finds it on YouTube (a song from Spotify or a player, a
+  video from a YouTube tab) and plays it in the call, then pauses it on the
+  PC. Netflix, Disney+, Prime Video, Twitch and the like can't be played. You
+  have to be in the call, or an owner, and someone has to be there to hear it.
+- **"Tell the call I'll be on in 5"**, **"ask them if they want to play
+  Valorant"**: she says it in her voice call, starting with your name ("Alex
+  says he'll be on in five"). When nobody's in a call with her, she posts it in
+  a text channel instead (`handoff.tellCall.channelId`, else the one she last
+  wrote in). No pings, links become plain words, 200 characters at most, 3
+  every 5 minutes per person. If you're in the call yourself she won't repeat
+  you. When your words didn't ask her to tell anyone, she reads it back first.

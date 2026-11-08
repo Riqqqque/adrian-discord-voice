@@ -58,6 +58,9 @@ import { SatelliteDevices } from '../satellite/devices.js';
 import { PcRecorder } from '../satellite/recorder.js';
 import { startSatelliteServer } from '../satellite/server.js';
 import { PC_RULE, pcTools, PowerDownWindow } from '../satellite/tools.js';
+import { pcDiscordTools, watchDiscord } from '../features/handoff-discord.js';
+import { MusicStarts, notingStarts } from '../features/handoff.js';
+import { toSpeakable } from '../brain/speech-text.js';
 
 /** Starts like a request to play something or control the music. */
 export const MUSICISH = /^\W*(?:(?:hey|ok(?:ay)?|yo|now|so|and|alright|bro)\W+)*(?:adri\w*\W+)?(?:(?:can|could|would|will) you (?:please )?|please )?(?:play|put on|throw on|queue|blast|bump|spin|skip|pause|resume|unpause|turn (?:up|down) the music|stop the music|(?:i want to|i wanna|let me|lemme|let's) (?:hear|listen to)|(?:make|do) (?:a|an|the|some) [a-z ]*(?:sound|noise))\b/i;
@@ -338,6 +341,9 @@ export async function startVoiceStack(
   const taste = new MusicTaste(stateDir ? join(stateDir, 'music-taste.json') : undefined, Date.now, (id) => isOwner(id));
   /** Playable links pasted in chat, for "play that link" (memory only). */
   const links = new RecentLinks();
+  /** Links and media per person, and who started the music, for the PC handoff (memory only). */
+  const watch = watchDiscord(client, { readable: readChannels, allowedGuilds: config.allowedGuilds, keepMs: config.handoff.keepMinutes * 60_000 });
+  const musicStarts = new MusicStarts();
   const games = new PartyGames();
   const room = new RoomTalk();
   /** Who's in the voice call, so it can talk about and to everyone by name. */
@@ -371,7 +377,7 @@ export async function startVoiceStack(
       const searchKey = brain.search ? secrets.get(brain.search.apiKeySecret) : undefined;
       if (searchKey) tools.push(tavilySearchTool(searchKey, brain.search?.maxResults));
       tools.push(...reminders.tools((id) => (userLang.get(id) ?? 'en') === 'en'), ...notes.tools((id) => (userLang.get(id) ?? 'en') === 'en'), ...games.tools());
-      if (music) tools.push(...musicTools((ctx) => roomFor(ctx).music, taste, (id) => (userLang.get(id) ?? 'en') === 'en').map(inRoomOnly), ...taste.tools());
+      if (music) tools.push(...musicTools((ctx) => roomFor(ctx).music, taste, (id) => (userLang.get(id) ?? 'en') === 'en').map((t) => inRoomOnly(notingStarts(t, musicStarts, (ctx) => roomFor(ctx).key))), ...taste.tools());
       if (sounds) tools.push(inRoomOnly(soundTool(sounds)));
       if (satEnabled)
         tools.push(
@@ -395,6 +401,32 @@ export async function startVoiceStack(
               : undefined,
           ),
         );
+      // Between a PC and Discord, and game nights (features/handoff.ts, gamenight.ts).
+      const pcDiscord = pcDiscordTools({
+        client,
+        watch,
+        allowedGuilds: config.allowedGuilds,
+        homeGuild: config.guildId,
+        presences: seePresences,
+        readable: readChannels,
+        handoff: satEnabled && config.handoff.enabled,
+        tellCall: config.handoff.enabled ? config.handoff.tellCall : undefined,
+        gameNight: config.gameNight,
+        stateFile: stateDir ? join(stateDir, 'game-night.json') : undefined,
+        starts: musicStarts,
+        callRoom: discordRoom.key,
+        pcFor,
+        callMusic: () => discordRoom.music,
+        spot: () => spot,
+        voiceReady: () => transport.isReady(),
+        isOwner: (id) => isOwner(id),
+        inHerCall: (id) => inHerCall(id),
+        nameOf: (id) => (creator && isCreator(id) ? creator : (config.nicknames[id] ?? nameOf(id))),
+        announce: (id, text) => controller.announce(id, text),
+        speakable: (text) => toSpeakable(text, 'A.D.R.I.A.N.', 'Adrian', creator ? [[creator, config.identity.creatorSpoken ?? creator]] : []),
+        ...(ytForSounds ? { findVideo: (q: string, signal: AbortSignal) => ytForSounds.videoId(q, signal) } : {}),
+      });
+      tools.push(...pcDiscord.tools);
       // Read-only lookups are reused briefly: asking twice in a row doesn't wait again.
       if (config.gameServers.length) tools.push(cachedTool(gameServerTool(config.gameServers), 30_000));
       const m = config.media;
@@ -470,6 +502,7 @@ export async function startVoiceStack(
           ...(config.mature === 'age-restricted' ? [] : matureContext(config.mature, false)),
           ...(music ? musicRules() : []),
           ...(satEnabled ? [PC_RULE] : []),
+          ...pcDiscord.rules,
         ],
       };
       orchestrator = new ConversationOrchestrator(llm, sessions, tools, brainOptions);
@@ -631,6 +664,7 @@ export async function startVoiceStack(
       }
       const artist = r.artist ?? (r.started ?? r.queuedAs?.track)?.artist;
       if (artist) taste.played(userId, artist);
+      if (r.started) musicStarts.started(rm.key, userId);
       // The music starting is the answer; a queued song has no such signal.
       if (r.queuedAs) await say(`Added ${trackName(r.queuedAs.track)}.`);
       else if (r.artist && !r.started) await say(`Added ${r.artist}.`);
@@ -691,6 +725,7 @@ export async function startVoiceStack(
     if (signal.aborted) return true;
     if (!r.ok) await say(r.message);
     else if (!r.started) await say(`Added ${r.added === 1 ? 'it' : `${r.added} songs`} to the queue.`);
+    else musicStarts.started(rm.key, userId);
     return true;
   }
 
