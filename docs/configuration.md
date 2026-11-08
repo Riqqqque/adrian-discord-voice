@@ -163,6 +163,14 @@ sudo adrian restart
 | Setting | Default | Meaning |
 |---|---|---|
 | `gameServers` | `[]` | `[{"name":"Survival","host":"127.0.0.1","port":25565}]`: Minecraft status pings |
+| `gameServers.N.helix.instanceId` | | The same server in Helix, e.g. `helix:0b9a6c7e-5d0f-4f7e-8f0e-2f6d2b1c9a41` (the server page's **Advanced** tab). Needed for server control |
+| `gameServers.N.helix.bedrock` | `false` | The server runs Geyser and Floodgate, so Bedrock players can be whitelisted |
+| `gameServers.N.helix.bedrockPrefix` | `"."` | Floodgate's `username-prefix` (in `plugins/floodgate/config.yml`) |
+| `helix.url` | | Helix's dashboard address, e.g. `http://192.168.1.50:3100`. Turns on server control |
+| `helix.allow.start`, `.stop`, `.restart`, `.whitelist`, `.say` | `[]` | Discord user or role IDs who may do that, besides the owners |
+| `helix.startWaitSec` | `420` | How long she waits for a start or restart before she stops watching |
+| `helix.stopWaitSec` | `180` | The same for a stop |
+| `helix.sayMaxChars` | `200` | Longest in-game chat message |
 | `media.plexUrl` | `http://127.0.0.1:32400` | |
 | `media.sonarrUrl` | `http://127.0.0.1:8989` | |
 | `media.radarrUrl` | `http://127.0.0.1:7878` | |
@@ -187,6 +195,36 @@ Prices work with no setup. Wishlists need the person's account in `steam.account
 5. **Privacy** (Steam → your profile → Edit Profile → Privacy Settings): *My profile* Public for anything; *Friends List* Public for friends; *Game details* Public for the wishlist. Friends whose own *Game details* are private show as online without a game.
 
 Steam is only asked when someone asks. Answers are kept briefly so asking twice doesn't ask Steam twice: friends' status 1 minute, friend lists 10 minutes, wishlists 30 minutes, prices 1 hour. A Steam rate limit pauses Steam questions for a minute. SteamIDs are never said or written in answers.
+
+### Minecraft server control (Helix)
+
+With [Helix](https://github.com/Riqqqque/Helix) running your game servers, A.D.R.I.A.N. can start, stop and restart them, change their whitelist and post in their chat. It uses a Helix server API token that lists only the servers you choose and only the permissions it needs.
+
+1. **Make the token.** In Helix: **Settings → Server API tokens → Manage tokens**.
+   - Name: `A.D.R.I.A.N.`
+   - Expires after: your choice. When it expires she says Helix turned her token down; make a new one and save it again.
+   - Servers: tick each server she may manage.
+   - Turn **Full access** off and tick only **View**, **Start**, **Stop**, **Restart** and **Console**. Console is for the whitelist, in-game chat and the player list; leave it off if you only want start, stop and restart. She never needs Kill, Files, Settings, Update, Backups, Network or Remove.
+   - **Create token**, then copy the value.
+2. **Save it** on the bot's machine: `sudo adrian secret set HELIX_TOKEN`, and paste the value at the hidden prompt.
+3. **Point her at Helix.** Use the dashboard address you open Helix with, exactly as Helix was installed (`HELIX_GATEWAY_HOST` and `HELIX_LAN_PORT` in `/opt/helix/helix.env`). On the same machine that is still the LAN address, not `127.0.0.1`: Helix publishes its port on that one address only.
+   ```
+   sudo adrian config helix.url http://192.168.1.50:3100
+   ```
+4. **Link each server.** For every entry in `gameServers` (0 is the first), copy the server's ID from its **Advanced** tab in Helix:
+   ```
+   sudo adrian config gameServers.0.helix.instanceId helix:0b9a6c7e-5d0f-4f7e-8f0e-2f6d2b1c9a41
+   sudo adrian config gameServers.0.helix.bedrock true
+   ```
+   The second line is only for a server with Geyser and Floodgate.
+5. `sudo adrian restart`. The log shows `helix server ok` for each linked server, or `helix server check failed` with the problem: `denied` (the server isn't on the token, or View is off), `gateway` (wrong address), `auth` (the token is wrong or expired), `unreachable` (nothing answers there).
+
+Without the token she says "Server control isn't set up" and does nothing else; status checks keep working. The token goes only to `helix.url`: plain `http` is accepted only for a private IP address or `localhost` (use `https` for a host name), redirects are never followed, and no cookie or Origin header is ever sent (Helix refuses token requests that have one).
+
+To let others use it, add their Discord user IDs or role IDs (owners can always do everything). Role checks need the member in the bot's cache, which they are once they've joined a call or written in a channel she reads. This is a hand edit to `config.json`:
+```json
+"helix": { "url": "http://192.168.1.50:3100", "allow": { "start": ["123456789012345678"], "whitelist": ["987654321098765432"] } }
+```
 
 ## Limits
 
@@ -220,6 +258,7 @@ These are hand edits to `config.json` (see the top of this page).
 | `SPEECHIFY_API_KEY` | Cloud voice |
 | `PLEX_TOKEN`, `SONARR_API_KEY`, `RADARR_API_KEY` | Media (read-only) |
 | `STEAM_API_KEY` | Steam friends (prices and wishlists work without it) |
+| `HELIX_TOKEN` | Minecraft server control through Helix (see [Minecraft server control](#minecraft-server-control-helix)) |
 
 Set with `sudo adrian secret set NAME` (hidden prompt) or the admin page. Values are never shown again.
 

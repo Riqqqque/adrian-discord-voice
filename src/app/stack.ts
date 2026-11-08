@@ -24,6 +24,8 @@ import { routeTools } from '../brain/tool-router.js';
 import { PartyGames } from '../features/games.js';
 import { AutoMemory } from '../features/automemory.js';
 import { gameServerTool } from '../features/gameservers.js';
+import { HelixClient } from '../features/helix.js';
+import { ServerControl } from '../features/servercontrol.js';
 import { mediaTools } from '../features/media.js';
 import { Steam, STEAM_KEY, steamTools } from '../features/steam.js';
 import { UserNotes } from '../features/notes.js';
@@ -422,7 +424,34 @@ export async function startVoiceStack(
           ),
         );
       // Read-only lookups are reused briefly: asking twice in a row doesn't wait again.
-      if (config.gameServers.length) tools.push(cachedTool(gameServerTool(config.gameServers), 30_000));
+      // With Helix set up, the status knows starting, stopped and crashed, and
+      // linked servers can be started, stopped, restarted, whitelisted and messaged.
+      if (config.gameServers.length && config.helix) {
+        const hx = config.helix;
+        const helixToken = secrets.get('HELIX_TOKEN');
+        const control = new ServerControl({
+          servers: config.gameServers,
+          client: helixToken ? new HelixClient({ url: hx.url, token: helixToken }) : undefined,
+          settings: hx,
+          isOwner: (id) => isOwner(id),
+          hasRole: (id, guildId, roleIds) => !!client.guilds.cache.get(guildId ?? spot?.guildId ?? config.guildId)?.members.cache.get(id)?.roles.cache.some((r) => roleIds.includes(r.id)),
+          // Said where they asked: at their PC, in the call, in that chat, else by DM.
+          announce: async (to, text) => {
+            const pc = to.channelId ? satRooms.get(to.channelId) : undefined;
+            if (pc?.ctl) {
+              pc.ui?.transcript('her', text);
+              return pc.ctl.announce(to.userId, text);
+            }
+            if (inHerCall(to.userId)) return controller.announce(to.userId, `${to.speaker}, ${text}`);
+            const ch = to.channelId ? client.channels.cache.get(to.channelId) : undefined;
+            if (ch && ch.isTextBased() && !ch.isVoiceBased() && 'send' in ch) return ch.send({ content: text, allowedMentions: { parse: [] } });
+            return client.users.send(to.userId, text);
+          },
+          log,
+        });
+        tools.push(...control.tools());
+        void control.check();
+      } else if (config.gameServers.length) tools.push(cachedTool(gameServerTool(config.gameServers), 30_000));
       const m = config.media;
       const plexToken = secrets.get('PLEX_TOKEN');
       const sonarrKey = secrets.get('SONARR_API_KEY');
