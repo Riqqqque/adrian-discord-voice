@@ -244,6 +244,31 @@ describe('heads-up on joining', () => {
     expect(t.said[1]!.line).toContain('the Survival server is down');
   });
 
+  it('still tells about a server that went down after a heads-up was dropped for a busy call', async () => {
+    let quiet = true;
+    const t = setup({ eps: [{ title: 'Frieren', hoursAgo: 1 }], servers: { Survival: true }, quiet: () => quiet });
+    await t.join(OWNER);
+    t.leave(OWNER);
+    t.clock.t += 24 * HOUR;
+    await t.join(OWNER); // learns it's up
+    t.leave(OWNER);
+    t.servers.Survival = false;
+    t.clock.t += 24 * HOUR;
+    quiet = false;
+    await t.join(OWNER); // dropped: never quiet
+    expect(t.said).toHaveLength(1);
+    t.leave(OWNER);
+    t.clock.t += 24 * HOUR;
+    quiet = true;
+    await t.join(OWNER);
+    expect(t.said[1]!.line).toContain('the Survival server is down');
+    // Heard now: not said again.
+    t.leave(OWNER);
+    t.clock.t += 24 * HOUR;
+    await t.join(OWNER);
+    expect(t.said[2]!.line).not.toContain('Survival');
+  });
+
   it('does not count it as told when nobody heard it', async () => {
     const t = setup({ eps: [{ title: 'Frieren', hoursAgo: 1 }], heard: false });
     await t.join(OWNER);

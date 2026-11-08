@@ -178,7 +178,8 @@ export class HeadsUp {
     const n = await news;
     const p = this.people[id];
     const down = wentDown(n, before.known);
-    if (p) p.known = { ...before.known, ...n.servers };
+    // Servers seen up are learned now; one seen down only once they have heard it, or it would never be said.
+    if (p) p.known = { ...before.known, ...Object.fromEntries(Object.entries(n.servers).filter(([, up]) => up)) };
     this.saveSoon();
     const name = this.d.name?.(id);
     const line = digestLine(n, down, { since: sinceWords(since, this.now(), this.d.timezone), ...(name ? { lead: name } : {}) });
@@ -196,7 +197,10 @@ export class HeadsUp {
     const heard = await this.d.say(id, line);
     if (!heard) return skip('not heard');
     const q = this.people[id];
-    if (q) q.told = this.now();
+    if (q) {
+      q.told = this.now();
+      q.known = { ...q.known, ...n.servers };
+    }
     this.recent.set(id, { line, at: this.now() });
     this.saveSoon();
     this.d.log?.info('heads-up', { user: id, episodes: n.episodes, movies: n.movies.length, serversDown: down.length });

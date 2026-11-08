@@ -39,7 +39,7 @@ const GROUPS: { tools: string[]; words: RegExp; when?: (h: RouteHints) => boolea
   },
   {
     tools: ['whats_new', 'digest_prefs', 'post_recap'],
-    words: /\b(miss(ed)?|catch (me|us) up|what'?s new|anything new|while i was (gone|away|out)|heads?.?ups?|stop telling|don'?t tell me|recap|weekly|name me|my name)\b/i,
+    words: /\b(miss(ed)?|catch (me|us) up|what'?s new|anything new|while i was (gone|away|out)|heads?.?ups?|stop telling|don'?t tell me|recap|name me)\b/i,
   },
 ];
 
