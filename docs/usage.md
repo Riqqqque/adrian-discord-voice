@@ -59,7 +59,7 @@ Everything else goes to the language model.
 | "Turn off autoplay" | Stop adding similar songs when the queue ends. |
 
 - **Who can change it:** people in the voice call (muted counts), the owner of the PC it's playing on, and owners. Anyone can ask what's playing, but nobody else can play, skip or stop anything, from text chat or DMs either. Sounds work the same way.
-- **Volume:** music sits under the voice and drops further whenever someone says the name or the bot talks. Noise and talking to other people leave it alone.
+- **Volume:** music sits under the voice and drops further whenever someone says the name or the bot talks. Noise and talking to other people leave it alone. "Set the volume to 30" sets the music's level and she says it back; with nothing playing, she says it's for the next song.
 - **Taste:** she learns what you like from the artists and songs you ask for, and favors recent ones. She also builds up a taste of her own. Yours is only used in your own conversations.
 - **After an order:** when she's done something ("play Drake", "set a timer"), she stops listening right away, so talking to someone else afterwards isn't taken as more for her. After a normal answer, or if she asked you something, you can carry on without her name.
 - **Autoplay:** when the queue runs low, it adds songs similar to the last one and skips anything played recently, including the same song in another upload (the video, the lyrics version). Nightcore, sped-up and 8D remakes are left out unless that's what was playing.
@@ -74,13 +74,17 @@ Everything else goes to the language model.
 "Start a music quiz", "let's play guess the song", "music quiz, 5 rounds of 90s hip hop", "guess the song with songs we've played", "a Drake music quiz".
 
 - **Each round** plays about 20 seconds from the catchy part of a song (the part people replay most on YouTube, or about a third of the way in). Nothing gives it away: no title on screen or in the PC window, no message in chat, and she doesn't know it herself if you ask her.
-- **Answering:** anyone in the call just says the title or the artist, no "Adrian" needed. Close is fine: part of the title, "the weekend" for The Weeknd, "7 nation army". The first right answer gets the point. In an artist quiz only the title counts. Talking about other things in between is ignored, and she never answers it.
+- **Answering:** anyone in the call just says the title or the artist, no "Adrian" needed. Close is fine: most of the title, "the weekend" for The Weeknd, "7 nation army". An everyday word on its own isn't enough: "fire" isn't Earth, Wind & Fire, "sons" isn't Mumford & Sons (but "Mumford" is), "take" isn't Take on Me, and "yeah yeah" isn't "Yeah!". The first right answer gets the point. In an artist quiz only the title counts. Talking about other things in between is ignored, and she never answers it.
+- **A wrong guess to her** ("Adrian, is it Purple Rain?") gets "Not quite." Anything else said to her ("Adrian, is it raining?", "Adrian, it's too loud") is handled as usual.
 - **Hint** after about 12 seconds: the artist's first letter, or the year. "Give us a hint" gets it early.
 - **Reveal:** when someone gets it, or when the clip ends: title and artist.
-- **"Skip"**, **"what's the score?"**, **"stop the quiz"** work with or without her name. A stop for her while she isn't talking ("Adrian, stop") ends it too. At the end she reads the scoreboard.
+- **"Skip"** (or "next"), **"what's the score?"**, **"hint"** and **"stop the quiz"** work without her name when said on their own. Anything longer, and everyday phrases like "I'm done", "pass", "give up" or "who's this?", need her name, so talk among yourselves never ends or skips the quiz. A stop for her while she isn't talking ("Adrian, stop") ends it too. At the end she reads the scoreboard.
+- **Music controls while it runs:** "skip" and "stop the music" go to the quiz, "turn it down" and "set the volume to 30" change the clip's level, and "go back", "pause" or "who put this on?" get "say stop the quiz first".
 - **Kinds:** a genre (pop, rock, hip hop, R&B, country, metal, latin, k-pop...), a decade (50s to 2020s), both, an artist, or songs played here lately. With nothing named: today's popular songs. Default 8 rounds (up to 20).
 - **Music requests wait:** while a quiz runs, "play X" gets "say stop the quiz first". Her other commands work as usual. Starting a quiz stops what was playing, and it doesn't come back afterwards: ask for music again.
-- **It ends by itself** when nobody says anything for two rounds, or everyone leaves.
+- **It ends by itself** when nobody tries for two rounds (a guess, a near miss, "is it...", a quiz order or anything said to her counts; talk about other things doesn't), or everyone leaves.
+- **A song that won't play** (its clip stops right away) is never revealed: another song takes the round. After three in a row the quiz ends.
+- **Songs played here** can come from Plex as well as YouTube.
 - **At a PC** it works the same, just for you.
 - Answers are checked on the spot, for free. A near miss ("bohemian" for Bohemian Rhapsody) may cost one tiny model call, at most twice a round.
 
@@ -154,7 +158,8 @@ With `headsUp.enabled` on (it's off by default), owners who join her call after 
 - Only in a quiet moment: if people are talking, music is playing, or she's answering someone, she waits up to a minute and a half, then drops it.
 - Not for people already in the call when she joins, and not if you're deafened.
 - A game server is mentioned only if it went down since you last heard about it.
-- "Stop telling me that" turns them off for you, for good; "turn my heads-ups back on" undoes it.
+- She doesn't listen on after a heads-up, so what you say next to the others stays yours. "Adrian, stop telling me that" turns them off for you, for good; "turn my heads-ups back on" undoes it.
+- Not while a music quiz runs either.
 
 ## Weekly recap
 

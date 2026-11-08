@@ -32,13 +32,21 @@ interface Fake {
   /** Watch pages that fail, and how. */
   broken?: Record<string, string>;
   search?: string[];
+  /** Watch pages that answer only when the lookup is called off, once each. */
+  hang?: string[];
 }
 
-function rig(f: Fake = {}, o: { autoplay?: boolean; topTracks?: TopTracks } = {}) {
+function rig(f: Fake = {}, o: { autoplay?: boolean; topTracks?: TopTracks; leadWaitMs?: number } = {}) {
   const calls: string[] = [];
-  const run: Runner = async (_cmd, args) => {
+  const hung = new Set<string>();
+  const run: Runner = async (_cmd, args, signal) => {
     const url = args.at(-1)!;
     calls.push(url);
+    const v = url.includes('watch?v=') ? url.split('v=')[1]! : '';
+    if (f.hang?.includes(v) && !hung.has(v)) {
+      hung.add(v);
+      return new Promise((_, no) => signal.addEventListener('abort', () => no(new Error('called off')), { once: true }));
+    }
     if (url.includes('#songs')) return `${id('song')}\n`;
     if (url.includes('list=RDAMVM')) {
       const seed = url.split('v=')[1]!.slice(0, 11);
@@ -78,8 +86,9 @@ function rig(f: Fake = {}, o: { autoplay?: boolean; topTracks?: TopTracks } = {}
     log: quiet,
     autoplay: o.autoplay ?? false,
     ...(o.topTracks ? { topTracks: o.topTracks } : {}),
+    ...(o.leadWaitMs !== undefined ? { leadWaitMs: o.leadWaitMs } : {}),
   });
-  return { p, calls, decoded, finish: () => ends.at(-1)!('finished') };
+  return { p, calls, decoded, hung, finish: () => ends.at(-1)!('finished') };
 }
 
 describe('lists carry the artist', () => {
@@ -157,6 +166,16 @@ describe('who asked, and going back', () => {
     expect(r.p.setVolume(4)).toBe(1);
     expect(r.p.setVolume(0)).toBe(0.05);
   });
+
+  it("the tool's level is always a percentage: 1 is the quietest, not full volume", async () => {
+    const r = rig();
+    const control = musicTools(r.p).find((t) => t.spec.name === 'music_control')!;
+    const ctx = { userId: '123456789012345678', speaker: 'Alex' };
+    expect(await control.run({ action: 'volume', level: 1 }, sig(), ctx)).toBe('Music volume 5%.');
+    expect(await control.run({ action: 'volume', level: 30 }, sig(), ctx)).toBe('Music volume 30%.');
+    expect(await control.run({ action: 'volume', level: 100 }, sig(), ctx)).toBe('Music volume 100%.');
+    expect(await control.run({ action: 'volume', level: 250 }, sig(), ctx)).toBe('Music volume 100%.');
+  });
 });
 
 describe('songs YouTube will not play', () => {
@@ -170,6 +189,43 @@ describe('songs YouTube will not play', () => {
   it('says it is age-restricted when no upload plays', async () => {
     const r = rig({ broken: { [id('song')]: 'Sign in to confirm your age', [id('other')]: 'Sign in to confirm your age' } });
     expect(await r.p.request('song', 'some song', 'now', sig())).toEqual({ ok: false, message: "That one's age-restricted on YouTube, so I can't play it." });
+  });
+
+  it('says so for a bare "play X" too', async () => {
+    const top: TopTracks = async () => ({ artist: 'Nobody', titles: [], known: false });
+    const r = rig({ broken: { [id('song')]: 'Sign in to confirm your age', [id('other')]: 'Sign in to confirm your age' } }, { topTracks: top });
+    expect(await r.p.playNamed('some song', 'now', sig())).toEqual({ ok: false, message: "That one's age-restricted on YouTube, so I can't play it." });
+  });
+
+  it('tries another upload of a removed or private video', async () => {
+    const r = rig({ broken: { [id('song')]: 'ERROR: [youtube] x: Video unavailable. This video is private' }, search: [id('song'), id('lyrics')] });
+    expect(await r.p.request('song', 'some song', 'now', sig())).toMatchObject({ ok: true });
+    expect(r.p.nowPlaying!.id).toBe(id('lyrics'));
+    const geo = rig({ broken: { [id('song')]: 'ERROR: [youtube] x: The uploader has not made this video available in your country' }, search: [id('song'), id('lyrics')] });
+    expect(await geo.p.request('song', 'some song', 'now', sig())).toMatchObject({ ok: true });
+    expect(geo.p.nowPlaying!.id).toBe(id('lyrics'));
+  });
+
+  it('leaves a passing failure alone: no extra searches, and never "not on YouTube"', async () => {
+    const r = rig({ broken: { [id('song')]: 'ERROR: Unable to download webpage: HTTP Error 403: Forbidden' } });
+    const res = await r.p.request('song', 'some song', 'now', sig());
+    expect(res).toEqual({ ok: false, message: "I couldn't find some song." });
+    expect(r.calls.filter((u) => u.startsWith('ytsearch5:'))).toEqual([]);
+  });
+});
+
+describe("an artist's top songs", () => {
+  const top: TopTracks = async () => ({ artist: 'Artist', titles: ['One', 'Two', 'Three', 'Four', 'Five'], known: true });
+
+  it.each(['playNamed', 'request'] as const)('start without waiting long on their top song (%s)', async (how) => {
+    // Their top song's own lookup never answers: the list starts anyway, and that lookup is called off.
+    const r = rig({ hang: [id('song')] }, { topTracks: top, leadWaitMs: 30 });
+    const t0 = performance.now();
+    const res = how === 'playNamed' ? await r.p.playNamed('artist', 'now', sig()) : await r.p.request('artist', 'artist', 'now', sig());
+    expect(res).toMatchObject({ ok: true, artist: 'Artist' });
+    expect(performance.now() - t0).toBeLessThan(1500);
+    expect(r.p.nowPlaying).toBeDefined();
+    expect(r.hung.has(id('song'))).toBe(true);
   });
 });
 
@@ -187,6 +243,22 @@ describe('quiz clips through the player', () => {
     await flush();
     expect(r.calls.some((u) => u.includes('RDAMVM'))).toBe(false);
     expect(r.decoded).toHaveLength(1);
+  });
+
+  it('finds a Plex song by name when it comes without its part', async () => {
+    const asked: string[] = [];
+    const plex = {
+      name: 'plex' as const,
+      find: async (q: string) => (asked.push(q), { title: 'Song', artist: 'Band', source: 'plex' as const, ref: '/library/parts/1/file.mp3' }),
+      open: async () => ({ url: 'http://plex.test/file.mp3' }),
+    };
+    const out: MusicOutput = { playMusic: () => ({ done: new Promise(() => {}), stop() {} }) as PlaybackHandle, pauseMusic() {}, resumeMusic() {}, setMusicVolume() {}, musicPlaying: false, musicPaused: false };
+    const p = new MusicPlayer({ sources: [plex], output: out, decode: () => ({ pcm: new PassThrough(), kill() {} }), log: quiet });
+    expect(await p.clipTrack({ title: 'Song', artist: 'Band', source: 'plex', ref: '' }, sig())).toMatchObject({ ref: '/library/parts/1/file.mp3' });
+    expect(asked).toEqual(['Song Band']);
+    // With its part it needs no search.
+    expect(await p.clipTrack({ title: 'Song', source: 'plex', ref: '/library/parts/2/file.mp3' }, sig())).toMatchObject({ ref: '/library/parts/2/file.mp3' });
+    expect(asked).toHaveLength(1);
   });
 
   it('lends the music: requests wait, a stop goes to the borrower, and it comes back', async () => {
