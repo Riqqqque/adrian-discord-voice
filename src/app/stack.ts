@@ -410,7 +410,8 @@ export async function startVoiceStack(
   const callQuiet = () => {
     const now = performance.now();
     for (const [id, at] of talking) if (now - at > 20_000) talking.delete(id);
-    return talking.size === 0 && now - lastTalkAt > 4_000 && !music?.nowPlaying && !controller.busy && controller.queued === 0;
+    // A quiz clip isn't "now playing", but the music is lent to it.
+    return talking.size === 0 && now - lastTalkAt > 4_000 && !music?.nowPlaying && !music?.lent && !controller.busy && controller.queued === 0;
   };
   const headsUp = new HeadsUp(stateDir ? join(stateDir, 'heads-up.json') : undefined, config.headsUp, {
     sources: digestSources,
@@ -421,7 +422,8 @@ export async function startVoiceStack(
     quiet: callQuiet,
     name: (id) => config.nicknames[id] ?? nameOf(id),
     say: async (id, line) => {
-      const heard = await controller.announce(id, line);
+      // Nobody asked for it: no follow-up, so what they say next to the others stays theirs.
+      const heard = await controller.announce(id, line, { listen: false });
       if (heard && spot) room.add(spot.channelId, 'bot', `You (heads-up for ${nameOf(id)})`, line);
       return heard;
     },
@@ -771,8 +773,8 @@ export async function startVoiceStack(
       }
       case 'volume': {
         const aboutHer = /\b(you|your|voice|talk|speak)\b/i.test(command);
-        // With music on, "turn it up/down" means the music (unless it's about the voice).
-        if (rm.music?.nowPlaying && !aboutHer) {
+        // With music on (or a quiz clip), "turn it up/down" means the music (unless it's about the voice).
+        if ((rm.music?.nowPlaying || rm.music?.lent) && !aboutHer) {
           const to = rm.music.nudgeVolume(intent.dir);
           log.info('music volume', { to, by: userId });
           return true;
@@ -807,8 +809,17 @@ export async function startVoiceStack(
     // At a PC, "pause", "skip" and "what's playing" mean whatever the PC is
     // playing (Spotify, a video) unless her own music is on: the model's PC
     // tools handle that.
-    if (rm.ui && m.kind !== 'play' && !music.nowPlaying) return false;
+    if (rm.ui && m.kind !== 'play' && !music.nowPlaying && !music.lent) return false;
     const say = (t: string) => rm.speaker.speak(fixed(t), rm.speech, signal);
+    // A quiz has the music: skip and stop are its own, the volume is the clip's,
+    // and the rest waits for it to end.
+    const lent = music.lent;
+    if (lent && m.kind === 'control' && m.action !== 'volume') {
+      if (m.action === 'skip') lent.skip();
+      else if (m.action === 'stop') lent.stop();
+      else await say(lent.reason);
+      return true;
+    }
     if (m.kind === 'play') {
       const allowed = ledger.check(userId, isOwner(userId));
       if (!allowed.ok && allowed.reason === 'user-rate') {
@@ -868,6 +879,9 @@ export async function startVoiceStack(
       case 'volume': {
         const to = music.setVolume(m.level / 100);
         log.info('music volume', { to, by: userId });
+        // Said either way: with nothing playing the change can't be heard, and it may have been meant for her voice.
+        const pct = Math.round(to * 100);
+        await say(music.nowPlaying || music.lent ? `Music volume ${pct} percent.` : `Music volume set to ${pct} percent for the next song.`);
         return true;
       }
       case 'skip': {
