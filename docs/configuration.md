@@ -131,9 +131,10 @@ With Claude, the bot uses prompt caching. The rules, the tool descriptions and e
 | `voice.threads` | `4` | CPU threads for the voice |
 | `cloudVoice.enabled` | `true` when the block exists | Cloud voice for English replies |
 | `cloudVoice.voiceId` | `"sabrina"` | Speechify voice |
-| `cloudVoice.model` | `"simba-3.2"` | |
+| `cloudVoice.model` | `"simba-3.5"` | `"simba-3.2"` is the older, slower model |
 | `cloudVoice.apiKeySecret` | `"SPEECHIFY_API_KEY"` | |
-| `cloudVoice.monthlyChars` | `1900000` | Monthly character cap, then the local voice (0 means no cap) |
+| `cloudVoice.monthlyChars` | `950000` on simba-3.5, `1900000` otherwise | Monthly character cap, then the local voice (0 means no cap). The Starter plan covers 1.9M characters, and simba-3.5 counts each one twice from 21 Nov 2026 |
+| `cloudVoice.speed` | `1.0`, or `1.2` on simba-3.2 | Speaking rate for the cloud voice only (0.75 to 1.5). simba-3.5 speaks about 200 words a minute on its own |
 | `cloudVoice.timeoutMs` | `4000` | Slower than this: the local voice is used for that sentence |
 
 Turn the cloud voice on (with `SPEECHIFY_API_KEY` saved):

@@ -27,6 +27,13 @@ export function keyName(purpose: 'llm' | 'search' | 'voice') {
   );
 }
 
+/** simba-3.2 speaks 133 words a minute, slow for a conversation; 1.2 brings it to
+ *  about 165. simba-3.5 already speaks about 200. */
+export const cloudVoiceSpeed = (model: string) => (model.startsWith('simba-3.2') ? 1.2 : 1);
+/** The Starter plan's 1.9M characters a month; simba-3.5 counts each one twice
+ *  from 21 Nov 2026. */
+export const cloudVoiceChars = (model: string) => (model.startsWith('simba-3.5') ? 950_000 : 1_900_000);
+
 export const PocConfigSchema = z.object({
   guildId: snowflake,
   channelId: snowflake,
@@ -253,15 +260,17 @@ export const PocConfigSchema = z.object({
       enabled: z.boolean().default(true),
       provider: z.literal('speechify').default('speechify'),
       voiceId: z.string().min(1).default('sabrina'),
-      model: z.string().min(1).default('simba-3.2'),
+      model: z.string().min(1).default('simba-3.5'),
       apiKeySecret: keyName('voice').default('SPEECHIFY_API_KEY'),
-      /** Characters per month before switching to the local voice (0 = unlimited). */
-      monthlyChars: z.number().int().min(0).default(1_900_000),
+      /** Characters per month before switching to the local voice (0 = unlimited).
+       *  Unset: what the Starter plan covers for the model. */
+      monthlyChars: z.number().int().min(0).optional(),
       timeoutMs: z.number().int().min(500).max(15_000).default(4000),
-      /** Speaking rate on top of voice.speed. Sabrina's own pace measured 133 words a
-       *  minute, slow for a conversation; 1.2 brings her to about 160. */
-      speed: z.number().min(0.75).max(1.5).default(1.2),
+      /** Speaking rate on top of voice.speed. Unset: the model's own pace, except
+       *  simba-3.2, whose 133 words a minute is slow for a conversation. */
+      speed: z.number().min(0.75).max(1.5).optional(),
     })
+    .transform((v) => ({ ...v, speed: v.speed ?? cloudVoiceSpeed(v.model), monthlyChars: v.monthlyChars ?? cloudVoiceChars(v.model) }))
     .optional(),
 });
 export type PocConfig = z.infer<typeof PocConfigSchema>;
