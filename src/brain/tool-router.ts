@@ -37,6 +37,10 @@ const GROUPS: { tools: string[]; words: RegExp; when?: (h: RouteHints) => boolea
     tools: ['plex_recently_added', 'plex_search', 'downloads', 'upcoming_episodes'],
     words: /\b(plex|movies?|shows?|episodes?|series|download(ing|s|ed)?|added|watch|library|airing|comes? out|new on|anime|film)\b/i,
   },
+  {
+    tools: ['whats_new', 'digest_prefs', 'post_recap'],
+    words: /\b(miss(ed)?|catch (me|us) up|what'?s new|anything new|while i was (gone|away|out)|heads?.?ups?|stop telling|don'?t tell me|recap|weekly|name me|my name)\b/i,
+  },
 ];
 
 /** Tools for this request: the always-on ones plus any matching group. */

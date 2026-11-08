@@ -166,6 +166,23 @@ sudo adrian restart
 | `media.sonarrUrl` | `http://127.0.0.1:8989` | |
 | `media.radarrUrl` | `http://127.0.0.1:7878` | |
 
+## Heads-ups and the weekly recap
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `headsUp.enabled` | `false` | One short line about what's new when someone joins her call after a while away (see usage) |
+| `headsUp.people` | `[]` | Discord user IDs who get them; empty means the owners |
+| `headsUp.awayHours` | `4` | Away at least this long before a heads-up |
+| `headsUp.minHours` | `6` | At most one heads-up per person this often |
+| `recap.channelId` | (unset) | Text channel for the weekly recap; setting it turns the recap on |
+| `recap.enabled` | on once `channelId` is set | `false` turns it off with the channel still set |
+| `recap.day` | `"sunday"` | Day it's posted, `sunday` to `saturday` |
+| `recap.hour` | `18` | Hour it's posted (0-23), in `timezone` |
+
+The heads-up and "what did I miss?" read Sonarr and Radarr's import history (or Plex's recently added when those aren't set up) and ping the `gameServers`, only when someone joins or asks, with a 6 second limit. The recap pings the game servers every 10 minutes while the bot runs, for its uptime line. The bot needs Send Messages in the recap channel.
+
+Files in the state folder: `heads-up.json` (when each person was last in the call, last heads-up, their choices; at most 200 people) and `weekly-recap.json` (counts for the last 3 weeks: songs, questions per place, game server samples, and which week was last posted).
+
 ## Limits
 
 | Setting | Default | Meaning |
