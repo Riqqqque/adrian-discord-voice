@@ -71,6 +71,6 @@ Conversation history and room talk are kept in memory only. They're gone after a
 ## Design rules
 
 - **Local first.** Hearing and speaking run on your hardware; only text goes to the model.
-- **Read-only integrations.** Plex, Sonarr, Radarr and game servers are only ever queried.
+- **Read-only integrations.** Plex, Sonarr, Radarr and game server status are only ever queried. The one exception is Helix server control (`features/servercontrol.ts`, `features/helix.ts`): opt-in, owners only by default, and it asks before a stop or restart.
 - **Fail soft.** A failed cloud voice falls back to the local voice, a failed model to the fallback model, and a failed YouTube lookup to Plex. When nothing works, a short spoken sorry.
 - **Bounded cost.** Every paid call is metered and capped, prompt caching keeps input cheap, and the common phrases never reach the model.

@@ -39,7 +39,7 @@ This is one module of the A.D.R.I.A.N. household assistant suite. Every module f
 - Timers and reminders ("remind me in 20 minutes to check the oven"); announced in the call if you can hear it, otherwise at the PC you set them at (with a DM as well), or by DM.
 - Web search for anything recent (optional, Tavily).
 - Party games: trivia, dice, coin flips.
-- Minecraft server status: who's online, player counts.
+- Minecraft server status: who's online, player counts. With [Helix](https://github.com/Riqqqque/Helix), the owners can also start, stop and restart servers, change the whitelist and post in game chat (stop and restart ask first).
 - Plex, Sonarr and Radarr, read-only: what's new, is a movie on Plex, what's downloading, upcoming episodes.
 
 **Voice**
