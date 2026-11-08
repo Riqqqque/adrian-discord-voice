@@ -118,6 +118,33 @@ describe('matching a guess', () => {
     expect(judgeGuess('in the future we should go there', { title: 'Mask Off', artist: 'Future' }).right).toBe(false);
   });
 
+  it('wants more than an everyday word: half a band name, a small word, or a word sung twice is no answer', () => {
+    const ewf = { title: 'September', artist: 'Earth, Wind & Fire' };
+    expect(judgeGuess("that's fire", ewf).right).toBe(false);
+    expect(judgeGuess('earth', ewf).right).toBe(false);
+    expect(judgeGuess('earth wind and fire', ewf)).toEqual({ right: true, got: 'artist' });
+    expect(judgeGuess('men', { title: 'Little Talks', artist: 'Of Monsters and Men' }).right).toBe(false);
+    expect(judgeGuess('monsters', { title: 'Little Talks', artist: 'Of Monsters and Men' }).right).toBe(false);
+    expect(judgeGuess('of monsters and men', { title: 'Little Talks', artist: 'Of Monsters and Men' }).right).toBe(true);
+    expect(judgeGuess('sons', { title: 'The Cave', artist: 'Mumford & Sons' }).right).toBe(false);
+    expect(judgeGuess('mumford', { title: 'The Cave', artist: 'Mumford & Sons' })).toEqual({ right: true, got: 'artist' });
+    expect(judgeGuess('wine', { title: 'Naked as We Came', artist: 'Iron & Wine' }).right).toBe(false);
+    expect(judgeGuess('the machine', { title: 'Dog Days Are Over', artist: 'Florence + the Machine' }).right).toBe(false);
+    expect(judgeGuess('florence', { title: 'Dog Days Are Over', artist: 'Florence + the Machine' }).right).toBe(true);
+    expect(judgeGuess('garfunkel', { title: 'The Boxer', artist: 'Simon & Garfunkel' }).right).toBe(true);
+    // Nothing but small words: only those, alone.
+    const yeah = { title: 'Yeah!', artist: 'Usher' };
+    expect(judgeGuess('yeah', yeah).right).toBe(true);
+    expect(judgeGuess('yeah yeah', yeah).right).toBe(false);
+    expect(judgeGuess('oh yeah', yeah).right).toBe(false);
+    // One word among small ones is half the title, for the model to decide.
+    expect(judgeGuess('take', { title: 'Take on Me', artist: 'a-ha' })).toEqual({ right: false, close: true });
+    expect(judgeGuess('is it take on me', { title: 'Take on Me', artist: 'a-ha' }).right).toBe(true);
+    expect(judgeGuess('hello hello', { title: 'Hello', artist: 'Adele' }).right).toBe(false);
+    expect(judgeGuess('creep by radiohead', { title: 'Creep', artist: 'Radiohead' }).right).toBe(true);
+    expect(judgeGuess('maybe', { title: 'Maybe', artist: 'Someone' }).right).toBe(true);
+  });
+
   it('counts only the title in an artist quiz', () => {
     expect(judgeGuess('the weeknd', { title: 'Blinding Lights', artist: 'The Weeknd' }, true).right).toBe(false);
   });
@@ -150,6 +177,21 @@ describe('quiz words', () => {
     expect(parseQuizCommand('skip this one', true)).toEqual({ kind: 'skip' });
     expect(parseQuizCommand('give us a hint', true)).toEqual({ kind: 'hint' });
     expect(parseQuizCommand('stop the quiz', false)).toBeUndefined();
+  });
+
+  it('without her name, takes only the clear quiz orders, said on their own', () => {
+    const unnamed = (t: string) => parseQuizCommand(t, true, false);
+    expect(unnamed('skip')).toEqual({ kind: 'skip' });
+    expect(unnamed('Next.')).toEqual({ kind: 'skip' });
+    expect(unnamed('stop the quiz')).toEqual({ kind: 'stop' });
+    expect(unnamed("What's the score?")).toEqual({ kind: 'score' });
+    expect(unnamed('hint')).toEqual({ kind: 'hint' });
+    expect(unnamed('give us a hint')).toEqual({ kind: 'hint' });
+    for (const t of ["I'm done.", "we're done", 'pass', 'give up', 'scores', "who's this?", 'what is playing', 'stop the game', 'skip this one and grab the loot', 'next time bring snacks']) expect(unnamed(t)).toBeUndefined();
+    // With her name they all work.
+    expect(parseQuizCommand("I'm done", true, true)).toEqual({ kind: 'stop' });
+    expect(parseQuizCommand('pass', true, true)).toEqual({ kind: 'skip' });
+    expect(parseQuizCommand("who's this", true, true)).toEqual({ kind: 'status' });
   });
 });
 
@@ -211,11 +253,67 @@ describe('a quiz round by round', () => {
   it('says "not quite" only to a wrong answer said to her, and leaves her other orders alone', async () => {
     const r = rig({ rounds: 2 });
     await r.quiz.start();
+    expect(r.answer()!.title).toBe('Blinding Lights');
     expect(r.quiz.heard('u2', 'what time is it', true)).toBe(false);
-    expect(r.quiz.heard('u2', "it's some song by nobody", true)).toBe(true);
+    expect(r.quiz.heard('u2', "it's lights", true)).toBe(true);
     await flush();
     expect(r.said.at(-1)).toBe('Not quite.');
     expect(r.quiz.open).toBe(true);
+  });
+
+  it('leaves orders and questions that start like an answer to her usual handling', async () => {
+    const r = rig({ rounds: 2 });
+    await r.quiz.start();
+    const before = r.said.length;
+    for (const t of ['is it raining outside?', "it's too loud", "that's enough music for today", "it's some song by nobody"]) expect(r.quiz.heard('u2', t, true)).toBe(false);
+    await flush();
+    expect(r.said).toHaveLength(before);
+    expect(r.quiz.open).toBe(true);
+    // Her prompt says what a wrong guess that reaches her gets.
+    expect(r.quiz.context().join(' ')).toContain('Not quite.');
+  });
+
+  it('side talk without her name never ends, skips or answers the quiz', async () => {
+    const r = rig({ rounds: 3 });
+    await r.quiz.start();
+    const before = r.said.length;
+    for (const t of ["I'm done.", "We're done", 'pass', "who's this?", 'scores', 'stop the game']) expect(r.quiz.heard('u2', t, false)).toBe(false);
+    await flush();
+    expect(r.said).toHaveLength(before);
+    expect(r.quiz.on).toBe(true);
+    expect(r.quiz.open).toBe(true);
+    // "Next" on its own is the quiz's.
+    const first = r.answer()!;
+    expect(r.quiz.heard('u2', 'next', false)).toBe(true);
+    await flush();
+    expect(r.said.at(-1)).toBe(`Skipping. That was ${first.title} by ${first.artist}.`);
+    // Between rounds a bare "skip" or "hint" isn't the quiz's; with her name an "I'm done" ends it.
+    expect(r.quiz.heard('u2', 'skip', false)).toBe(false);
+    expect(r.quiz.heard('u2', "I'm done", true)).toBe(true);
+    await flush();
+    expect(r.quiz.on).toBe(false);
+  });
+
+  it('a call talking about other things is nobody guessing', async () => {
+    const r = rig({ rounds: 6 });
+    await r.quiz.start();
+    r.quiz.heard('u2', 'dude did you see the game last night', false);
+    r.quiz.heard('u3', 'no way', false);
+    await r.advance(21_000 + 1_000);
+    r.quiz.heard('u2', 'grab the loot on the left', false);
+    await r.advance(21_000);
+    expect(r.said).toContain("Nobody's guessing, so I'll stop the quiz here.");
+    expect(r.quiz.on).toBe(false);
+  });
+
+  it('a wrong guess still counts as playing along', async () => {
+    const r = rig({ rounds: 6 });
+    await r.quiz.start();
+    await r.advance(21_000 + 1_000);
+    r.quiz.heard('u2', 'is it purple rain', false);
+    await r.advance(21_000 + 1_000);
+    expect(r.said).not.toContain("Nobody's guessing, so I'll stop the quiz here.");
+    expect(r.quiz.on).toBe(true);
   });
 
   it('asks the model about a near miss, once per guess and twice per round at most', async () => {
@@ -300,9 +398,36 @@ describe('a quiz round by round', () => {
   it('ends a round with a short song', async () => {
     const r = rig({ rounds: 2 });
     await r.quiz.start();
+    await r.advance(5_000);
     r.clips[0]!.end();
     await flush();
     expect(r.said.at(-1)).toMatch(/^Time's up/);
+  });
+
+  it('a clip that ends at once was never heard: another song takes the round, unrevealed', async () => {
+    const r = rig({ rounds: 2 });
+    await r.quiz.start();
+    const dead = r.answer()!.title;
+    r.clips[0]!.end();
+    await flush();
+    expect(r.said.join(' ')).not.toContain(dead);
+    expect(r.said.filter((s) => s === 'Round 1.')).toHaveLength(1);
+    expect(r.clips).toHaveLength(2);
+    expect(r.quiz.open).toBe(true);
+    expect(r.quiz.roundNumber).toBe(1);
+    expect(r.answer()!.title).not.toBe(dead);
+  });
+
+  it('gives up after three clips in a row that end at once', async () => {
+    const r = rig({ rounds: 2 });
+    await r.quiz.start();
+    for (let i = 0; i < 3; i++) {
+      r.clips.at(-1)!.end();
+      await flush();
+    }
+    expect(r.said.at(-2)).toBe("I ran out of songs that play, so that's the quiz.");
+    expect(r.said.join(' ')).not.toMatch(/Time's up|Nobody's guessing/);
+    expect(r.quiz.on).toBe(false);
   });
 
   it('plays each song once, whatever version', async () => {
@@ -352,6 +477,15 @@ describe('picking songs', () => {
     const songs = await quizSongs({ rounds: 2, played: true }, { recent: () => [t(1), t(2, { kind: 'podcast' }), t(3, { durationS: 4000 })], log: quiet }, AbortSignal.timeout(1000));
     expect(songs.map((s) => s.title)).toEqual(['Song 1']);
   });
+
+  it('keeps where a Plex song is, so its clip can play', async () => {
+    const plex: Track = { title: 'Plex Song', artist: 'X', source: 'plex', ref: '/library/parts/7/file.mp3', durationS: 180 };
+    const yt: Track = { title: 'YouTube Song', artist: 'Y', id: 'vid00000001', source: 'youtube', ref: 'https://stream/stale', durationS: 180 };
+    const songs = await quizSongs({ rounds: 2, played: true }, { recent: () => [plex, yt], log: quiet }, AbortSignal.timeout(1000), () => 0);
+    expect(songs.find((s) => s.source === 'plex')).toMatchObject({ ref: '/library/parts/7/file.mp3' });
+    // A YouTube stream URL goes stale: that one is looked up again by its id.
+    expect(songs.find((s) => s.source === 'youtube')?.ref).toBeUndefined();
+  });
 });
 
 describe('quizzes in a room', () => {
@@ -398,6 +532,20 @@ describe('quizzes in a room', () => {
     const rm = room();
     expect(q.start(rm, 'u1', { played: true })).toMatch(/haven't played enough/);
     expect(rm.music.lent).toBeUndefined();
+  });
+
+  it('hands a Plex song from history to the player with its part', async () => {
+    const rm = room();
+    const plex = Array.from({ length: 4 }, (_, i): Track => ({ title: `Plex Song ${i}`, artist: 'X', source: 'plex', ref: `/library/parts/${i}/file.mp3`, durationS: 180 }));
+    Object.defineProperty(rm.music, 'recent', { get: () => plex });
+    const asked: Track[] = [];
+    rm.music.clipTrack = async (t) => (asked.push(t), new Promise(() => {}));
+    const q = new Quizzes({ settings: { enabled: true, rounds: 2, clipSeconds: 20, hintSeconds: 12 }, log: quiet, sources: (r) => ({ recent: () => r.music.recent, log: quiet }) });
+    expect(q.start(rm, 'u1', { played: true })).toBeUndefined();
+    await flush();
+    expect(asked.length).toBeGreaterThan(0);
+    expect(asked[0]!.ref).toMatch(/^\/library\/parts\/\d\/file\.mp3$/);
+    q.end('discord');
   });
 
   it('a stop for the music ends the quiz', async () => {
