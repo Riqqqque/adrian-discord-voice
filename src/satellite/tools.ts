@@ -22,7 +22,7 @@ export interface PcToolDeps {
   now?(): number;
 }
 
-const NAMES = ['pc_apps', 'pc_open', 'pc_media', 'pc_volume', 'pc_system', 'pc_info'] as const;
+const NAMES = ['pc_apps', 'pc_windows', 'pc_open', 'pc_media', 'pc_volume', 'pc_system', 'pc_info'] as const;
 
 /** pc_system actions that need the person's own yes: the question, and what
  *  a yes may say about it ("yes restart it"). */
@@ -69,7 +69,7 @@ export class PowerDownWindow {
 
 /** Prompt line: when to use them. */
 export const PC_RULE =
-  "If the person has their PC connected (the PC satellite), you can control it with the pc_ tools: open, close or switch to apps and games, open websites, YouTube and folders, control what's playing, set volume (also per app), lock it, turn the screens off, sleep, restart or shut it down, and check CPU, memory and disk. When someone talks to you through their PC, short orders are about that PC: \"pause\", \"skip\", \"what's playing\", \"turn it down\" mean pc_media and pc_volume, unless your own music is the thing playing (see Music now). \"Turn my music down\" or \"turn it down\" is pc_volume with playing true: it lowers just what they're listening to and leaves their game and Discord alone. Change the master volume only when they ask for the PC's own or overall volume. Act right away, then confirm in a few words (\"Done.\", \"Spotify's open.\", \"Down to 30.\"); don't describe how you did it and don't offer more help. Do every part of a combined order. For sleep, restart and shutdown, just call pc_system: it asks them itself, so don't ask first. If they answer yes, call it again with the same action. If a tool says no PC is connected, tell them.";
+  "If the person has their PC connected (the PC satellite), you can control it with the pc_ tools: open, close or switch to apps and games, arrange their windows (snap to a side or corner, maximize, move to another monitor), open websites, YouTube and folders, control what's playing, set volume (also per app), lock it, turn the screens off, sleep, restart or shut it down, and check CPU, memory and disk. When someone talks to you through their PC, short orders are about that PC: \"pause\", \"skip\", \"what's playing\", \"turn it down\" mean pc_media and pc_volume, unless your own music is the thing playing (see Music now). \"Turn my music down\" or \"turn it down\" is pc_volume with playing true: it lowers just what they're listening to and leaves their game and Discord alone. Change the master volume only when they ask for the PC's own or overall volume. Act right away, then confirm in a few words (\"Done.\", \"Spotify's open.\", \"Down to 30.\"); don't describe how you did it and don't offer more help. Do every part of a combined order. For sleep, restart and shutdown, just call pc_system: it asks them itself, so don't ask first. If they answer yes, call it again with the same action. \"Put it back\" right after you moved a window is pc_windows back. If a tool says no PC is connected, tell them.";
 
 export function pcTools(d: PcToolDeps): Tool[] {
   const yes = new PendingYes<string>(d.now);
@@ -80,6 +80,17 @@ export function pcTools(d: PcToolDeps): Tool[] {
       properties: {
         action: { type: 'string', enum: ['open', 'close', 'focus', 'minimize', 'running', 'show_desktop', 'list'] },
         name: { type: 'string', description: 'The app or game, as they said it.' },
+      },
+      required: ['action'],
+    },
+    pc_windows: {
+      description:
+        'Arrange app windows on the PC. snap: to a side (left, right, top, bottom) or a corner (top_left, top_right, bottom_left, bottom_right). maximize. restore: out of maximized or minimized. center. move: to another monitor. back: undo the last change ("put it back"). monitors: the screens and what is on each. name: the app as they said it; leave it out for "it", "this" or "this window" (the window in front). monitor: the screen they named (main, other, left, right, or a number), also with snap, maximize and center ("snap Discord to the left of my main monitor"). Games and full-screen windows are never moved.',
+      properties: {
+        action: { type: 'string', enum: ['snap', 'maximize', 'restore', 'center', 'move', 'back', 'monitors'] },
+        name: { type: 'string', description: 'The app, as they said it. Leave out for "it" or "this window".' },
+        side: { type: 'string', enum: ['left', 'right', 'top', 'bottom', 'top_left', 'top_right', 'bottom_left', 'bottom_right'] },
+        monitor: { type: 'string', description: 'main, other, left, right, or a number like "2". Only when they named a screen.' },
       },
       required: ['action'],
     },
@@ -185,7 +196,7 @@ export function pcTools(d: PcToolDeps): Tool[] {
 
 const NOT_DONE = "Didn't happen: ";
 /** pc_ calls that only look something up (the conversation may go on). */
-const LOOKUPS = new Set(['pc_apps.running', 'pc_apps.list', 'pc_media.status', 'pc_volume.get']);
+const LOOKUPS = new Set(['pc_apps.running', 'pc_apps.list', 'pc_windows.monitors', 'pc_media.status', 'pc_volume.get']);
 
 /** Say it in words: "40%" → "40 percent". */
 const spoken = (s: string) => s.replace(/(\d+)\s?%/g, '$1 percent');
@@ -243,6 +254,8 @@ export function confirmation(name: string, a: Record<string, unknown>, result: s
       if (action === 'close') return typeof a.name === 'string' && a.name ? `Closing ${a.name.charAt(0).toUpperCase()}${a.name.slice(1)}.` : 'Done.';
       if (action === 'focus' || action === 'minimize' || action === 'show_desktop') return result;
       return undefined; // running, list: worth an answer
+    case 'pc_windows':
+      return action === 'monitors' ? undefined : spoken(result); // monitors: worth an answer
     case 'pc_open':
       if (typeof a.url === 'string' && a.url) {
         const host = hostOf(a.url);
