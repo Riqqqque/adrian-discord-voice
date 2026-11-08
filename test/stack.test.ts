@@ -2285,3 +2285,43 @@ describe('a PC in a game', () => {
     await r.stack.stop();
   });
 });
+
+describe('a music quiz in the call', () => {
+  it('takes answers without her name, ignores side talk, holds music requests, and stops on request', async () => {
+    const r = await rig(MUSIC);
+    r.client.channels.cache.set(CALL, { members: { filter: () => ({ size: 2 }) }, isVoiceBased: () => true } as never);
+    const songs = [
+      { title: 'Blinding Lights', artist: 'The Weeknd' },
+      { title: 'Seven Nation Army', artist: 'The White Stripes' },
+      { title: 'Take on Me', artist: 'a-ha' },
+      { title: 'Creep', artist: 'Radiohead' },
+    ];
+    vi.spyOn(YoutubeSource.prototype, 'playlist').mockResolvedValue({ tracks: songs.map((s, i) => ({ ...s, source: 'youtube', ref: '', id: `vidquiz000${i}` })) } as never);
+    vi.spyOn(MusicPlayer.prototype, 'clipTrack').mockImplementation(async (t) => ({ ...t, ref: 'https://stream/x', durationS: 200 }));
+    const clips: string[] = [];
+    vi.spyOn(MusicPlayer.prototype, 'clip').mockImplementation(async (t) => {
+      clips.push(t.title);
+      return { track: t, startS: 60, seconds: 20, done: new Promise(() => {}), stop() {} };
+    });
+    vi.spyOn(Math, 'random').mockReturnValue(0.999); // no shuffle: the list's order
+    r.heard(r.discordPipe, SAM, 'hey adrian start a music quiz', 'start a music quiz');
+    await until(() => r.tts.calls.includes('Round 1.'), 'the first round');
+    expect(r.tts.calls.some((t) => t.startsWith('Music quiz! 8 rounds'))).toBe(true);
+    await until(() => clips.length === 1, 'the first clip');
+    const first = clips[0]!;
+    const answer = songs.find((s) => s.title === first)!;
+    // Side talk: nothing said, no model call.
+    const said = r.tts.calls.length;
+    r.heard(r.discordPipe, SAM, 'what are we eating tonight');
+    await sleep(40);
+    expect(r.tts.calls.slice(said)).toEqual([]);
+    r.heard(r.discordPipe, SAM, `is it ${answer.title}`);
+    await until(() => r.tts.calls.some((t) => t.includes(`That's ${answer.title} by ${answer.artist}.`)), 'the reveal');
+    expect(r.llmBodies).toHaveLength(0);
+    await order(r, r.discordPipe, SAM, 'play despacito', "We're in the middle of a music quiz. Say stop the quiz first, then ask again.");
+    r.heard(r.discordPipe, SAM, 'hey adrian stop the quiz', 'stop the quiz');
+    await until(() => r.tts.calls.some((t) => t.startsWith('Quiz over.')), 'the end');
+    expect(r.llmBodies).toHaveLength(0);
+    await r.stack.stop();
+  });
+});

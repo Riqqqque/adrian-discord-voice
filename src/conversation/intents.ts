@@ -179,7 +179,8 @@ export function classify(text: string): Intent | undefined {
 
 export type MusicIntent =
   | { kind: 'play'; query: string; mode: 'now' | 'queue'; source?: 'youtube' | 'plex' }
-  | { kind: 'control'; action: 'pause' | 'resume' | 'skip' | 'stop' | 'status' };
+  | { kind: 'control'; action: 'pause' | 'resume' | 'skip' | 'stop' | 'status' | 'back' | 'who' }
+  | { kind: 'control'; action: 'volume'; level: number };
 
 /** Party games and other things you "play" that aren't music. */
 const NOT_MUSIC = /^(a |the |some )?(game|games|trivia|quiz|would you rather|riddles?|20 questions|twenty questions|rock paper|tic tac|hangman|word games?|with me|along|dead|nice|fair|it again|that again|it cool|around|dumb|minecraft|fortnite|valorant|roblox|rocket league|cards?|poker|chess|catch)\b/i;
@@ -192,6 +193,8 @@ const MUSIC_CONTROL: [RegExp, MusicIntent][] = [
   [/^(pause|pause (it|this|that|the music|the song|music)|hold the music)$/, { kind: 'control', action: 'pause' }],
   [/^(resume|unpause|un pause|keep playing|continue|continue (the music|playing)|play (it|the music) again|resume (the music|playing|the song))$/, { kind: 'control', action: 'resume' }],
   [/^(stop (the |this )?(music|song)|stop playing|turn off the music|turn the music off|kill the music|cut the music|music off|no more music|end the music|clear the queue)$/, { kind: 'control', action: 'stop' }],
+  [/^(go back|back|previous|previous song|play the (last|previous) (song|one) again|play the previous (song|one)|go back (a|one) song|last song again|replay the last song)$/, { kind: 'control', action: 'back' }],
+  [/^(who (requested|asked for|picked|chose|queued|put on) (this|that|this song|that song|the song|this one|it)|who put (this|that|it|this song) on|whose (song|pick) is (this|that))$/, { kind: 'control', action: 'who' }],
   [/^(whats playing|what is playing|what song is (this|that|playing)|whats this song|what is this song|what song|whats (the|this) song( called)?|what are we listening to|whats up next|what is up next|whats next|whats in the queue|whats queued)$/, { kind: 'control', action: 'status' }],
 ];
 
@@ -231,6 +234,8 @@ export function classifyMusic(text: string): MusicIntent | undefined {
   const s = orderWords(text).replace(/^(play|put on|throw on|blast|bump|queue( up)?)[.…,]+\s*/i, '$1 '); // a pause after the verb
   const plain = s.toLowerCase().replace(/[’']/g, '');
   for (const [re, intent] of MUSIC_CONTROL) if (re.test(plain)) return intent;
+  const level = /^(?:set |turn |put )?(?:the )?(?:music|volume|music volume|music level)(?: volume)? (?:to |at )?(\d{1,3})(?: ?percent| ?%)?$/.exec(plain);
+  if (level) return { kind: 'control', action: 'volume', level: Math.min(100, Math.max(5, Number(level[1]))) };
   const m = s.match(/^(play|put on|throw on|blast|bump|queue( up)?|add)\s+(.+)$/i);
   if (!m) return undefined;
   const verb = m[1]!.toLowerCase();
