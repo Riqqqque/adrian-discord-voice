@@ -53,6 +53,10 @@ export interface ControllerDeps {
   /** Whether she's listening to this person (or to everyone, no id) may have
    *  changed; `listenLeftMs` says for how long now. */
   listenChanged?(userId?: UserId): void;
+  /** Only her name starts a turn with this person now (they're in a game): no
+   *  follow-up window, and talking over her doesn't stop her. "Yes?" and her
+   *  questions still take the next words. */
+  quiet?(userId: UserId): boolean;
 }
 
 export interface HeardInput {
@@ -161,12 +165,17 @@ export class ConversationController {
 
   /** Would words from this person (without the wake phrase), begun at `at`, be taken as a request? */
   listeningTo(userId: UserId, at = this.d.now()): boolean {
-    return (this.expecting.get(userId) ?? 0) > at || (this.followUpUntil.get(userId) ?? 0) > at;
+    return (this.expecting.get(userId) ?? 0) > at || this.followUpOpen(userId, at);
+  }
+
+  /** In the follow-up window after an answer, unless only her name counts now. */
+  private followUpOpen(userId: UserId, at: number): boolean {
+    return (this.followUpUntil.get(userId) ?? 0) > at && !this.d.quiet?.(userId);
   }
 
   /** How much longer words from this person count without the wake phrase (0: not listening). */
   listenLeftMs(userId: UserId): number {
-    const until = Math.max(this.expecting.get(userId) ?? 0, this.followUpUntil.get(userId) ?? 0);
+    const until = Math.max(this.expecting.get(userId) ?? 0, this.d.quiet?.(userId) ? 0 : (this.followUpUntil.get(userId) ?? 0));
     return Math.max(0, Math.round(until - this.d.now()));
   }
 
@@ -271,7 +280,7 @@ export class ConversationController {
     }
 
     const wasExpecting = (this.expecting.get(e.userId) ?? 0) > spokenAt;
-    if (!e.woke && !wasExpecting && (this.followUpUntil.get(e.userId) ?? 0) <= spokenAt) return;
+    if (!e.woke && !wasExpecting && !this.followUpOpen(e.userId, spokenAt)) return;
     // Nothing but her name, however many times: the quick "Yes?", not the model.
     const command = e.woke ? (classify(e.command)?.kind === 'name' ? '' : e.command) : text;
 
@@ -329,6 +338,8 @@ export class ConversationController {
     // more words are the rest of the question (see heard).
     if (a.spokeAt === undefined || a.working) return;
     if (a.userId !== userId && !this.d.isPriority(userId)) return;
+    // In a game they talk to their team over her all the time: "stop" or her name still work.
+    if (this.d.quiet?.(userId)) return;
     // Ignore the tail of the request itself: barge-in only counts once the
     // answer has started.
     if (this.d.now() - a.started < this.o.bargeInMs) return;

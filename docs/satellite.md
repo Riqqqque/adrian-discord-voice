@@ -52,6 +52,7 @@ Text frames are JSON objects with a `type`. Binary frames are audio.
 | `stop` | | Stop talking (button or hotkey). |
 | `action_result` | `id`, `ok`, `result`, optional `image` | Outcome of an `action`. `result` is text for the model (the server keeps at most 9000 characters). `image` (`pc_screen` only): `{ mime, data }`, `mime` `image/jpeg` or `image/png`, `data` base64 of at most 1.5 MB. See [Pictures](#pictures). |
 | `ping` | | Keep-alive; answered with `pong`. |
+| `activity` | `gaming: bool`, `game` (optional, at most 60 characters) | A game is being played on this PC now, or no longer is (see [Quiet while gaming](#quiet-while-gaming)). Sent when it changes and after every `welcome` while playing. Apps before 0.15.6 never send it: the service treats every connection as not playing until it says otherwise. |
 
 ### Service → satellite
 
@@ -124,3 +125,52 @@ note that it was shown. An OpenAI-compatible model (the fallback) never gets
 it: its tool result says the screen couldn't be read right now, so it says so
 instead of guessing. Pictures are never logged, cached or kept in the
 conversation memory, which holds only what was said.
+
+## Quiet while gaming
+
+The PC app looks at what's in front every 2 seconds: a program in a game's
+install folder (Steam, Epic, Riot, Xbox and the usual launcher folders) or a
+well-known game by name, or a full-screen app that isn't a browser or video
+player. If Windows can't read the program in front but Steam says a game is
+running, that counts too. It only reads the foreground window, its program and
+Steam's `RunningAppID`; nothing touches the game. Playing starts after 5
+seconds in a game and ends after 20 seconds out of one, so a moment in Discord
+doesn't end it. The switch "Quiet while I play" in the app's settings (on by
+default) turns this off on that PC.
+
+While that PC is in a game, and `satellite.quietWhileGaming` is on:
+
+- Every turn in that PC's room needs her name (or push-to-talk, or typing).
+  There's no follow-up window after an answer, talking over her doesn't stop
+  her ("stop" and her name still do), and she never answers side talk. After a
+  bare "Adrian" ("Yes?") and after her own questions ("Restart the PC?") the
+  next words are still taken.
+- Answers there are kept to one short sentence, and she knows the game's name,
+  so "am I in a game?" works.
+- The Discord call is unaffected, and so are requests from the call that reach
+  the PC.
+
+What would reach the PC unasked, and what happens to it:
+
+| what | while playing |
+|---|---|
+| Timers they set | Ring as usual: they set them to ring. |
+| Reminders said at that PC | Held. The DM that goes with every PC reminder still goes at once, as the record. |
+| Reminders due while they're audible in her call | Said in the call, as usual. |
+| Messages from other people (`message_member`) | Never spoken at a PC: they're a DM or an @mention in Discord, so nothing changes. |
+| Answers to their own stop ("Okay.", a restart called off) | Said: they asked. |
+
+When the game ends, held items come as one line: "While you were playing:"
+and what they were, for one or two; for more, a summary ("...your laundry
+reminder came up, and 2 reminders came up. Ask me if you want the details.")
+with the details in her context for 30 minutes. If they're audible in her call
+then, she says it there. A line that isn't heard goes by DM (for items that
+don't have one yet).
+
+Held items are kept per owner in `<state>/held-while-gaming.json`, at most 50
+(another one is said at once), and survive a restart. If the PC drops in a
+game, they wait 2 minutes for it: back and still playing, they stay held; back
+and not playing, she says them there; still gone, they go out the way they
+would with no PC (her call if they're in it, else a DM of what had none).
+Anything held for 12 hours goes out that way too, even mid-game. After a
+restart with nobody back, the saved ones go after 2 minutes the same way.
