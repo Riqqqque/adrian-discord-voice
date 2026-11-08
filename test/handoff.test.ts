@@ -471,9 +471,9 @@ describe('tell_call', () => {
 
   it('their Discord name counts as their name too', async () => {
     const c = call();
-    const as = (spoken: string) => c.tool.run({ message: 'on in 5', spoken }, new AbortController().signal, { userId: RIQUE, speaker: 'Riqqqque', channelId: 'sat:desk', said: 'tell the call on in 5', turn: Math.random() });
-    await as('Riqqqque says he will be on in five.');
-    expect(c.announce).toHaveBeenLastCalledWith(RIQUE, 'Riqqqque says he will be on in five.');
+    const as = (spoken: string) => c.tool.run({ message: 'on in 5', spoken }, new AbortController().signal, { userId: RIQUE, speaker: 'Nightowl', channelId: 'sat:desk', said: 'tell the call on in 5', turn: Math.random() });
+    await as('Nightowl says he will be on in five.');
+    expect(c.announce).toHaveBeenLastCalledWith(RIQUE, 'Nightowl says he will be on in five.');
     await as('Somebody says he will be on in five.');
     expect(c.announce).toHaveBeenLastCalledWith(RIQUE, 'Ree-kay says: on in 5');
   });
