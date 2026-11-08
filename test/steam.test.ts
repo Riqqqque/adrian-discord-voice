@@ -638,6 +638,24 @@ describe('when Steam fails', () => {
 });
 
 describe('steam tools', () => {
+  it('with no account linked, only the store price is offered; friends and wishlists wait for one', () => {
+    const none = steamTools(steam(fakeSteam(() => undefined).f, { accounts: {} }));
+    expect(none.map((t) => t.spec.name)).toEqual(['steam_price']);
+  });
+
+  it('the "who is playing" tools say which people each one covers', async () => {
+    const friends = steamTools(steam(fakeSteam(() => undefined).f)).find((t) => t.spec.name === 'steam_friends')!;
+    expect(friends.spec.description).toMatch(/own Steam friends/);
+    expect(friends.spec.description).toMatch(/Not for people in this Discord server \(game_night who_playing\)/);
+    expect(friends.spec.description).not.toMatch(/"is anyone playing/);
+    const { gameServerTool } = await import('../src/features/gameservers.js');
+    const mc = gameServerTool([{ name: 'Survival', host: '127.0.0.1', port: 25565, kind: 'minecraft' }]);
+    expect(mc.spec.description).toMatch(/which players are on them \(only Minecraft; who in this Discord server is playing a game is game_night\)/);
+    const { gameNightTool } = await import('../src/features/gamenight.js');
+    const night = gameNightTool({ guild: () => undefined, allowedGuilds: [], presences: false, signups: {} as never, lastText: () => undefined, voiceChannel: () => undefined, cooldownMs: 1, maxMentions: 10, perUserPerHour: 4 });
+    expect(night.spec.description).toMatch(/who in this Discord server is playing what right now \(their Discord status\).*not Steam friends \(steam_friends\) or players on a Minecraft server \(game_server_status\)/);
+  });
+
   it('three read-only tools that say their own answers, offered for Steam questions', () => {
     const tools = steamTools(steam(fakeSteam(() => undefined).f));
     expect(tools.map((t) => t.spec.name)).toEqual(['steam_friends', 'steam_wishlist_sales', 'steam_price']);

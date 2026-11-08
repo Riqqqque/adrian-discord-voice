@@ -11,6 +11,9 @@ import * as music from '../dist/features/music.js';
 import { PC_RULE, pcTools } from '../dist/satellite/tools.js';
 import { HANDOFF_RULE, handoffTools, tellCallTool } from '../dist/features/handoff.js';
 import { GAME_NIGHT_RULE, gameNightTool } from '../dist/features/gamenight.js';
+import { Steam, steamTools } from '../dist/features/steam.js';
+import { gameServerTool } from '../dist/features/gameservers.js';
+import { discordTools } from '../dist/features/discordinfo.js';
 
 const c = loadConfig(process.argv[2]);
 const s = readSecrets(c.secretsFile);
@@ -169,6 +172,19 @@ await ask("who's free for valorant", call('game_night', (x) => a(x) === 'who_fre
 await ask('ping everyone for valorant in 10', call('game_night', (x) => a(x) === 'ping' && /valorant/i.test(x.game ?? '') && Number(x.in_minutes) === 10));
 await ask('ping me for game night', call('game_night', (x) => a(x) === 'join'));
 await ask('stop pinging me for game night', call('game_night', (x) => a(x) === 'leave'));
+// The four "who's playing" tools side by side (Steam linked, a Minecraft server,
+// server_info): each question goes to the one that covers those people.
+{
+  const linked = steamTools(new Steam({ accounts: { '123456789012345678': '76561198000000000' }, country: 'US', shareWithServer: false, timezone: c.timezone }));
+  const mc = gameServerTool([{ name: 'Survival', host: '192.168.1.50', port: 25565, kind: 'minecraft' }]);
+  const info = discordTools({ client: {}, allowedGuilds: [], members: false, presences: false, timezone: c.timezone });
+  for (const t of [...linked.map((x) => recorded(x, 'Nobody on your Steam friends list is online.')), recorded(mc, 'Survival: up, 2 of 20 players; on now: Steve, Alex'), ...info.map((x) => recorded(x, 'Sam is online, playing Valorant.'))]) tools.push(t);
+  const only = (name, pred) => (cs) => cs.length > 0 && cs.every((k) => k.name === name) && call(name, pred)(cs);
+  await ask('is anyone playing valorant right now', (cs) => cs.some((k) => k.name === 'game_night' || k.name === 'server_info') && !cs.some((k) => k.name.startsWith('steam_') || k.name === 'game_server_status'));
+  await ask('are any of my steam friends on', only('steam_friends'));
+  await ask("who's on the minecraft server", only('game_server_status'));
+  tools.length -= linked.length + 1 + info.length;
+}
 // Chat: short, natural, no lists.
 await ask("how's it going", (cs, out) => cs.length === 0 && out.length > 0 && !/\n- |\*\*/.test(out), 35);
 await ask('tell me something interesting about octopuses', (cs, out) => cs.length === 0 && !/\n- |\*\*/.test(out), 70);

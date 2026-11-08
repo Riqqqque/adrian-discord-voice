@@ -407,7 +407,7 @@ export function gameNightTool(d: GameNightDeps): Tool {
     spec: {
       name: 'game_night',
       description:
-        "Game nights in this Discord server. who_free: who's around to play (game: for that game). who_playing: who's playing what right now, and who's in voice. ping: post one message pinging the people who signed up for game-night pings (\"get the squad on\", \"ping everyone for Valorant in 10\"): game is required, in_minutes is when it starts (the ping goes out now). join / leave: the person asking signs up for or stops game-night pings (\"ping me for game night\", \"stop pinging me\"), for one game or all. signed_up: who gets pings.",
+        "Game nights in this Discord server. who_free: who's around to play (game: for that game). who_playing: who in this Discord server is playing what right now (their Discord status) and who's in voice; not Steam friends (steam_friends) or players on a Minecraft server (game_server_status). ping: post one message pinging the people who signed up for game-night pings (\"get the squad on\", \"ping everyone for Valorant in 10\"): game is required, in_minutes is when it starts (the ping goes out now). join / leave: the person asking signs up for or stops game-night pings (\"ping me for game night\", \"stop pinging me\"), for one game or all. signed_up: who gets pings.",
       parameters: {
         type: 'object',
         properties: {

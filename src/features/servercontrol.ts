@@ -803,7 +803,7 @@ export class ServerControl {
       {
         spec: {
           name: 'game_server_status',
-          description: `Check the household's Minecraft servers: up, starting, stopped or crashed, and who is playing. Servers: ${names}. Leave server empty to check all.`,
+          description: `Check the household's Minecraft servers: up, starting, stopped or crashed, and which players are on them (only Minecraft; who in this Discord server is playing a game is game_night). Servers: ${names}. Leave server empty to check all.`,
           parameters: { type: 'object', properties: { server: { type: 'string' } }, additionalProperties: false },
         },
         timeoutMs: 8000,
