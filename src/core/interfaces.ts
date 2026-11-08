@@ -123,9 +123,6 @@ export interface ToolOutput {
   image?: ToolImage;
 }
 
-/** The text of a tool result, whichever form it came in. */
-export const toolText = (r: string | ToolOutput): string => (typeof r === 'string' ? r : r.text);
-
 export interface ToolSpec {
   name: string;
   description: string;
