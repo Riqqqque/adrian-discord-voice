@@ -79,7 +79,7 @@ Everything else goes to the language model.
 - **Reveal:** when someone gets it, or when the clip ends: title and artist.
 - **"Skip"**, **"what's the score?"**, **"stop the quiz"** work with or without her name. A stop for her while she isn't talking ("Adrian, stop") ends it too. At the end she reads the scoreboard.
 - **Kinds:** a genre (pop, rock, hip hop, R&B, country, metal, latin, k-pop...), a decade (50s to 2020s), both, an artist, or songs played here lately. With nothing named: today's popular songs. Default 8 rounds (up to 20).
-- **Music requests wait:** while a quiz runs, "play X" gets "say stop the quiz first". Her other commands work as usual.
+- **Music requests wait:** while a quiz runs, "play X" gets "say stop the quiz first". Her other commands work as usual. Starting a quiz stops what was playing, and it doesn't come back afterwards: ask for music again.
 - **It ends by itself** when nobody says anything for two rounds, or everyone leaves.
 - **At a PC** it works the same, just for you.
 - Answers are checked on the spot, for free. A near miss ("bohemian" for Bohemian Rhapsody) may cost one tiny model call, at most twice a round.
