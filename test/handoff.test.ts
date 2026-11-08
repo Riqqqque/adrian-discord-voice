@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { ToolContext } from '../src/core/interfaces.js';
-import { callRequestFor, handoffTools, LastThings, linksIn, MusicStarts, noteMessage, notingStarts, parsePlayers, tellCallTool, WindowLimiter, type CallMusic, type HandoffDeps, type PcLike, type SeenMessage, type TellCallDeps } from '../src/features/handoff.js';
+import { callRequestFor, handoffTools, whichLine, LastThings, linksIn, MusicStarts, noteMessage, notingStarts, parsePlayers, tellCallTool, WindowLimiter, type CallMusic, type HandoffDeps, type PcLike, type SeenMessage, type TellCallDeps } from '../src/features/handoff.js';
 import type { RequestResult, Track } from '../src/features/music.js';
 
 const RIQUE = '100000000000000001';
@@ -194,12 +194,20 @@ describe('send_to_pc', () => {
     r.post(KIM, 'Kim', 'https://example.com/kim');
     const q = await r.run({ action: 'send_to_pc' });
     expect(q).toBe('Which one? 1: "Kim"\'s link to example.com; 2: "Sam"\'s YouTube video. Ask them, then call send_to_pc again with choice set to the number.');
-    expect(r.speak({ action: 'send_to_pc' }, q)).toBeUndefined(); // the model asks in its own words
+    // Asked as is, so their next words are the answer.
+    expect(r.tool.asks!(q)).toBe(true);
+    expect(r.speak({ action: 'send_to_pc' }, q)).toBe("Which one: Kim's link to example.com, or Sam's YouTube video?");
     expect(r.actions).toEqual([]);
     expect(await r.run({ action: 'send_to_pc', choice: 2 })).toBe('Opened "Sam"\'s YouTube video on their PC.');
     expect(r.actions[0]!.args).toEqual({ url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ' });
     // Used up.
     expect(await r.run({ action: 'send_to_pc', choice: 1 })).toMatch(/^That list is gone/);
+  });
+
+  it('the spoken question reads naturally for three, and for her own and theirs', () => {
+    expect(whichLine('Which one? 1: the link to example.com you sent them; 2: their own YouTube video; 3: "Nights by Frank Ocean", playing in the call. Ask them, then call send_to_pc again with choice set to the number.')).toBe(
+      'Which one: the link to example.com I sent you, your own YouTube video, or Nights by Frank Ocean, playing in the call?',
+    );
   });
 
   it('the list expires', async () => {
@@ -424,6 +432,15 @@ describe('tell_call', () => {
     const c = call();
     await c.run({ message: 'want to play Valorant?', spoken: 'Anyone want to play Valorant?' }, 'ask them if they want to play valorant');
     expect(c.announce).toHaveBeenCalledWith(RIQUE, 'Ree-kay says: want to play Valorant?');
+  });
+
+  it('their Discord name counts as their name too', async () => {
+    const c = call();
+    const as = (spoken: string) => c.tool.run({ message: 'on in 5', spoken }, new AbortController().signal, { userId: RIQUE, speaker: 'Riqqqque', channelId: 'sat:desk', said: 'tell the call on in 5', turn: Math.random() });
+    await as('Riqqqque says he will be on in five.');
+    expect(c.announce).toHaveBeenLastCalledWith(RIQUE, 'Riqqqque says he will be on in five.');
+    await as('Somebody says he will be on in five.');
+    expect(c.announce).toHaveBeenLastCalledWith(RIQUE, 'Ree-kay says: on in 5');
   });
 
   it('no pings, no links, no markdown, and a length cap', async () => {

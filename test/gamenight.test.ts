@@ -95,6 +95,8 @@ function rig(o: { presences?: boolean; voice?: (c: Record<string, ReturnType<typ
   const signal = new AbortController().signal;
   return {
     chans,
+    members,
+    guild,
     signups,
     tick: (ms: number) => (now += ms),
     run: (a: Record<string, unknown>, said = 'hey', extra: Partial<ToolContext> = {}) => tool.run(a, signal, ctx(said, extra)),
@@ -232,6 +234,11 @@ describe('game-night pings', () => {
   it('asks which game when none was given', async () => {
     const r = rig({ optIn: [id(1)] });
     expect(await r.run({ action: 'ping' }, 'get the squad on')).toBe('Which game? Ask them.');
+    // A question back, not an act: their answer is still heard.
+    const acts = r.tool.acts as (a: Record<string, unknown>) => boolean;
+    expect(acts({ action: 'ping' })).toBe(false);
+    expect(acts({ action: 'ping', game: 'Valorant' })).toBe(true);
+    expect(acts({ action: 'who_free' })).toBe(false);
   });
 
   it('leaves out people already in voice, on do not disturb, or who cannot see the channel', async () => {
@@ -255,6 +262,20 @@ describe('game-night pings', () => {
     const users = r.sent()[0]!.msg.allowedMentions.users;
     expect(users).toHaveLength(10);
     expect(users[0]).toBe(id(13));
+  });
+
+  it('people not seen yet are fetched in one request', async () => {
+    const r = rig({ optIn: [id(1), id(40), id(41)] });
+    const fetch = vi.fn(async (x: unknown) => {
+      if (typeof x === 'string') return r.members.get(x);
+      for (const u of (x as { user: string[] }).user) r.members.set(u, member(u, `New${u.slice(-2)}`));
+      return r.members;
+    });
+    r.guild.members.fetch = fetch as never;
+    expect(await r.run({ action: 'ping', game: 'Valorant' }, 'ping everyone')).toBe('Pinged 3 people in #general for Valorant.');
+    const batches = fetch.mock.calls.filter(([x]) => typeof x !== 'string');
+    expect(batches).toHaveLength(1);
+    expect(batches[0]![0]).toMatchObject({ user: [id(40), id(41)] });
   });
 
   it('one ping per game per cooldown; another game can go', async () => {
