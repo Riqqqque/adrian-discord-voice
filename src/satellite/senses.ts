@@ -42,7 +42,20 @@ export function forModel(r: ActionResult, notDone: string): string | ToolOutput 
 }
 
 /** The result as the optional transcript log may show it: never the
- *  clipboard's text, which starts on the line after its header. */
+ *  clipboard's text, which starts on the line after its header, and never a
+ *  screen picture's window title (`Here's a picture of Chrome ("Inbox - ..."),
+ *  1280x720.`), which can name an email or a chat. */
 export function forLog(name: string, result: string): string {
-  return name === 'pc_clipboard' ? result.split('\n', 1)[0]!.slice(0, 120) : result;
+  if (name === 'pc_clipboard') return result.split('\n', 1)[0]!.slice(0, 120);
+  if (name === 'pc_screen') return result.replace(/ \(".*"\)(?=, \d+x\d+\.)/s, '').replace(/"[^]*$/, '"…').slice(0, 200);
+  return result;
+}
+
+/** Tools whose results hold what is on their PC. What she says after one may
+ *  repeat it, so the transcript log keeps only the answer's length. */
+export const PRIVATE_TOOLS: ReadonlySet<string> = new Set(['pc_clipboard', 'pc_screen']);
+
+/** Her answer as the optional transcript log may show it. */
+export function answerForLog(said: string, privateTurn: boolean): { said: string } | { saidChars: number } {
+  return privateTurn ? { saidChars: said.length } : { said: said.slice(0, 500) };
 }
