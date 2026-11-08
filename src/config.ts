@@ -204,6 +204,29 @@ export const PocConfigSchema = z.object({
       radarrUrl: z.string().url().default('http://127.0.0.1:7878'),
     })
     .default({ plexUrl: 'http://127.0.0.1:32400', sonarrUrl: 'http://127.0.0.1:8989', radarrUrl: 'http://127.0.0.1:7878' }),
+  /** One short "since yesterday: ..." line when someone joins her call after a while away. Off by default. */
+  headsUp: z
+    .object({
+      enabled: z.boolean().default(false),
+      /** Who gets them; empty: the owners. */
+      people: z.array(snowflake).max(20).default([]),
+      /** Away at least this long before a heads-up. */
+      awayHours: z.number().min(0.5).max(720).default(4),
+      /** At most one heads-up per person this often. */
+      minHours: z.number().min(0.5).max(720).default(6),
+    })
+    .default({ enabled: false, people: [], awayHours: 4, minHours: 6 }),
+  /** The weekly recap in a text channel: on once a channel is set, unless enabled is false. */
+  recap: z
+    .object({
+      enabled: z.boolean().optional(),
+      channelId: snowflake.optional(),
+      day: z.enum(['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday']).default('sunday'),
+      /** Hour of the day in `timezone`, 0-23. */
+      hour: z.number().int().min(0).max(23).default(18),
+    })
+    .default({ day: 'sunday', hour: 18 })
+    .transform((v) => ({ ...v, enabled: v.enabled ?? !!v.channelId })),
   /** Admin web UI. Loopback only unless the installer was told otherwise. */
   server: z
     .object({

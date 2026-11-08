@@ -697,6 +697,8 @@ export interface PlayerOptions {
   topTracks?: TopTracks;
   /** No audio for this long means the stream is dead (default 30 s). */
   stallMs?: number;
+  /** A track started (the weekly recap counts them). */
+  onPlayed?: (track: Track) => void;
 }
 
 export type PlayResult = { ok: true; track: Track; queued: number } | { ok: false; message: string };
@@ -1121,6 +1123,7 @@ export class MusicPlayer {
     this.current = { track: found, handle, decoder };
     this.played.push(found);
     if (this.played.length > HISTORY) this.played.shift();
+    this.o.onPlayed?.(found);
     this.o.output.takeStats?.();
     this.o.log.info('music playing', { source: found.source, title: found.title, artist: found.artist, durationS: found.durationS });
     const { via = found.source, ...spent } = timings.get(found) ?? {};

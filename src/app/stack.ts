@@ -23,8 +23,10 @@ import { LIMIT_MESSAGES, UsageLedger } from '../limits/usage-ledger.js';
 import { routeTools } from '../brain/tool-router.js';
 import { PartyGames } from '../features/games.js';
 import { AutoMemory } from '../features/automemory.js';
-import { gameServerTool } from '../features/gameservers.js';
+import { gameServerTool, pingMinecraft } from '../features/gameservers.js';
+import { HeadsUp } from '../features/headsup.js';
 import { mediaTools } from '../features/media.js';
+import { Recap, weekdayIndex } from '../features/recap.js';
 import { UserNotes } from '../features/notes.js';
 import { dueMessage, reminderRoute, Reminders } from '../features/reminders.js';
 import { join } from 'node:path';
@@ -44,7 +46,7 @@ import { Mixer } from '../voice/mixer.js';
 import { SOUND_RULE, soundTool } from '../features/sounds.js';
 import { eager } from '../core/eager.js';
 import { creatorLines, genderLines, memberLabel } from './identity.js';
-import { registerTextChat } from './textchat.js';
+import { registerTextChat, splitReply } from './textchat.js';
 import { discordTools, RelayLimiter } from '../features/discordinfo.js';
 import { MusicTaste } from '../features/taste.js';
 import { deezerTopTracks, describe as trackName, ffmpegDecoder, MusicPlayer, musicRules, musicState, musicTools, PlexMusicSource, type MusicSource, YoutubeSource, YTM_API } from '../features/music.js';
@@ -195,9 +197,10 @@ export async function startVoiceStack(
   const plexForMusic = secrets.get('PLEX_TOKEN');
   if (mc.enabled && mc.plexBackup && plexForMusic) musicSources.push(new PlexMusicSource({ url: config.media.plexUrl, token: plexForMusic }));
   const ffmpegOk = mc.enabled && spawnSync(mc.ffmpeg, ['-version'], { stdio: 'ignore' }).status === 0;
-  const makeMusic = (out: Mixer) =>
-    ffmpegOk && musicSources.length ? new MusicPlayer({ sources: musicSources, output: out, decode: ffmpegDecoder(mc.ffmpeg), log, volume: mc.volume, maxQueue: mc.maxQueue, autoplay: mc.autoplay, ...(mc.topSongs ? { topTracks: deezerTopTracks() } : {}) }) : undefined;
-  const music = makeMusic(mixer);
+  const makeMusic = (out: Mixer, onPlayed?: (t: { title: string; artist?: string; kind?: string }) => void) =>
+    ffmpegOk && musicSources.length ? new MusicPlayer({ sources: musicSources, output: out, decode: ffmpegDecoder(mc.ffmpeg), log, volume: mc.volume, maxQueue: mc.maxQueue, autoplay: mc.autoplay, ...(mc.topSongs ? { topTracks: deezerTopTracks() } : {}), ...(onPlayed ? { onPlayed } : {}) }) : undefined;
+  // The call's songs count toward the weekly recap (not podcasts, not PCs).
+  const music = makeMusic(mixer, (t) => t.kind !== 'podcast' && recap.played(t.title, t.artist));
   if (mc.enabled) log.info(music ? 'music ready' : 'music off', { sources: musicSources.map((s) => s.name), ffmpeg: ffmpegOk });
 
   // --- sound effects (needs YouTube and ffmpeg, like music) -------------------
@@ -340,6 +343,74 @@ export async function startVoiceStack(
   const links = new RecentLinks();
   const games = new PartyGames();
   const room = new RoomTalk();
+
+  // --- heads-ups on joining, the weekly recap (features/headsup.ts, recap.ts) --
+  const digestSources = {
+    media: {
+      ...(secrets.get('PLEX_TOKEN') ? { plex: { url: config.media.plexUrl, token: secrets.get('PLEX_TOKEN')! } } : {}),
+      ...(secrets.get('SONARR_API_KEY') ? { sonarr: { url: config.media.sonarrUrl, apiKey: secrets.get('SONARR_API_KEY')! } } : {}),
+      ...(secrets.get('RADARR_API_KEY') ? { radarr: { url: config.media.radarrUrl, apiKey: secrets.get('RADARR_API_KEY')! } } : {}),
+      timezone: config.timezone,
+    },
+    servers: config.gameServers,
+    ping: (host: string, port: number) => pingMinecraft(host, port),
+  };
+  /** Who's talking in the call (a stream that never ended counts for 20 s at most), for "is it quiet?". */
+  const talking = new Map<UserId, number>();
+  let lastTalkAt = -Infinity;
+  transport.on('speechStart', (id) => void (talking.set(id, performance.now()), (lastTalkAt = performance.now())));
+  transport.on('speechEnd', (id) => void (talking.delete(id), (lastTalkAt = performance.now())));
+  const callQuiet = () => {
+    const now = performance.now();
+    for (const [id, at] of talking) if (now - at > 20_000) talking.delete(id);
+    return talking.size === 0 && now - lastTalkAt > 4_000 && !music?.nowPlaying && !controller.busy && controller.queued === 0;
+  };
+  const headsUp = new HeadsUp(stateDir ? join(stateDir, 'heads-up.json') : undefined, config.headsUp, {
+    sources: digestSources,
+    timezone: config.timezone,
+    isOwner: (id) => isOwner(id),
+    // Muted is fine; deafened can't hear it.
+    audible: (id) => transport.isReady() && !!inHerChannel(id) && !inHerChannel(id)!.deaf,
+    quiet: callQuiet,
+    name: (id) => config.nicknames[id] ?? nameOf(id),
+    say: async (id, line) => {
+      const heard = await controller.announce(id, line);
+      if (heard && spot) room.add(spot.channelId, 'bot', `You (heads-up for ${nameOf(id)})`, line);
+      return heard;
+    },
+    log,
+  });
+  /** People in her call (not bots). Right after she joins or moves, nobody there is arriving. */
+  const humansHere = () => {
+    const ch = spot ? client.channels.cache.get(spot.channelId) : undefined;
+    return new Set(ch?.isVoiceBased() ? [...ch.members.values()].filter((m) => !m.user.bot).map((m) => m.id) : []);
+  };
+  let membersKnown = false;
+  transport.on('membersChanged', (ids) => {
+    headsUp.members(new Set([...ids].filter((id) => !client.users.cache.get(id)?.bot)), !membersKnown || !transport.isReady());
+    membersKnown = true;
+  });
+  transport.on('ready', () => void (headsUp.members(humansHere(), true), (membersKnown = true)));
+  transport.on('moved', () => void (headsUp.left(), headsUp.members(humansHere(), true)));
+  transport.on('kicked', () => void (headsUp.left(), (membersKnown = false)));
+  const rc = config.recap;
+  if (rc.enabled && !rc.channelId) log.warn('weekly recap needs recap.channelId; it stays off');
+  const recap = new Recap(
+    stateDir ? join(stateDir, 'weekly-recap.json') : undefined,
+    { enabled: rc.enabled && !!rc.channelId, timezone: config.timezone, day: weekdayIndex(rc.day), hour: rc.hour },
+    {
+      sources: digestSources,
+      post: async (content) => {
+        const ch = await client.channels.fetch(rc.channelId!);
+        if (!ch?.isSendable()) throw new Error('the recap channel is not a text channel the bot can post in');
+        for (const part of splitReply(content)) await ch.send({ content: part, allowedMentions: { parse: [] } });
+      },
+      nameOf: (id) => config.nicknames[id] ?? nameOf(id),
+      named: (id) => headsUp.named(id),
+      isOwner: (id) => isOwner(id),
+      log,
+    },
+  );
   /** Who's in the voice call, so it can talk about and to everyone by name. */
   function rosterLines(channelId: string | undefined, askerId: string): string[] {
     const any = channelId ? client.channels.cache.get(channelId) : undefined;
@@ -409,6 +480,7 @@ export async function startVoiceStack(
           timezone: config.timezone,
         }).map((t) => cachedTool(t, 60_000)),
       );
+      tools.push(...headsUp.tools((id) => (userLang.get(id) ?? 'en') === 'en'), ...recap.tools());
       // Claude through its own SDK, anything else through the OpenAI-compatible adapter.
       const makeLlm = (p: { provider: 'openai' | 'anthropic'; baseUrl: string; model: string; effort: 'low' | 'medium' | 'high'; extraBody?: Record<string, unknown> | undefined }, key?: string): LlmProvider =>
         p.provider === 'anthropic'
@@ -452,6 +524,7 @@ export async function startVoiceStack(
           ...rosterLines(ctx.channelId, ctx.userId),
           ...room.context(ctx.channelId, ctx.userId),
           ...notes.context(ctx.userId, ctx.speaker, ctx),
+          ...headsUp.context(ctx.userId, ctx.speaker),
           ...games.context(ctx),
           ...(roomFor(ctx).music ? [musicState(roomFor(ctx).music!), ...linksLine(links.forPrompt(ctx.userId, ctx.guildId)), ...taste.context(ctx.userId, ctx.speaker)] : []),
           ...(roomFor(ctx).ui ? [`${ctx.speaker} is talking to you through their PC (A.D.R.I.A.N. satellite), not in the Discord call. Music and sounds play on that PC.`] : []),
@@ -840,6 +913,7 @@ export async function startVoiceStack(
     };
     answers.push(rec);
     if (answers.length > 200) answers.shift();
+    if (!silent && usage && firstAudioAt !== undefined) recap.answered(rm.ui ? 'pc' : 'call', userId);
     log.info('answered', {
       user: userId,
       ...rec,
@@ -1199,6 +1273,7 @@ export async function startVoiceStack(
                 // daily budget with no per-person check.
                 ledger.noteRequest(userId);
                 if (usage) ledger.addCost(costUsd(usage));
+                if (usage && !silent) recap.answered('text', userId);
               }
             })();
           },
@@ -1258,6 +1333,7 @@ export async function startVoiceStack(
     }
     // After the join, so one that came due while offline can be said in the call.
     if (!closing) reminders.start();
+    if (!closing) recap.start();
   });
 
   // The manager tries again after a passing failure, every 30 s to 5 min, so a
@@ -1378,6 +1454,9 @@ export async function startVoiceStack(
       clearInterval(idleTimer);
       controller.cancelAll();
       reminders.stop();
+      recap.stop();
+      headsUp.left();
+      headsUp.flush();
       music?.stop();
       mixer.stopAll();
       await satServer?.close();
