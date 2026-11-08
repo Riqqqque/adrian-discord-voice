@@ -283,7 +283,7 @@ export function discordTools(d: DiscordInfoDeps, relay?: { limiter: RelayLimiter
     spec: {
       name: 'server_info',
       description:
-        "Look up this Discord server: overview (name, size, owner, boosts), members (list or search, with name filter), member (one person's details: roles, join date, status, what they're playing or listening to, which call they're in), online (who's online and doing what), voice (who's in which voice channel), channels, roles. Results include each person's ping code for @mentioning them in text.",
+        "Look up this Discord server: overview (name, size, owner, boosts), members (list or search, with name filter), member (one person's details: roles, join date, status, what they're playing or listening to, which call they're in), online (who's online and doing what; who's free or playing for a game night is game_night, if you have it), voice (who's in which voice channel), channels, roles. Results include each person's ping code for @mentioning them in text.",
       parameters: {
         type: 'object',
         properties: {

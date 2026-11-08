@@ -191,7 +191,7 @@ sudo adrian restart
 | `media.plexUrl` | `http://127.0.0.1:32400` | |
 | `media.sonarrUrl` | `http://127.0.0.1:8989` | |
 | `media.radarrUrl` | `http://127.0.0.1:7878` | |
-| `steam.enabled` | `true` | Steam questions: friends online, wishlist sales, store prices (read-only) |
+| `steam.enabled` | `true` | Steam questions: friends online, wishlist sales, store prices (read-only). Friends and wishlists are offered only once `steam.accounts` has an account; prices work without one |
 | `steam.accounts` | `{}` | Discord user ID → that person's SteamID64, in quotes: `{"123456789012345678": "76561198000000000"}`. A `steamcommunity.com/profiles/…` or `/id/…` link or a custom profile name also works; profile names need `STEAM_API_KEY` to look up |
 | `steam.country` | `"US"` | Store country (two letters). Prices come in its currency |
 | `steam.shareWithServer` | `false` | Let members ask about each other's Steam ("is anything on Alex's wishlist on sale"). Only members with an account in `steam.accounts` can be asked about. Off: everyone gets only their own |

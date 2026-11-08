@@ -369,6 +369,11 @@ export class Steam {
   private readonly searches: TtlCache<{ id: number; name: string; type: string; price?: { currency: string; initial: number; final: number } }[]>;
   private readonly vanities: TtlCache<string>;
 
+  /** At least one Steam account is linked (steam.accounts). */
+  get linked(): boolean {
+    return Object.keys(this.o.accounts).length > 0;
+  }
+
   constructor(private readonly o: SteamOptions) {
     this.f = o.fetch ?? fetch;
     this.now = o.now ?? Date.now;
@@ -938,15 +943,19 @@ export function softenCaps(s: string): string {
   return s.replace(/\b[A-Z]{4,}\b/g, (w) => w.charAt(0) + w.slice(1).toLowerCase());
 }
 
+/** Friends and wishlists only once an account is linked: with none, they
+ *  could only answer "not linked", and "is anyone playing X" belongs to
+ *  game_night then. Store prices need no account. */
 export function steamTools(steam: Steam): Tool[] {
   const said = (_a: Record<string, unknown>, result: string) => result;
   const voice = (ctx: ToolContext) => async (p: Promise<string>) => (ctx.text ? p : softenCaps(await p));
-  return [
+  const needsAccount = new Set(['steam_friends', 'steam_wishlist_sales']);
+  const tools: Tool[] = [
     {
       spec: {
         name: 'steam_friends',
         description:
-          "The person's Steam friends who are online now and the games they're in. game: only friends playing that game (\"is anyone playing Elden Ring\").",
+          "The person's own Steam friends list: which of their Steam friends are online now and the games they're in (\"are any of my Steam friends on\", \"which of my Steam friends are playing Elden Ring\"). game: only friends playing that game. Not for people in this Discord server (game_night who_playing) or on a Minecraft server (game_server_status).",
         parameters: { type: 'object', properties: { game: { type: 'string' }, member: MEMBER }, additionalProperties: false },
       },
       slow: true,
@@ -977,4 +986,5 @@ export function steamTools(steam: Steam): Tool[] {
       speak: said,
     },
   ];
+  return steam.linked ? tools : tools.filter((t) => !needsAccount.has(t.spec.name));
 }
