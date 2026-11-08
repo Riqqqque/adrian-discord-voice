@@ -30,6 +30,14 @@ const result = (name, x) => {
   if (name === 'pc_media')
     return x.action === 'status' ? 'Spotify is playing “Nights” by Frank Ocean.' : x.action === 'next' ? 'Spotify is playing “Ivy” by Frank Ocean.' : 'Spotify is paused on “Nights” by Frank Ocean.';
   if (name === 'pc_info') return x.action === 'processes' ? 'Using the most memory: chrome 4.2 GB (24 processes), valorant 3.1 GB, discord 1.4 GB (6 processes).' : RESULTS.pc_info;
+  if (name === 'pc_windows') {
+    const app = x.name ? `${x.name.charAt(0).toUpperCase()}${x.name.slice(1)}` : 'Notepad';
+    if (x.action === 'monitors') return '2 monitors. 1 (left): 3840x2160 at 150%; Discord. 2 (main, right): 2560x1440 at 125%; Chrome, Spotify.';
+    if (x.action === 'back') return 'Discord is back where it was.';
+    if (x.action === 'move') return `${app} is on ${x.monitor === 'main' ? 'the main monitor' : 'the left monitor'}.`;
+    if (x.action === 'maximize') return `${app} is maximized.`;
+    return `${app} is on the ${String(x.side ?? 'left').replace('_', ' ')} ${String(x.side ?? '').includes('_') ? 'quarter' : 'half'}.`;
+  }
   if (name === 'pc_open') return x.folder ? `Opened the ${x.folder} folder.` : x.video_id ? 'Opened the YouTube video.' : 'Opened the page.';
   if (name === 'pc_system') {
     if (x.action === 'lock') return 'Locked the PC.';
@@ -105,6 +113,19 @@ await ask('open the JEI Mod Drinth page', call('pc_open', (x) => /jei/i.test(x.u
 await ask('pull up the wiki page for the ender dragon', call('pc_open', (x) => /ender(%20|\+|_| )dragon/i.test(x.url ?? '')));
 await ask('put on some lofi on youtube', (cs) => call('pc_open', (x) => /lofi/i.test(x.youtube ?? '') || !!x.video_id)(cs) || cs.some((k) => k.name === 'music.request'));
 await ask('lock my pc', call('pc_system', (x) => a(x) === 'lock'));
+// Window layout (pc_windows). Not run yet against the real model.
+await ask('snap discord to the left', call('pc_windows', (x) => a(x) === 'snap' && x.side === 'left' && /discord/i.test(x.name ?? '')));
+await ask('put spotify on my other monitor', call('pc_windows', (x) => a(x) === 'move' && /spotify/i.test(x.name ?? '') && (!x.monitor || /other/i.test(x.monitor))));
+await ask('move chrome to my main screen', call('pc_windows', (x) => a(x) === 'move' && /chrome/i.test(x.name ?? '') && /main|primary/i.test(x.monitor ?? '')));
+await ask('maximize notepad', call('pc_windows', (x) => a(x) === 'maximize' && /notepad/i.test(x.name ?? '')));
+await ask('put this window in the top right corner', call('pc_windows', (x) => a(x) === 'snap' && x.side === 'top_right' && !x.name));
+await ask('snap discord to the right side of my main monitor', call('pc_windows', (x) => a(x) === 'snap' && x.side === 'right' && /main|primary/i.test(x.monitor ?? '')));
+await ask("what's on each of my monitors", call('pc_windows', (x) => a(x) === 'monitors'));
+await (async () => {
+  const user = `windows${total}`;
+  await ask('snap discord to the right', call('pc_windows', (x) => a(x) === 'snap' && x.side === 'right'), 30, { user });
+  await ask('actually put it back', call('pc_windows', (x) => a(x) === 'back'), 30, { user, followUp: true });
+})();
 await ask('switch to chrome', call('pc_apps', (x) => a(x) === 'focus' && /chrome/i.test(x.name)));
 await power('shut down my computer', 'shutdown', 'Shut down the PC?');
 await power('restart my pc', 'restart', 'Restart the PC?', 'yes restart it');

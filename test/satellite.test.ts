@@ -281,7 +281,7 @@ describe('PC tools', () => {
     expect(await open.run({ youtube: 'never gonna give you up', play: true }, AbortSignal.timeout(1000), ctx)).toBe('done');
     expect(sent[0]).toEqual({ name: 'pc_open', args: { video_id: 'dQw4w9WgXcQ' } });
     expect(await open.run({ youtube: 'lofi' }, AbortSignal.timeout(1000), { userId: '999999999999999999', speaker: 'Sam' })).toMatch(/No PC/);
-    expect(tools.map((t) => t.spec.name)).toEqual(['pc_apps', 'pc_open', 'pc_media', 'pc_volume', 'pc_system', 'pc_info']);
+    expect(tools.map((t) => t.spec.name)).toEqual(['pc_apps', 'pc_windows', 'pc_open', 'pc_media', 'pc_volume', 'pc_system', 'pc_info']);
   });
 });
 
@@ -296,6 +296,29 @@ describe('PC confirmations', () => {
     expect(confirmation('pc_info', { action: 'summary' }, 'CPU 12%.')).toBeUndefined();
     expect(confirmation('pc_apps', { action: 'open', name: 'minecraft' }, "Didn't happen: Several match")).toBeUndefined();
     expect(confirmation('pc_system', { action: 'shutdown' }, "Didn't happen: Not done: shutdown needs")).toBeUndefined();
+  });
+
+  it('say window changes as the PC put them, and leave the monitor list and failures to the model', async () => {
+    const { confirmation } = await import('../src/satellite/tools.js');
+    expect(confirmation('pc_windows', { action: 'snap', name: 'discord', side: 'left' }, 'Discord is on the left half.')).toBe('Discord is on the left half.');
+    expect(confirmation('pc_windows', { action: 'move', name: 'spotify' }, 'Spotify is on the left monitor.')).toBe('Spotify is on the left monitor.');
+    expect(confirmation('pc_windows', { action: 'back' }, 'Notepad is back where it was.')).toBe('Notepad is back where it was.');
+    expect(confirmation('pc_windows', { action: 'monitors' }, '2 monitors. 1 (left): 3840x2160 at 150%; Discord.')).toBeUndefined();
+    expect(confirmation('pc_windows', { action: 'move', name: 'chrome' }, "Didn't happen: There's only one monitor.")).toBeUndefined();
+    expect(confirmation('pc_windows', { action: 'snap', name: 'valorant', side: 'left' }, "Didn't happen: Valorant is a game.")).toBeUndefined();
+  });
+
+  it('send window orders as they are, and count the monitor list as a lookup', async () => {
+    const sent: { name: string; args: Record<string, unknown> }[] = [];
+    const pc = { action: async (name: string, args: Record<string, unknown>) => (sent.push({ name, args }), { ok: true, result: 'Discord is on the left half.' }) };
+    const windows = pcTools({ pcFor: () => pc as never }).find((t) => t.spec.name === 'pc_windows')!;
+    const order = { action: 'snap', name: 'discord', side: 'left', monitor: 'main' };
+    expect(await windows.run({ ...order }, AbortSignal.timeout(1000), { userId: '123456789012345678', speaker: 'Alex' })).toBe('Discord is on the left half.');
+    expect(sent).toEqual([{ name: 'pc_windows', args: order }]);
+    const acts = windows.acts as (a: Record<string, unknown>) => boolean;
+    expect(acts({ action: 'snap' })).toBe(true);
+    expect(acts({ action: 'monitors' })).toBe(false);
+    expect((windows.spec.parameters as { required: string[] }).required).toEqual(['action']);
   });
 
   it('name the host a browser would really go to', async () => {
