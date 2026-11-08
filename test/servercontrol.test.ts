@@ -21,8 +21,8 @@ import type { ToolContext } from '../src/core/interfaces.js';
 
 // --- a fake Helix gateway -------------------------------------------------
 
-const SURVIVAL = 'helix:0b9a6c7e-5d0f-4f7e-8f0e-2f6d2b1c9a41';
-const CREATIVE = 'helix:1c8b5d6f-4e0a-4b3c-9d2e-3a5c7b9d1e20';
+const SURVIVAL = 'helix:11111111-1111-4111-8111-111111111111';
+const CREATIVE = 'helix:22222222-2222-4222-8222-222222222222';
 const TOKEN = 'A'.repeat(43);
 
 interface Inst {

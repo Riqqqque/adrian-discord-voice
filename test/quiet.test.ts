@@ -24,7 +24,7 @@ import {
 import { startSatelliteServer } from '../src/satellite/server.js';
 
 const OWNER = '123456789012345678';
-const OTHER = '876543210987654321';
+const OTHER = '223456789012345678';
 const tmp = () => join(mkdtempSync(join(tmpdir(), 'quiet-')), 'held.json');
 const reminder = (text: string) => ({ kind: 'reminder' as const, line: `reminder: ${text}.`, brief: reminderBrief(text), dmSent: true });
 

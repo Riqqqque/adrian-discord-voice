@@ -180,7 +180,7 @@ sudo adrian restart
 | Setting | Default | Meaning |
 |---|---|---|
 | `gameServers` | `[]` | `[{"name":"Survival","host":"127.0.0.1","port":25565}]`: Minecraft status pings |
-| `gameServers.N.helix.instanceId` | | The same server in Helix, e.g. `helix:0b9a6c7e-5d0f-4f7e-8f0e-2f6d2b1c9a41` (the server page's **Advanced** tab). Needed for server control |
+| `gameServers.N.helix.instanceId` | | The same server in Helix, `helix:<instance id from the server's Advanced tab>`. Needed for server control |
 | `gameServers.N.helix.bedrock` | `false` | The server runs Geyser and Floodgate, so Bedrock players can be whitelisted |
 | `gameServers.N.helix.bedrockPrefix` | `"."` | Floodgate's `username-prefix` (in `plugins/floodgate/config.yml`) |
 | `helix.url` | | Helix's dashboard address, e.g. `http://192.168.1.50:3100`. Turns on server control |
@@ -224,13 +224,13 @@ With [Helix](https://github.com/Riqqqque/Helix) running your game servers, A.D.R
    - Turn **Full access** off and tick only **View**, **Start**, **Stop**, **Restart** and **Console**. Console is for the whitelist, in-game chat and the player list; leave it off if you only want start, stop and restart. She never needs Kill, Files, Settings, Update, Backups, Network or Remove.
    - **Create token**, then copy the value.
 2. **Save it** on the bot's machine: `sudo adrian secret set HELIX_TOKEN`, and paste the value at the hidden prompt.
-3. **Point her at Helix.** Use the dashboard address you open Helix with, exactly as Helix was installed (`HELIX_GATEWAY_HOST` and `HELIX_LAN_PORT` in `/opt/helix/helix.env`). On the same machine that is still the LAN address, not `127.0.0.1`: Helix publishes its port on that one address only.
+3. **Point her at Helix.** Use the dashboard address you open Helix with, exactly as Helix was installed (`HELIX_GATEWAY_HOST` and `HELIX_LAN_PORT` in `/opt/helix/helix.env`). On the same machine that is still the LAN address, not `127.0.0.1`: Helix publishes its port on that one address only. With your Helix address, e.g. `http://192.168.1.50:3100`:
    ```
    sudo adrian config helix.url http://192.168.1.50:3100
    ```
 4. **Link each server.** For every entry in `gameServers` (0 is the first), copy the server's ID from its **Advanced** tab in Helix:
    ```
-   sudo adrian config gameServers.0.helix.instanceId helix:0b9a6c7e-5d0f-4f7e-8f0e-2f6d2b1c9a41
+   sudo adrian config gameServers.0.helix.instanceId "helix:<instance id from the server's Advanced tab>"
    sudo adrian config gameServers.0.helix.bedrock true
    ```
    The second line is only for a server with Geyser and Floodgate.
@@ -240,7 +240,7 @@ Without the token she says "Server control isn't set up" and does nothing else; 
 
 To let others use it, add their Discord user IDs or role IDs (owners can always do everything). Role checks need the member in the bot's cache, which they are once they've joined a call or written in a channel she reads. This is a hand edit to `config.json`:
 ```json
-"helix": { "url": "http://192.168.1.50:3100", "allow": { "start": ["123456789012345678"], "whitelist": ["987654321098765432"] } }
+"helix": { "url": "http://192.168.1.50:3100", "allow": { "start": ["123456789012345678"], "whitelist": ["223456789012345678"] } }
 ```
 
 ## Heads-ups and the weekly recap

@@ -18,7 +18,7 @@ import {
 // Made-up IDs only.
 const ME = '123456789012345678';
 const ALEX = '223456789012345678';
-const SAM = '323456789012345678';
+const SAM = '111111111111111111';
 const MY_SID = '76561198000000001';
 const ALEX_SID = '76561198000000002';
 const KEY = 'test-steam-key-abc';
@@ -675,7 +675,7 @@ describe('through the orchestrator', () => {
     expect(said.join(' ')).toContain('Elden Ring is $59.99 on Steam.');
     expect(rounds).toBe(1);
     const wrote: string[] = [];
-    for await (const c of o.ask(ME, 'Rique', 'how much is elden ring', AbortSignal.timeout(5000), undefined, { channelId: '423456789012345678' }, { text: true })) wrote.push(c);
+    for await (const c of o.ask(ME, 'Rique', 'how much is elden ring', AbortSignal.timeout(5000), undefined, { channelId: '222222222222222222' }, { text: true })) wrote.push(c);
     expect(wrote.join(' ')).toBe('ELDEN RING is $59.99 on Steam, not on sale.');
   });
 });

@@ -10,7 +10,7 @@ const parse = (extra: Record<string, unknown>) => PocConfigSchema.safeParse({ ..
 
 describe('helix config', () => {
   it('needs the dashboard address: https, or http on the home network, nothing after the port', () => {
-    for (const ok of ['http://192.168.1.50:3100', 'http://192.168.1.50:3100/', 'http://127.0.0.1:3100', 'http://10.0.0.5:3100', 'http://100.100.1.2:3100', 'https://helix.example.com']) expect(parse({ helix: { url: ok } }).success, ok).toBe(true);
+    for (const ok of ['http://192.168.1.50:3100', 'http://192.168.1.50:3100/', 'http://127.0.0.1:3100', 'http://10.0.0.5:3100', 'http://100.100.1.1:3100', 'https://helix.example.com']) expect(parse({ helix: { url: ok } }).success, ok).toBe(true);
     for (const bad of ['http://203.0.113.9:3100', 'http://helix.example.com', 'ftp://192.168.1.50', 'http://user:pw@192.168.1.50:3100', 'http://192.168.1.50:3100/api', 'http://192.168.1.50:3100/?x=1', 'not a url'])
       expect(parse({ helix: { url: bad } }).success, bad).toBe(false);
     expect(parse({}).success).toBe(true); // off unless set
@@ -24,9 +24,9 @@ describe('helix config', () => {
   });
 
   it('a server links by its exact Helix ID; Bedrock is opt-in', () => {
-    const r = parse({ gameServers: [{ ...server, helix: { instanceId: 'helix:0b9a6c7e-5d0f-4f7e-8f0e-2f6d2b1c9a41' } }] });
-    expect(r.success && r.data.gameServers[0]!.helix).toEqual({ instanceId: 'helix:0b9a6c7e-5d0f-4f7e-8f0e-2f6d2b1c9a41', bedrock: false, bedrockPrefix: '.' });
-    for (const bad of ['0b9a6c7e', 'helix:', 'helix:a b', 'helix:x\ny', 'Survival']) expect(parse({ gameServers: [{ ...server, helix: { instanceId: bad } }] }).success, bad).toBe(false);
+    const r = parse({ gameServers: [{ ...server, helix: { instanceId: 'helix:11111111-1111-4111-8111-111111111111' } }] });
+    expect(r.success && r.data.gameServers[0]!.helix).toEqual({ instanceId: 'helix:11111111-1111-4111-8111-111111111111', bedrock: false, bedrockPrefix: '.' });
+    for (const bad of ['11111111', 'helix:', 'helix:a b', 'helix:x\ny', 'Survival']) expect(parse({ gameServers: [{ ...server, helix: { instanceId: bad } }] }).success, bad).toBe(false);
     for (const bad of ['ab', 'a', ' ', '§']) expect(parse({ gameServers: [{ ...server, helix: { instanceId: 'helix:x', bedrockPrefix: bad } }] }).success, bad).toBe(false);
     expect(parse({ gameServers: [{ ...server }] }).success).toBe(true); // status only, as before
   });
