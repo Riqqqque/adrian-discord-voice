@@ -43,6 +43,7 @@ sudo adrian restart                        # most settings apply on restart
 | `satellite.logTranscripts` | `false` | For fixing misunderstandings: log what PCs hear and what she answers. Leave off otherwise. |
 | `satellite.recordDays` | `0` | Keep recordings of requests made at a PC (never side talk) for this many days, in `<state>/pc-recordings`, to test speech-to-text on your own voice. 0 = off. |
 | `satellite.unfinishedWaitMs` | `1200` | At a PC, when a pause sounds mid-sentence (the Smart Turn model), wait this much longer before answering, in ms. 0 = off (only the plain silence wait). |
+| `satellite.quietWhileGaming` | `true` | While a PC app (0.15.6 and later) says its owner is in a game: her name for every turn at that PC, short answers there, and reminders held until the match ends (timers still ring). See [satellite.md](satellite.md#quiet-while-gaming). |
 | `cloudStt.enabled` | `false` | A second, more accurate listen on Groq for speech meant for her. The local model still does the listening and decides what's meant for her. |
 | `cloudStt.apiKeySecret` | `"GROQ_API_KEY"` | Name of the key in `secrets.env` |
 | `cloudStt.model` | `"whisper-large-v3-turbo"` | Groq speech model |

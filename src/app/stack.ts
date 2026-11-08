@@ -58,6 +58,7 @@ import { SatelliteDevices } from '../satellite/devices.js';
 import { PcRecorder } from '../satellite/recorder.js';
 import { startSatelliteServer } from '../satellite/server.js';
 import { PC_RULE, pcTools, PowerDownWindow } from '../satellite/tools.js';
+import { GameQuiet, gamingLine, HeldItems, reminderBrief, toldLine } from '../satellite/quiet.js';
 
 /** Starts like a request to play something or control the music. */
 export const MUSICISH = /^\W*(?:(?:hey|ok(?:ay)?|yo|now|so|and|alright|bro)\W+)*(?:adri\w*\W+)?(?:(?:can|could|would|will) you (?:please )?|please )?(?:play|put on|throw on|queue|blast|bump|spin|skip|pause|resume|unpause|turn (?:up|down) the music|stop the music|(?:i want to|i wanna|let me|lemme|let's) (?:hear|listen to)|(?:make|do) (?:a|an|the|some) [a-z ]*(?:sound|noise))\b/i;
@@ -267,6 +268,25 @@ export async function startVoiceStack(
     return mine.find((c) => `sat:${c.device.id}` === ctx.channelId) ?? mine.sort((a, b) => b.lastSeen - a.lastSeen)[0];
   }
   const power = new PowerDownWindow();
+  // Quiet while gaming (satellite/quiet.ts): a PC in a game keeps reminders for after the match.
+  const lowerFirst = (t: string) => t.charAt(0).toLowerCase() + t.slice(1);
+  const quiet = new GameQuiet(new HeldItems(satEnabled ? join(stateDir!, 'held-while-gaming.json') : undefined), {
+    enabled: () => config.satellite.quietWhileGaming,
+    pcs: () => satServer?.connections() ?? [],
+    sayAt: (pc, owner, text) => {
+      if (inHerCall(owner)) return controller.announce(owner, `${nameOf(owner)}, ${lowerFirst(text)}`);
+      const rm = satRooms.get(`sat:${pc.device.id}`);
+      if (!rm?.ctl) return Promise.resolve(false);
+      rm.ui?.transcript('her', text);
+      return rm.ctl.announce(owner, text);
+    },
+    elsewhere: async (owner, items, text) => {
+      if (transport.isReady() && inHerChannel(owner) && (await controller.announce(owner, `${nameOf(owner)}, ${lowerFirst(text)}`))) return;
+      const unsent = items.filter((i) => !i.dmSent);
+      if (unsent.length) await client.users.send(owner, `While you were playing:\n${unsent.map((i) => i.line.trim()).join('\n')}`).catch((e: Error) => log.warn('held items DM failed', { user: owner, error: e.message }));
+    },
+    log: (event, fields) => log.info(event, fields),
+  });
   /** A stop also calls off their restart or shutdown, if one is counting down. */
   const callOff = (id: UserId, ctl: ConversationController) => void power.cancel(id).then((line) => line && void ctl.announce(id, line));
   /** The room a request came from (tools get it through their context). */
@@ -319,9 +339,10 @@ export async function startVoiceStack(
     const plain = text.replace(/^[^,]+, /, '');
     const pc = r.room ? satRooms.get(r.room) : undefined;
     const route = reminderRoute({ audibleInCall: inHerCall(r.userId), inChannel: transport.isReady() && !!inHerChannel(r.userId), pcUp: !!pc?.ctl });
-    log.info('reminder due', { user: r.userId, kind: r.kind, lateMs, route: route.speak ?? 'dm' });
-    if (route.speak === 'pc') pc!.ui?.transcript('her', plain);
-    const heard = route.speak === 'call' ? controller.announce(r.userId, text) : route.speak === 'pc' ? pc!.ctl!.announce(r.userId, plain) : Promise.resolve(false);
+    // In a game at that PC, a reminder waits for the end of the match; a timer,
+    // set to ring, doesn't. The DM goes now all the same: it's the record.
+    const holding = route.speak === 'pc' && r.kind === 'reminder' && quiet.playingAt(pc!.ui!);
+    log.info('reminder due', { user: r.userId, kind: r.kind, lateMs, route: holding ? 'held' : (route.speak ?? 'dm') });
     const dm = route.dm
       ? client.users.send(r.userId, plain).then(
           () => true,
@@ -331,6 +352,10 @@ export async function startVoiceStack(
           },
         )
       : Promise.resolve(false);
+    // A full hold list says it now instead.
+    if (holding && quiet.hold(pc!.ui!, { kind: 'reminder', line: plain, brief: reminderBrief(r.text), dmSent: await dm })) return;
+    if (route.speak === 'pc') pc!.ui?.transcript('her', plain);
+    const heard = route.speak === 'call' ? controller.announce(r.userId, text) : route.speak === 'pc' ? pc!.ctl!.announce(r.userId, plain) : Promise.resolve(false);
     // Any way through counts: at a PC the DM is the record, so a dropped announcement isn't retried.
     if (!(await dm) && !(await heard)) throw new Error('reminder not delivered');
   });
@@ -455,6 +480,8 @@ export async function startVoiceStack(
           ...games.context(ctx),
           ...(roomFor(ctx).music ? [musicState(roomFor(ctx).music!), ...linksLine(links.forPrompt(ctx.userId, ctx.guildId)), ...taste.context(ctx.userId, ctx.speaker)] : []),
           ...(roomFor(ctx).ui ? [`${ctx.speaker} is talking to you through their PC (A.D.R.I.A.N. satellite), not in the Discord call. Music and sounds play on that PC.`] : []),
+          ...(roomFor(ctx).ui && quiet.playingAt(roomFor(ctx).ui!) ? [gamingLine(ctx.speaker, quiet.gameAt(roomFor(ctx).ui!))] : []),
+          ...(satEnabled ? toldLine(ctx.speaker, quiet.told(ctx.userId)) : []),
         ],
         selectTools: (text, ctx, all) =>
           routeTools(all, text, { gameRunning: games.context(ctx).length > 0, hasTimers: reminders.forUser(ctx.userId).length > 0, musicPlaying: !!roomFor(ctx).music?.nowPlaying }),
@@ -934,6 +961,8 @@ export async function startVoiceStack(
             const owner = rm.ui!.owner;
             if (id === undefined || id === owner) rm.ui!.state({ listenMs: c.listenLeftMs(owner) });
           },
+          // In a game there: only her name starts a turn.
+          quiet: () => quiet.playingAt(rm.ui!),
         }
       : {}),
     // At a PC it's one person talking to her: keep the conversation open
@@ -1286,6 +1315,8 @@ export async function startVoiceStack(
 
   // --- PC satellites: each connected PC is a room of its own ----------------
   if (satEnabled) {
+    // Held items from before a restart go out even if no PC comes back.
+    quiet.start();
     satServer = startSatelliteServer({
       bind: config.satellite.bind,
       port: config.satellite.port,
@@ -1339,7 +1370,13 @@ export async function startVoiceStack(
           rm.sound.stop();
           callOff(conn.owner, ctl);
         });
+        // In a game (PC apps from 0.15.6 say so): her name for every turn here, reminders kept for after.
+        quiet.connected(conn);
+        conn.on('activity', (a) => {
+          if (quiet.activity(conn, a)) conn.state({ listenMs: ctl.listenLeftMs(conn.owner) });
+        });
         conn.on('closed', () => {
+          quiet.disconnected(conn);
           ctl.cancelAll();
           rm.music?.stop();
           satMixer.stopAll();
@@ -1378,6 +1415,7 @@ export async function startVoiceStack(
       clearInterval(idleTimer);
       controller.cancelAll();
       reminders.stop();
+      quiet.stop();
       music?.stop();
       mixer.stopAll();
       await satServer?.close();
