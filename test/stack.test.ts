@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { startVoiceStack } from '../src/app/stack.js';
 import { PocConfigSchema } from '../src/config.js';
 import { MusicPlayer, YoutubeSource } from '../src/features/music.js';
+import { QUIZ_BUSY } from '../src/features/quiz.js';
 import { UsageLedger } from '../src/limits/usage-ledger.js';
 import type { TurnOptions } from '../src/listen/pipeline.js';
 import { SmartTurn } from '../src/speech/smart-turn.js';
@@ -957,6 +958,42 @@ describe('phrases answered without the model', () => {
     await until(() => r.tts.calls.length === 1, 'her answer');
     expect(r.tts.calls[0]).toContain('asked for a lot');
     expect(m.play).not.toHaveBeenCalled();
+    await r.stack.stop();
+  });
+
+  it('a music level is said back, and with nothing playing she says it is for the next song', async () => {
+    const r = await rig(MUSIC);
+    const set = vi.spyOn(MusicPlayer.prototype, 'setVolume');
+    await order(r, r.discordPipe, SAM, 'set the volume to 30', 'Music volume set to 30 percent for the next song.');
+    expect(set).toHaveBeenLastCalledWith(0.3);
+    vi.spyOn(MusicPlayer.prototype, 'nowPlaying', 'get').mockReturnValue(TRACK as never);
+    await order(r, r.discordPipe, SAM, 'set the volume to 40', 'Music volume 40 percent.');
+    await r.stack.stop();
+  });
+
+  it('while a quiz has the music, its controls go to the quiz and the rest waits', async () => {
+    const r = await rig(MUSIC);
+    const m = fakeMusic();
+    const back = vi.spyOn(MusicPlayer.prototype, 'back');
+    const lent = { reason: QUIZ_BUSY, stop: vi.fn(), skip: vi.fn() };
+    vi.spyOn(MusicPlayer.prototype, 'lent', 'get').mockReturnValue(lent);
+    const voice = r.tts.calls.length;
+    // "Turn it down" is the clip, not her voice.
+    r.heard(r.discordPipe, SAM, 'hey adrian turn it down', 'turn it down');
+    await until(() => m.nudge.mock.calls.length === 1, 'the music');
+    await sleep(20);
+    expect(r.tts.calls).toHaveLength(voice);
+    await order(r, r.discordPipe, SAM, 'go back', QUIZ_BUSY);
+    await order(r, r.discordPipe, SAM, 'who put this on', QUIZ_BUSY);
+    await order(r, r.discordPipe, SAM, 'pause', QUIZ_BUSY);
+    expect(back).not.toHaveBeenCalled();
+    expect(m.pause).not.toHaveBeenCalled();
+    r.heard(r.discordPipe, SAM, 'hey adrian skip', 'skip');
+    await until(() => lent.skip.mock.calls.length === 1, 'the skip');
+    await sleep(20);
+    expect(m.skip).not.toHaveBeenCalled();
+    expect(r.tts.calls.at(-1)).toBe(QUIZ_BUSY);
+    expect(r.llmBodies).toHaveLength(0);
     await r.stack.stop();
   });
 });
