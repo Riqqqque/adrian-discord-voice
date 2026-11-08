@@ -41,6 +41,10 @@ const GROUPS: { tools: string[]; words: RegExp; when?: (h: RouteHints) => boolea
     tools: ['steam_friends', 'steam_wishlist_sales', 'steam_price'],
     words: /\b(steam|wish ?list|on sale|sales?|discount(ed|s)?|deals?|price[ds]?|cost(s|ing)?|how much|cheap|friends?|online|playing|anyone|anybody|who'?s on)\b/i,
   },
+  {
+    tools: ['whats_new', 'digest_prefs', 'post_recap'],
+    words: /\b(miss(ed)?|catch (me|us) up|what'?s new|anything new|while i was (gone|away|out)|heads?.?ups?|stop telling|don'?t tell me|recap|name me)\b/i,
+  },
 ];
 
 /** Tools for this request: the always-on ones plus any matching group. */

@@ -13,7 +13,7 @@ export interface MediaConfig {
   timezone: string;
 }
 
-async function getJson<T>(f: Fetch, url: string, headers: Record<string, string>, signal: AbortSignal): Promise<T> {
+export async function getJson<T>(f: Fetch, url: string, headers: Record<string, string>, signal: AbortSignal): Promise<T> {
   const r = await f(url, { headers: { Accept: 'application/json', ...headers }, signal: AbortSignal.any([signal, AbortSignal.timeout(5_000)]) });
   if (!r.ok) throw new Error(`${new URL(url).port === '32400' ? 'Plex' : 'the media app'} answered ${r.status}`);
   return (await r.json()) as T;

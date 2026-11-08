@@ -28,3 +28,16 @@ describe('tool router', () => {
     expect(pick('is it Paris')).not.toContain('game');
   });
 });
+
+describe('tool router: digest and recap', () => {
+  const withDigest = [...all, ...['whats_new', 'digest_prefs', 'post_recap'].map((name) => ({ spec: { name, description: '', parameters: {} }, run: async () => '' }) as Tool)];
+  const p = (t: string) => routeTools(withDigest, t).map((x) => x.spec.name);
+  it('loads them only when asked', () => {
+    expect(p('what did I miss')).toContain('whats_new');
+    expect(p('catch me up')).toContain('whats_new');
+    expect(p('stop telling me that')).toContain('digest_prefs');
+    expect(p('no more heads-ups please')).toContain('digest_prefs');
+    expect(p('post the recap now')).toContain('post_recap');
+    expect(p('what is the capital of Peru')).toEqual(['get_time', 'web_search']);
+  });
+});

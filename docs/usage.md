@@ -110,6 +110,8 @@ With Plex, Sonarr and Radarr keys set:
 
 All read-only.
 
+"What did I miss?", "anything new?" or "catch me up" gives one line about what's new since you were last in the call (or the last day): new episodes, movies that finished downloading, game servers that are down. "What's new in the last three days?" works too.
+
 ## Steam
 
 From Discord (voice or text) and from a PC:
@@ -119,6 +121,31 @@ From Discord (voice or text) and from a PC:
 - "Is Elden Ring on sale?" / "How much is Hades II on Steam?" Free-to-play, not out yet, taken off the store, not sold in your region, DLC, and other editions on sale are all said as such. A store link or app number works in text.
 
 Prices need no setup. Wishlists and friends use your own Steam account only, once the admin links it (configuration.md, Steam); friends also need the Steam key. If something's private, she says which Steam privacy setting to change. With `steam.shareWithServer` on, you can also ask about another member who has linked theirs.
+
+## Heads-ups when you join
+
+With `headsUp.enabled` on (it's off by default), owners who join her call after at least 4 hours away hear one short line about what's new since they were last there:
+
+> Alex, since yesterday: 14 new episodes, mostly Frieren and One Piece, and Dune finished downloading.
+
+- One line at most, never one per item: 300 new episodes is still one line. Never more than about 25 words.
+- At most once every 6 hours per person, and only about what's new since you were last there or last heard one.
+- Nothing at all when nothing is new, or the media apps don't answer in time.
+- Only in a quiet moment: if people are talking, music is playing, or she's answering someone, she waits up to a minute and a half, then drops it.
+- Not for people already in the call when she joins, and not if you're deafened.
+- A game server is mentioned only if it went down since you last heard about it.
+- "Stop telling me that" turns them off for you, for good; "turn my heads-ups back on" undoes it.
+
+## Weekly recap
+
+Set `recap.channelId` and she posts a recap there every Sunday at 18:00 (household time; `recap.day`, `recap.hour`):
+
+- the songs played most in the call that week,
+- new episodes and movies (counts and the top three titles),
+- game server uptime and peak players (from a check every 10 minutes while the bot runs),
+- how many questions she answered: in the call, at PCs and in text chat.
+
+Counts only: no transcripts, no quotes, and nobody is named unless they asked ("put my name in the recap"; "leave my name out" undoes it). It never pings anyone. If the bot was down at that hour, the recap goes out once when it's back, within a day; a week missed by more than that is skipped. It's never posted twice for one week. An owner can say "post the recap now" for this week so far. Nothing is posted for a week with nothing in it.
 
 ## Languages
 
