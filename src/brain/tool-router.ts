@@ -30,8 +30,8 @@ const GROUPS: { tools: string[]; words: RegExp; when?: (h: RouteHints) => boolea
     when: (h) => !!h.gameRunning,
   },
   {
-    tools: ['game_server_status'],
-    words: /\b(servers?|minecraft|mc|online|on now|playing|players?|who'?s on|up\b|down\b)\b/i,
+    tools: ['game_server_status', 'game_server_control', 'game_server_whitelist', 'game_server_say'],
+    words: /\b(servers?|minecraft|mc|smp|online|on now|playing|players?|who'?s on|up\b|down\b|start|stop|restart|reboot|boot|shut|white ?list(ed)?|bedrock|gamertag|in-?game|game chat|tell (them|everyone)|announce|broadcast)\b/i,
   },
   {
     tools: ['plex_recently_added', 'plex_search', 'downloads', 'upcoming_episodes'],

@@ -51,7 +51,7 @@ A.D.R.I.A.N. listens to a voice channel anyone in your server can join, holds AP
 - Notes are keyed by Discord user ID and only used when that person is speaking, so nobody can talk the bot into revealing someone else's notes. A server's prompt only gets notes told in that server, or ones the person's own words ask about, checked in code against what they said. Anything else counts as private to DMs and their PC, and DM talk stays out of what's said in servers.
 - Owner rights are checked by Discord ID, never by display name. A member named like the creator is flagged as not the creator.
 - A room's music and sounds are for the people in it. Playing, skipping or stopping them takes someone in that voice call (it goes by voice state, so muted counts and typing in the call's text chat from outside doesn't), the PC's owner at a PC, or an owner. Anyone can still ask what's playing.
-- Integrations (Plex, Sonarr, Radarr, game servers) are read-only.
+- Integrations (Plex, Sonarr, Radarr, game server status) are read-only. Minecraft server control through Helix is off unless set up. It uses a token limited to the servers and permissions you pick, is for owners (and IDs or roles in `helix.allow`) only, and stop and restart need the person's own yes. Console lines are built only from checked parts (a valid player name, or a cleaned one-line chat message), never from free text, and the model never sees or picks a Helix server ID.
 
 **Cost**
 - A per-person hourly limit (music requests count too), plus daily and monthly dollar caps checked before every model call.

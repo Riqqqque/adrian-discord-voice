@@ -16,6 +16,7 @@ const SECRET_PATTERNS: RegExp[] = [
   /[MNO][A-Za-z\d_-]{23,27}\.[A-Za-z\d_-]{6}\.[A-Za-z\d_-]{27,40}/g, // Discord bot token
   /\$argon2id\$[^"\s]+/g,
   /sat_[A-Za-z0-9_-]{20,}/g, // PC pairing token
+  /Bearer [A-Za-z0-9._~+/=-]{20,}/g, // any bearer token (Helix's have no prefix)
 ];
 
 export function redact(s: string): string {
