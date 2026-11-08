@@ -352,8 +352,8 @@ export async function startVoiceStack(
           },
         )
       : Promise.resolve(false);
-    // A full hold list says it now instead.
-    if (holding && quiet.hold(pc!.ui!, { kind: 'reminder', line: plain, brief: reminderBrief(r.text), dmSent: await dm })) return;
+    // A full hold list says it now instead. Held, it isn't late: it's for after the match.
+    if (holding && quiet.hold(pc!.ui!, { kind: 'reminder', line: dueMessage(r, 0).replace(/^[^,]+, /, ''), brief: reminderBrief(r.text), dmSent: await dm })) return;
     if (route.speak === 'pc') pc!.ui?.transcript('her', plain);
     const heard = route.speak === 'call' ? controller.announce(r.userId, text) : route.speak === 'pc' ? pc!.ctl!.announce(r.userId, plain) : Promise.resolve(false);
     // Any way through counts: at a PC the DM is the record, so a dropped announcement isn't retried.
