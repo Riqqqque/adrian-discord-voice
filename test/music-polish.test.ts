@@ -208,8 +208,7 @@ describe('quiz clips through the player', () => {
 describe('a bare "play X"', () => {
   const deezer = (artists: { id: number; name: string; nb_fan: number }[]) =>
     deezerTopTracks((async (url: unknown) =>
-      new Response(JSON.stringify(String(url).includes('/top') ? { data: ['One', 'Two', 'Three', 'Four', 'Five', 'Six'].map((title) => ({ title, artist: { id: artists[0]!.id } })) } : { data: artists })),
-    ) as unknown as typeof fetch);
+      new Response(JSON.stringify(String(url).includes('/top') ? { data: ['One', 'Two', 'Three', 'Four', 'Five', 'Six'].map((title) => ({ title, artist: { id: artists[0]!.id } })) } : { data: artists }))) as unknown as typeof fetch);
 
   it('plays the song when only a small act has that name', async () => {
     const m = await deezer([{ id: 1, name: 'Believer', nb_fan: 7_665 }]).match!('believer', sig());
