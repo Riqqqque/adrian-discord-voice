@@ -135,6 +135,15 @@ updates off until a fixed version is out.
 For the bot on the server, `sudo adrian auto-update on` does the same (see
 [install.md](install.md#updating-rolling-back-backups)).
 
+## Games
+
+While you play a game on the PC, she only answers when you say her name, keeps
+answers short, and saves reminders for when the match ends (timers still ring).
+The app tells the server when a game is in front; the switch "Quiet while I
+play" in the settings (on by default) turns that off for this PC. Full-screen
+browsers and video players don't count as games. Details:
+[satellite.md](satellite.md#quiet-while-gaming).
+
 ## What it may do
 
 The app's settings decide which PC actions the bot may take: apps, web pages,

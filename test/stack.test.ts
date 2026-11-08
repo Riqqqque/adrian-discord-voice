@@ -2203,8 +2203,8 @@ describe('a skip and a stop', () => {
 
 describe('a PC in a game', () => {
   const FILE = 'reminders.json';
-  const due = (kind: 'timer' | 'reminder', what: string) => (dir: string) =>
-    writeFileSync(join(dir, FILE), JSON.stringify([{ id: 'r1', userId: OWNER, speaker: 'Sam', kind, text: what, dueAt: Date.now() - 1_000, createdAt: 0, room: 'sat:d1' }]));
+  const due = (kind: 'timer' | 'reminder', what: string, lateMs = 1_000) => (dir: string) =>
+    writeFileSync(join(dir, FILE), JSON.stringify([{ id: 'r1', userId: OWNER, speaker: 'Sam', kind, text: what, dueAt: Date.now() - lateMs, createdAt: 0, room: 'sat:d1' }]));
   const kept = (r: Rig) => (JSON.parse(readFileSync(join(r.dir, FILE), 'utf8')) as unknown[]).length;
   const playing = (conn: EventEmitter, game?: string) => conn.emit('activity', { gaming: true, ...(game ? { game } : {}) });
 
@@ -2223,6 +2223,18 @@ describe('a PC in a game', () => {
     await until(() => r.tts.calls.includes('While you were playing: Reminder: laundry.'), 'the line after the match');
     expect(conn.transcripts).toContain('her: While you were playing: Reminder: laundry.');
     expect(r.dms.sent).toHaveLength(1);
+    await r.stack.stop();
+  });
+
+  it('a reminder that came due while she was offline is not called late after the match', async () => {
+    const r = await rig({}, { prepare: due('reminder', 'laundry', 10 * 60_000) });
+    const { conn } = r.connect();
+    playing(conn);
+    r.loggedIn();
+    await until(() => kept(r) === 0, 'the file');
+    expect(r.dms.sent[0]).toContain('late');
+    conn.emit('activity', { gaming: false });
+    await until(() => r.tts.calls.includes('While you were playing: Reminder: laundry.'), 'the line after the match');
     await r.stack.stop();
   });
 
