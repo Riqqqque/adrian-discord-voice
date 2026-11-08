@@ -646,7 +646,9 @@ export function deezerTopTracks(f: typeof fetch = fetch): TopTracks {
   const match = async (name: string, signal: AbortSignal): Promise<ArtistMatch | undefined> => {
     const q = name.trim().slice(0, 100);
     if (!q) return undefined;
-    const found = (await get(`https://api.deezer.com/search/artist?q=${encodeURIComponent(q)}&limit=5`, signal)).data as
+    // 25, not 5: for a one-word name Deezer ranks small acts of the same name
+    // first ("Queen", "Muse", "Journey", "Bush" had the real one 6th or lower).
+    const found = (await get(`https://api.deezer.com/search/artist?q=${encodeURIComponent(q)}&limit=25`, signal)).data as
       | { id?: number; name?: string; nb_fan?: number }[]
       | undefined;
     const exact = (found ?? []).filter((a) => a.name && fold(a.name) === fold(q)).sort((a, b) => (b.nb_fan ?? 0) - (a.nb_fan ?? 0));

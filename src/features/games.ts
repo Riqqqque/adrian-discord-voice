@@ -95,7 +95,7 @@ export class PartyGames {
         spec: {
           name: 'game',
           description:
-            'Run a shared party game for the whole call. action "start" with kind (trivia, riddles, would you rather...) plus the first question and its answer; "ask" the next question with its answer; "award" points to a player; "scores"; "end".',
+            'Run a shared party game for the whole call. action "start" with kind (trivia, riddles, would you rather...) plus the first question and its answer; "ask" the next question with its answer; "award" points to a player; "scores"; "end". Guessing songs from clips is music_quiz, not this.',
           parameters: {
             type: 'object',
             properties: {

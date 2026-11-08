@@ -352,7 +352,7 @@ export async function startVoiceStack(
       say: async (text, to) => {
         if (rm.ui ? !rm.ui.isReady() : !transport.isReady()) return;
         rm.ui?.transcript('her', text);
-        await (rm.ctl ?? controller).announce(to, text);
+        await (rm.ctl ?? controller).announce(to, text, { listen: false });
       },
       people: () => (rm.ui ? Number(rm.ui.isReady()) : spot && transport.isReady() ? humansIn(client.channels.cache.get(spot.channelId) as VoiceBasedChannel | undefined) : 0),
       nameOf: (id) => (nameOf(id) === 'someone' ? undefined : nameOf(id)),
