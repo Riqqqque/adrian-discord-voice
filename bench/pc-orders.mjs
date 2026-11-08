@@ -9,6 +9,8 @@ import { SessionMemory } from '../dist/brain/sessions.js';
 import { loadConfig, readSecrets } from '../dist/config.js';
 import * as music from '../dist/features/music.js';
 import { PC_RULE, pcTools } from '../dist/satellite/tools.js';
+import { HANDOFF_RULE, handoffTools, tellCallTool } from '../dist/features/handoff.js';
+import { GAME_NIGHT_RULE, gameNightTool } from '../dist/features/gamenight.js';
 
 const c = loadConfig(process.argv[2]);
 const s = readSecrets(c.secretsFile);
@@ -48,11 +50,18 @@ const stub = new Proxy({}, {
     return async (...a) => (calls.push({ name: `music.${String(k)}`, args: a.filter((x) => typeof x === 'string') }), { ok: true, started: { title: 'Lofi Mix', artist: 'Lofi Girl', source: 'youtube', ref: '' }, added: 3 });
   },
 });
-const tools = [...music.musicTools(stub), ...pcTools({ pcFor: () => pc, findVideo: async () => 'jfKfPfyJRdk' })];
+// PC and Discord together, and game nights: real specs, runs recorded with canned answers.
+const recorded = (t, answer) => ({ ...t, run: async (args) => (calls.push({ name: t.spec.name, args }), typeof answer === 'function' ? answer(args) : answer) });
+const [handoff] = handoffTools({ things: { candidates: () => [] }, starts: {}, callRoom: 'discord', pcFor: () => pc, callMusic: () => undefined, call: () => undefined, inCall: () => false, isOwner: () => true, canSee: async () => true, readable: false });
+const handoffAnswer = (x) => (x.action === 'music_to_pc' ? 'Moved "Nights by Frank Ocean" to their PC and stopped it in the call.' : x.action === 'pc_to_call' ? 'Now playing Nights by Frank Ocean in the call, and paused it on their PC.' : `Opened "Sam"'s YouTube video on their PC.`);
+const tell = tellCallTool({ nameOf: () => 'Rique', inHerCall: () => false, call: () => undefined, isMember: async () => true, announce: async () => true, post: async () => 'general', limiter: { take: () => undefined, release() {} }, maxChars: 200 });
+const night = gameNightTool({ guild: () => undefined, allowedGuilds: [], presences: false, signups: {}, lastText: () => undefined, voiceChannel: () => undefined, cooldownMs: 1, maxMentions: 10, perUserPerHour: 4 });
+const nightAnswer = (x) => (x.action === 'ping' ? 'Pinged 4 people in #general for Valorant.' : x.action === 'join' ? 'Signed them up for game-night pings, every game.' : x.action === 'leave' ? 'No more game-night pings for them.' : 'In voice: Sam (in voice Lounge); Kim (in voice Lounge, muted). (Presence still off; you already told them, so leave it out.)');
+const tools = [...music.musicTools(stub), ...pcTools({ pcFor: () => pc, findVideo: async () => 'jfKfPfyJRdk' }), recorded(handoff, handoffAnswer), recorded(tell, 'Said it in the call.'), recorded(night, nightAnswer)];
 const o = new ConversationOrchestrator(llm, new SessionMemory(16, 3_600_000), tools, {
   spokenName: 'Adrian', writtenName: 'A.D.R.I.A.N.', timezone: c.timezone, firstEventTimeoutMs: 12000, maxTokens: 500, maxToolRounds: 3,
   stablePrefix: true,
-  stableLines: [...music.musicRules(), PC_RULE],
+  stableLines: [...music.musicRules(), PC_RULE, HANDOFF_RULE, GAME_NIGHT_RULE],
   context: (x) => ['Reply in English.', music.musicState(stub), `${x.speaker} is talking to you through their PC (A.D.R.I.A.N. satellite), not in the Discord call. Music and sounds play on that PC.`],
 });
 
@@ -111,6 +120,23 @@ await power('restart my pc', 'restart', 'Restart the PC?', 'yes restart it');
 await power('put my computer to sleep', 'sleep', 'Put the PC to sleep?', 'yeah go ahead');
 await power('shut down my computer', 'shutdown', 'Shut down the PC?', 'no wait', false);
 await ask('open valorant and turn my music down', (cs) => call('pc_apps', (x) => /valorant/i.test(x.name))(cs) && cs.some((k) => (k.name === 'pc_volume' && k.args.playing === true) || k.name === 'pc_media'));
+// PC and Discord (2026-11-08): "that" is worked out by the tool, not asked about first.
+const ho = (action, pred = () => true) => call('pc_handoff', (x) => a(x) === action && pred(x));
+await ask('send that link to my pc', ho('send_to_pc'));
+await ask('open that on my pc', ho('send_to_pc'));
+await ask('put that video on my pc', ho('send_to_pc', (x) => !x.what || x.what === 'video' || x.what === 'any'));
+await ask('open the link sam just posted', ho('send_to_pc', (x) => /sam/i.test(x.from ?? '')));
+await ask('play this on my pc instead', ho('music_to_pc'));
+await ask('move the music to my pc', ho('music_to_pc'));
+await ask("put what i'm watching into the call", ho('pc_to_call'));
+await ask("tell the call i'll be on in 5", call('tell_call', (x) => /5|five/.test(`${x.message} ${x.spoken ?? ''}`) && (!x.spoken || /rique/i.test(x.spoken))));
+await ask('ask them if they want to play valorant', call('tell_call', (x) => /valorant/i.test(x.message)));
+// Game nights.
+await ask("who's playing right now", call('game_night', (x) => a(x) === 'who_playing' || a(x) === 'who_free'));
+await ask("who's free for valorant", call('game_night', (x) => a(x) === 'who_free' && /valorant/i.test(x.game ?? '')));
+await ask('ping everyone for valorant in 10', call('game_night', (x) => a(x) === 'ping' && /valorant/i.test(x.game ?? '') && Number(x.in_minutes) === 10));
+await ask('ping me for game night', call('game_night', (x) => a(x) === 'join'));
+await ask('stop pinging me for game night', call('game_night', (x) => a(x) === 'leave'));
 // Chat: short, natural, no lists.
 await ask("how's it going", (cs, out) => cs.length === 0 && out.length > 0 && !/\n- |\*\*/.test(out), 35);
 await ask('tell me something interesting about octopuses', (cs, out) => cs.length === 0 && !/\n- |\*\*/.test(out), 70);
