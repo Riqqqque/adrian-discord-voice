@@ -54,6 +54,16 @@ const SKIP = /^(?:skip|pass|next|skip (?:it|this|this one|this song|that|that on
 const SCORE = /^(?:(?:what'?s|what is|whats) the score|scores?|the score|score (?:check|please)|who'?s winning|who is winning|how many points do i have|what are the scores)$/;
 const HINT = /^(?:(?:give (?:us|me) )?(?:a )?(?:hint|clue)|hint please|any hints?|can (?:we|i) (?:get|have) a hint)$/;
 const STATUS = /^(?:what'?s playing|what is playing|what song is (?:this|that|playing)|what is this song|whats this song|who is this|who'?s this)$/;
+/** The orders taken without her name: said on their own and clearly about the
+ *  quiz. "Next", "skip", "I'm done", "pass", "who's this" and "scores" come up
+ *  in any call, so the rest of the list above needs her name. "Stop the game"
+ *  could be any game: only "quiz" counts. */
+const UNNAMED: [RegExp, 'stop' | 'skip' | 'score' | 'hint'][] = [
+  [/^(?:stop|end|quit|cancel|finish) (?:the |this )?(?:music |song )?quiz$/, 'stop'],
+  [/^(?:skip|next|skip (?:it|this|this one|this song|the song|this round)|next (?:song|round))$/, 'skip'],
+  [/^(?:(?:what'?s|what is|whats) the score|who'?s winning|who is winning|what are the scores)$/, 'score'],
+  [/^(?:(?:give (?:us|me) )?(?:a )?hint|hint please|can (?:we|i) (?:get|have) a hint)$/, 'hint'],
+];
 
 /** The order itself, without her name, "can you" and the politeness. */
 function bare(text: string): string {
@@ -68,10 +78,15 @@ function bare(text: string): string {
 }
 
 /** Quiz words, said locally. A start with words it can't place (an artist's
- *  name) is left to the model, which reads them into the tool's options. */
-export function parseQuizCommand(text: string, quizOn: boolean): QuizCommand | 'model' | undefined {
+ *  name) is left to the model, which reads them into the tool's options.
+ *  `woke`: said with her name; without it, only the few orders in UNNAMED count. */
+export function parseQuizCommand(text: string, quizOn: boolean, woke = true): QuizCommand | 'model' | undefined {
   const s = bare(text);
   if (!s) return undefined;
+  if (quizOn && !woke) {
+    const hit = UNNAMED.find(([re]) => re.test(s));
+    return hit ? { kind: hit[1] } : undefined;
+  }
   if (quizOn) {
     if (STOP_QUIZ.test(s)) return { kind: 'stop' };
     if (SKIP.test(s)) return { kind: 'skip' };
@@ -169,14 +184,26 @@ export function answerScore(guess: string, answer: string, allowed: string[] = [
   // Words beyond the answer that aren't guess filler (or the other half of the
   // answer: "Creep by Radiohead"): talk, not a guess.
   const extra = g.filter((x) => !GUESS_FILLER.has(x) && !STOP_WORDS.has(x) && !a.some((w) => sameWord(x, w)) && !allowed.includes(x)).length;
+  const whole = ` ${g.join(' ')} `.includes(` ${a.join(' ')} `);
+  // Nothing but small words ("Yeah!", "Oh"): only those words, alone, and
+  // nothing else. A "yeah" in the middle of talk is no answer.
+  if (!content.length) return g.join(' ') === a.join(' ') ? 1 : 0;
   // One meaningful word ("Hello", "Future"): only that word, on its own, spelled about right.
   if (key.length === 1 && extra > 0) return 0;
-  if (` ${g.join(' ')} `.includes(` ${a.join(' ')} `)) return 1;
+  if (key.length === 1) {
+    const said = g.filter((x) => sameWord(x, key[0]!) || (!GUESS_FILLER.has(x) && !STOP_WORDS.has(x) && !allowed.includes(x)));
+    // Said once, nothing else: "hello hello" is singing along, not a guess.
+    if (said.length !== 1 || !sameWord(said[0]!, key[0]!)) return 0;
+    // A title with small words around its one word ("Take on Me", "In the
+    // End"): the word alone is half of it. The model may still call it right.
+    if (a.length > 1 && !whole) return 0.5;
+    return 1;
+  }
+  if (whole) return 1;
   const total = key.reduce((n, w) => n + w.length, 0);
   let got = 0;
   for (const w of key) if (g.some((x) => sameWord(x, w))) got += w.length;
   let score = got / total;
-  if (key.length === 1 && score < 1) score = 0;
   if (extra > Math.max(3, key.length * 2)) score *= 0.5;
   return score;
 }
@@ -196,14 +223,41 @@ export function judgeGuess(guess: string, ans: Answer, titleOnly = false): Verdi
   if (title >= 0.75) return { right: true, got: 'title' };
   let artist = 0;
   if (ans.artist && !titleOnly) {
-    // Any one of them: "Lady Gaga & Bruno Mars", "Coolio feat. L.V.".
-    for (const a of [ans.artist, ...ans.artist.split(/,|&|\s(?:feat\.?|ft\.?|x|and|with)\s/i)]) {
-      const name = a.trim().replace(/^the\s+/i, '');
-      if (name) artist = Math.max(artist, answerScore(guess.replace(/\bthe\s+/gi, ''), name, [...titleWords, ...artistWords]));
-    }
+    for (const name of artistNames(ans.artist)) artist = Math.max(artist, answerScore(guess.replace(/\bthe\s+/gi, ''), name, [...titleWords, ...artistWords]));
     if (artist >= 0.8) return { right: true, got: 'artist' };
   }
   return { right: false, close: Math.max(title, artist) >= 0.5 };
+}
+
+/** Everyday words that are also half of a band's name ("Earth, Wind & Fire",
+ *  "Mumford & Sons", "Iron & Wine"): said alone, they're talk, not the artist. */
+const COMMON_PARTS = new Set(
+  'earth wind fire water iron wine sons daughters brothers sisters young old years status beyond above below love life home heart soul light night day dark ice gold silver stone stones wild free good bad cool nice fine big little high low hall boys girls kids friends family people city town band crew gang'.split(' '),
+);
+
+/** The names a guess may give for the artist: the whole name, and each act of
+ *  a collaboration ("Lady Gaga & Bruno Mars", "Coolio feat. L.V."). After
+ *  "feat.", "ft.", "x" or "with" each part is someone. After "&", "and", "+"
+ *  or a comma it may be half a band's name, so a part counts by itself only
+ *  when it's distinctive: two words or more, or one uncommon word of 4 letters
+ *  or more. A part that starts with a small word ("the Machine", "Of Monsters")
+ *  never does. */
+export function artistNames(artist: string): string[] {
+  const names = [artist.trim().replace(/^the\s+/i, '')];
+  for (const act of artist.split(/\s(?:feat\.?|ft\.?|featuring|x|with)\s/i)) {
+    const a = act.trim().replace(/^the\s+/i, '');
+    if (a && a !== names[0]) names.push(a);
+    const parts = act.split(/,|&|\+|\sand\s/i).map((p) => p.trim());
+    if (parts.length < 2) continue;
+    for (const p of parts) {
+      const all = answerWords(p);
+      // "the Machine", "Of Monsters": the rest of a band's name.
+      if (!all.length || STOP_WORDS.has(all[0]!)) continue;
+      const words = all.filter((w) => !STOP_WORDS.has(w));
+      if (words.length >= 2 || (words.length === 1 && words[0]!.length >= 4 && !COMMON_PARTS.has(words[0]!))) names.push(p);
+    }
+  }
+  return names.filter(Boolean);
 }
 
 /** Said to her, this is an answer ("is it...", "it's..."), not a question or an order. */
@@ -225,6 +279,8 @@ export interface QuizSong {
   /** YouTube id, when known; else it's found by title and artist. */
   id?: string;
   source?: Track['source'];
+  /** Where the source finds it (a Plex part), when known. */
+  ref?: string;
 }
 
 /** Where a clip starts and how long it runs: from the most replayed part (or
@@ -278,6 +334,8 @@ const SILENT_ROUNDS = 2;
 const TRIES = 3;
 /** Model calls for near misses, per round. */
 const JUDGE_CALLS = 2;
+/** A clip that ends sooner than this was never really heard. */
+const EARLY_END_MS = 3_000;
 
 export class MusicQuiz {
   private phase: Phase = 'starting';
@@ -293,6 +351,8 @@ export class MusicQuiz {
   private judgeCalls = 0;
   private judging = false;
   private hinted = false;
+  /** Songs this round already tried whose clip ended at once. */
+  private failedClips = 0;
   private readonly ctl = new AbortController();
   /** Bumped every round, so late events from an old round do nothing. */
   private token = 0;
@@ -387,15 +447,22 @@ export class MusicQuiz {
     const token = ++this.token;
     let clip: Clip | undefined;
     let song: QuizSong | undefined;
-    for (let tries = 0; !clip && tries < TRIES && this.next; tries++) {
+    // Songs whose clip died at once count as tries for this round.
+    const again = this.failedClips;
+    this.failedClips = 0;
+    let announced = again > 0;
+    let tries = again;
+    for (; !clip && tries < TRIES && this.next; tries++) {
       const pending = this.next;
       this.prefetch();
       try {
         const track = await pending.track;
         if (token !== this.token || !this.on) return;
         song = pending.song;
-        // Said before the clip, so the round's number isn't said over it.
-        await this.d.say(this.round + 1 === this.options.rounds && this.round > 0 ? 'Last round.' : `Round ${this.round + 1}.`, this.startedBy).catch(() => undefined);
+        // Said before the clip, so the round's number isn't said over it. Once
+        // per round, however many songs it takes.
+        if (!announced) await this.d.say(this.round + 1 === this.options.rounds && this.round > 0 ? 'Last round.' : `Round ${this.round + 1}.`, this.startedBy).catch(() => undefined);
+        announced = true;
         if (token !== this.token || !this.on) return;
         clip = await this.d.play(track, this.ctl.signal);
         this.answer = {
@@ -426,8 +493,25 @@ export class MusicQuiz {
     this.d.log.info('quiz round', { round: this.round, startS: clip.startS, seconds: clip.seconds });
     this.timers.push(this.d.after(this.times.hintSeconds * 1000, () => token === this.token && this.phase === 'round' && void this.hint()));
     this.timers.push(this.d.after(clip.seconds * 1000 + 500, () => token === this.token && this.phase === 'round' && void this.timeUp()));
-    // A short song or a stream that ends early: the round ends with it.
-    void clip.done.then(() => token === this.token && this.phase === 'round' && void this.timeUp());
+    // A short song or a stream that ends early: the round ends with it. One
+    // that ends at once (a dead stream URL, a failed seek) was never heard:
+    // another song takes its place, unrevealed.
+    const startedAt = this.d.now();
+    const early = Math.min(EARLY_END_MS, clip.seconds * 500);
+    void clip.done.then((how) => {
+      if (token !== this.token || this.phase !== 'round') return;
+      if (how === 'error' || this.d.now() - startedAt < early) void this.clipFailed(tries);
+      else void this.timeUp();
+    });
+  }
+
+  /** This round's clip never played: the same round again with the next song. */
+  private async clipFailed(tries: number): Promise<void> {
+    this.d.log.warn('quiz clip ended at once', { round: this.round });
+    this.endRound();
+    this.round--;
+    this.failedClips = tries;
+    await this.nextRound();
   }
 
   private clearTimers(): void {
@@ -504,8 +588,11 @@ export class MusicQuiz {
    *  name, so a wrong guess gets a "no". */
   heard(userId: UserId, text: string, woke: boolean): boolean {
     if (!this.on) return false;
-    const cmd = parseQuizCommand(text, true);
+    const cmd = parseQuizCommand(text, true, woke);
     if (cmd && cmd !== 'model' && cmd.kind !== 'start') {
+      // Without her name, "skip" or "hint" outside a round is just a word.
+      if (!woke && (cmd.kind === 'skip' || cmd.kind === 'hint') && this.phase !== 'round') return false;
+      if (this.phase === 'round') this.heardThisRound++;
       void this.command(cmd.kind);
       return true;
     }
@@ -515,13 +602,17 @@ export class MusicQuiz {
     }
     // Between rounds an answer to the song just revealed is late, not news.
     if (this.phase !== 'round' || !this.answer || !text.trim()) return false;
-    this.heardThisRound++;
     const titleOnly = !!this.options.artist;
     let v = judgeGuess(text, this.answer, titleOnly);
     if (!v.right && this.answer.alt) {
       const alt = judgeGuess(text, { title: this.answer.alt }, true);
       if (alt.right) v = alt;
     }
+    // Only a try at the song counts as playing along: said to her, guess-shaped
+    // ("is it...", "I think it's..."), or near the answer. Talk about anything
+    // else doesn't keep a quiz nobody plays going.
+    const tried = woke || v.right || ANSWERING.test(bare(text)) || this.overlap(text) >= 0.3;
+    if (tried) this.heardThisRound++;
     if (v.right) {
       void this.win(userId, v.got);
       return true;
@@ -543,11 +634,23 @@ export class MusicQuiz {
         .finally(() => (this.judging = false));
       return true;
     }
-    if (woke && (v.close || ANSWERING.test(bare(text)))) {
+    // Said to her: "Not quite." only when it's surely a try at this song. "Is it
+    // raining?" or "it's too loud" starts the same way, so anything else is
+    // left to her usual handling, which knows a wrong guess when it hears one.
+    if (woke && (v.close || (ANSWERING.test(bare(text)) && this.overlap(text) > 0))) {
       void this.d.say('Not quite.', userId).catch(() => undefined);
       return true;
     }
     return false;
+  }
+
+  /** How near the words come to this round's answer, 0-1. */
+  private overlap(text: string): number {
+    const a = this.answer;
+    if (!a) return 0;
+    const titles = [answerTitle(a.title), ...(a.alt ? [answerTitle(a.alt)] : [])];
+    const names = a.artist && !this.options.artist ? artistNames(a.artist) : [];
+    return Math.max(0, ...titles.map((t) => answerScore(text, t, a.artist ? answerWords(a.artist) : [])), ...names.map((n) => answerScore(text.replace(/\bthe\s+/gi, ''), n, titles.flatMap(answerWords))));
   }
 
   /** skip, stop, score, hint, status. */
@@ -618,7 +721,7 @@ export class MusicQuiz {
   context(): string[] {
     if (!this.on) return [];
     return [
-      `A music quiz is running here (round ${Math.max(1, this.round)} of ${this.options.rounds}). You don't know which song is playing: never guess, name or hint at it. Guesses are checked automatically. "Skip", "what's the score" and "stop the quiz" work; music requests wait until the quiz is stopped.`,
+      `A music quiz is running here (round ${Math.max(1, this.round)} of ${this.options.rounds}). You don't know which song is playing: never guess, name or hint at it. Guesses are checked automatically before they reach you: when someone's words to you are a guess at the song (a title or an artist), it's wrong, so say only "Not quite." Answer anything else as usual. "Skip", "what's the score" and "stop the quiz" work; music requests wait until the quiz is stopped.`,
     ];
   }
 }
@@ -674,8 +777,9 @@ export async function quizSongs(o: QuizOptions, src: SongSources, signal: AbortS
   const fit = (tracks: (QuizSong & { durationS?: number })[]): QuizSong[] =>
     tracks
       .filter((t) => t.title && !NOT_QUIZ.test(t.title) && (t.durationS === undefined || (t.durationS >= 45 && t.durationS <= 600)))
-      .map((t) => ({ title: t.title, ...(t.artist ? { artist: t.artist } : {}), ...(t.id ? { id: t.id } : {}), ...(t.source ? { source: t.source } : {}) }));
-  const asSong = (t: Track) => ({ title: t.title, ...(t.artist ? { artist: t.artist } : {}), ...(t.id ? { id: t.id } : {}), source: t.source, ...(t.durationS ? { durationS: t.durationS } : {}) });
+      .map((t) => ({ title: t.title, ...(t.artist ? { artist: t.artist } : {}), ...(t.id ? { id: t.id } : {}), ...(t.source ? { source: t.source } : {}), ...(t.ref ? { ref: t.ref } : {}) }));
+  // A Plex song plays from its ref (a YouTube stream URL goes stale: that one's looked up again by id).
+  const asSong = (t: Track) => ({ title: t.title, ...(t.artist ? { artist: t.artist } : {}), ...(t.id ? { id: t.id } : {}), source: t.source, ...(t.source === 'plex' && t.ref ? { ref: t.ref } : {}), ...(t.durationS ? { durationS: t.durationS } : {}) });
   let songs: QuizSong[] = [];
   if (o.played) {
     songs = fit(src.recent().filter((t) => t.kind !== 'podcast' && t.title).map(asSong));
@@ -793,7 +897,7 @@ export class Quizzes {
         now: this.o.now ?? Date.now,
         after,
         songs: (o, signal) => quizSongs(o, this.o.sources(room), signal),
-        ready: (s, signal) => room.music.clipTrack({ title: s.title, ...(s.artist ? { artist: s.artist } : {}), ...(s.id ? { id: s.id } : {}), source: s.source ?? 'youtube', ref: '' }, signal),
+        ready: (s, signal) => room.music.clipTrack({ title: s.title, ...(s.artist ? { artist: s.artist } : {}), ...(s.id ? { id: s.id } : {}), source: s.source ?? 'youtube', ref: s.ref ?? '' }, signal),
         play: (t, signal) => room.music.clip(t, (f) => clipRange(f, this.o.settings.clipSeconds), signal),
         say: (text, to) => room.say(text, to),
         nameOf: (id) => room.nameOf(id),
