@@ -123,17 +123,23 @@ describe('what she says after the match', () => {
 describe('quiet while gaming', () => {
   afterEach(() => vi.useRealTimers());
 
-  function rig(o: { enabled?: boolean; file?: string; heard?: boolean } = {}) {
+  function rig(o: { enabled?: boolean; file?: string; heard?: boolean; dmFails?: boolean } = {}) {
     let now = 10_000_000;
     const pcs: QuietPc[] = [];
     const said: { pc: string; text: string }[] = [];
     const away: { owner: string; items: HeldItem[]; text: string }[] = [];
+    const dms: { owner: string; text: string }[] = [];
     const held = new HeldItems(o.file ?? tmp(), () => now);
     const q = new GameQuiet(held, {
       enabled: () => o.enabled ?? true,
       pcs: () => pcs,
       sayAt: async (pc, _owner, text) => (said.push({ pc: pc.device.id, text }), o.heard ?? true),
-      elsewhere: async (owner, items, text) => void away.push({ owner, items, text }),
+      elsewhere: async (owner, items, text) => void away.push({ owner, items: items.map((i) => ({ ...i })), text }),
+      dm: async (owner, text) => {
+        if (o.dmFails) throw new Error('DMs closed');
+        dms.push({ owner, text });
+        return true;
+      },
       now: () => now,
     });
     const pc = (id: string, owner = OWNER) => {
@@ -147,8 +153,100 @@ describe('quiet while gaming', () => {
       q.disconnected(p);
     };
     const flush = () => new Promise((r) => setTimeout(r, 0));
-    return { q, held, said, away, pc, gone, flush, tick: (ms: number) => (now += ms) };
+    return { q, held, said, away, dms, pc, gone, flush, tick: (ms: number) => (now += ms) };
   }
+
+  /** A reminder whose DM waits with it, as the stack holds them. */
+  const withDm = (text: string, dm = `Reminder: ${text}.`) => ({ ...reminder(text), dmSent: false, dm });
+  const settled = async (r: { flush: () => Promise<unknown> }) => {
+    for (let i = 0; i < 5; i++) await r.flush();
+  };
+
+  it("a held reminder's DM goes when the match ends, even when the line was heard", async () => {
+    const r = rig();
+    const p = r.pc('desk');
+    r.q.activity(p, { gaming: true });
+    r.q.hold(p, withDm('laundry', 'Reminder: laundry (2 minutes late).'));
+    r.q.hold(p, reminder('no dm needed'));
+    await settled(r);
+    expect(r.dms).toEqual([]);
+    r.q.activity(p, { gaming: false });
+    await settled(r);
+    expect(r.said).toHaveLength(1);
+    expect(r.dms).toEqual([{ owner: OWNER, text: 'Reminder: laundry (2 minutes late).' }]);
+    expect(r.away).toEqual([]);
+  });
+
+  it('a line nobody heard: the DM went, so the fallback only covers what had none', async () => {
+    const r = rig({ heard: false });
+    const p = r.pc('desk');
+    r.q.activity(p, { gaming: true });
+    r.q.hold(p, withDm('laundry'));
+    r.q.activity(p, { gaming: false });
+    await settled(r);
+    expect(r.dms).toHaveLength(1);
+    expect(r.away).toHaveLength(1);
+    expect(r.away[0]!.items[0]).toMatchObject({ dmSent: true });
+  });
+
+  it('a DM that fails is left for the fallback', async () => {
+    const r = rig({ heard: false, dmFails: true });
+    const p = r.pc('desk');
+    r.q.activity(p, { gaming: true });
+    r.q.hold(p, withDm('laundry'));
+    r.q.activity(p, { gaming: false });
+    await settled(r);
+    expect(r.away[0]!.items[0]).toMatchObject({ dmSent: false });
+  });
+
+  it('the DM also goes when the PC is gone for good, after a 12-hour match, and after a restart', async () => {
+    // Gone for good: the 2-minute fallback.
+    const lost = rig();
+    const p = lost.pc('desk');
+    lost.q.activity(p, { gaming: true });
+    lost.q.hold(p, withDm('laundry'));
+    lost.gone(p);
+    lost.tick(LOST_MS + 1);
+    lost.q.sweep();
+    await settled(lost);
+    expect(lost.dms.map((d) => d.text)).toEqual(['Reminder: laundry.']);
+    expect(lost.away).toHaveLength(1);
+    // Twelve hours in a game.
+    const long = rig();
+    const q = long.pc('desk');
+    long.q.activity(q, { gaming: true });
+    long.q.hold(q, withDm('laundry'));
+    long.tick(HELD_TTL_MS);
+    long.q.sweep();
+    await settled(long);
+    expect(long.dms).toHaveLength(1);
+    // Saved before a restart, nobody back.
+    const file = tmp();
+    new HeldItems(file).add({ ...withDm('laundry'), owner: OWNER });
+    const after = rig({ file });
+    after.tick(LOST_MS);
+    after.q.sweep();
+    await settled(after);
+    expect(after.dms).toEqual([{ owner: OWNER, text: 'Reminder: laundry.' }]);
+  });
+
+  it('a DM is never sent twice, and files from before the DM was held still load', async () => {
+    const file = tmp();
+    writeFileSync(file, JSON.stringify([{ id: 'a1', owner: OWNER, kind: 'reminder', line: 'reminder: laundry.', brief: 'your laundry reminder came up', at: 10_000_000, dmSent: true }]));
+    const r = rig({ file });
+    const p = r.pc('desk');
+    expect(r.held.count(OWNER)).toBe(1);
+    r.q.activity(p, { gaming: true });
+    r.q.hold(p, withDm('dishes'));
+    r.q.activity(p, { gaming: false });
+    await settled(r);
+    r.q.sweep();
+    await settled(r);
+    expect(r.dms.map((d) => d.text)).toEqual(['Reminder: dishes.']);
+    // A broken dm field: not an item.
+    writeFileSync(file, JSON.stringify([{ id: 'a2', owner: OWNER, kind: 'reminder', line: 'x', brief: 'y', at: 1, dmSent: false, dm: 42 }]));
+    expect(new HeldItems(file).count(OWNER)).toBe(0);
+  });
 
   it('an old app never says it plays: nothing is held', () => {
     const r = rig();

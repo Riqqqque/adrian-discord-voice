@@ -2208,20 +2208,26 @@ describe('a PC in a game', () => {
   const kept = (r: Rig) => (JSON.parse(readFileSync(join(r.dir, FILE), 'utf8')) as unknown[]).length;
   const playing = (conn: EventEmitter, game?: string) => conn.emit('activity', { gaming: true, ...(game ? { game } : {}) });
 
-  it('keeps a reminder for after the match, with the DM now as the record', async () => {
+  it('keeps a reminder and its DM for after the match: no Discord notification over the game', async () => {
     const r = await rig({}, { prepare: due('reminder', 'laundry') });
     const { conn } = r.connect();
     playing(conn, 'VALORANT');
     r.loggedIn();
-    await until(() => r.dms.sent.length === 1, 'the DM');
     await until(() => kept(r) === 0, 'the file');
     await sleep(50);
+    expect(r.dms.sent).toEqual([]);
     expect(r.tts.calls).toEqual([]);
     expect(conn.transcripts).toEqual([]);
-    expect(JSON.parse(readFileSync(join(r.dir, 'held-while-gaming.json'), 'utf8'))).toHaveLength(1);
+    const held = JSON.parse(readFileSync(join(r.dir, 'held-while-gaming.json'), 'utf8'));
+    expect(held).toHaveLength(1);
+    expect(held[0]).toMatchObject({ dmSent: false, dm: expect.stringContaining('laundry') });
     conn.emit('activity', { gaming: false });
     await until(() => r.tts.calls.includes('While you were playing: Reminder: laundry.'), 'the line after the match');
     expect(conn.transcripts).toContain('her: While you were playing: Reminder: laundry.');
+    // The record goes once it's out, and only once.
+    await until(() => r.dms.sent.length === 1, 'the DM after the match');
+    expect(String(r.dms.sent[0])).toContain('laundry');
+    await sleep(50);
     expect(r.dms.sent).toHaveLength(1);
     await r.stack.stop();
   });
@@ -2232,9 +2238,12 @@ describe('a PC in a game', () => {
     playing(conn);
     r.loggedIn();
     await until(() => kept(r) === 0, 'the file');
-    expect(r.dms.sent[0]).toContain('late');
+    expect(r.dms.sent).toEqual([]);
     conn.emit('activity', { gaming: false });
     await until(() => r.tts.calls.includes('While you were playing: Reminder: laundry.'), 'the line after the match');
+    // The DM, the record, says it was late, as it would have when it came due.
+    await until(() => r.dms.sent.length === 1, 'the DM after the match');
+    expect(String(r.dms.sent[0])).toContain('late');
     await r.stack.stop();
   });
 

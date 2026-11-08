@@ -2,9 +2,11 @@
 // says when its owner is playing (`activity` messages, docs/satellite.md).
 // While they are, that PC's room only answers to her name, keeps answers
 // short, and holds what can wait: reminders (never timers, which they set to
-// ring). When the match ends they hear one line about what came in. Held
-// items are kept on disk, per owner, at most 50 for at most 12 hours, and
-// never dropped without going out some other way.
+// ring). A reminder's DM, the record, is held with it, so no Discord
+// notification pops up over the game. When the match ends the DMs go and they
+// hear one line about what came in. Held items are kept on disk, per owner, at
+// most 50 for at most 12 hours, and never dropped without going out some
+// other way.
 
 import { readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
@@ -36,6 +38,8 @@ export interface HeldItem {
   at: number;
   /** A DM with it already went out (the record), so none is needed later. */
   dmSent: boolean;
+  /** The DM to send when it's released (the record, worded as it was due). */
+  dm?: string;
 }
 
 export const HELD_MAX = 50;
@@ -108,7 +112,7 @@ export class HeldItems {
 
 function isItem(x: unknown): x is HeldItem {
   const i = x as HeldItem;
-  return !!i && typeof i.id === 'string' && typeof i.owner === 'string' && (i.kind === 'reminder' || i.kind === 'message') && typeof i.line === 'string' && typeof i.brief === 'string' && typeof i.at === 'number' && typeof i.dmSent === 'boolean';
+  return !!i && typeof i.id === 'string' && typeof i.owner === 'string' && (i.kind === 'reminder' || i.kind === 'message') && typeof i.line === 'string' && typeof i.brief === 'string' && typeof i.at === 'number' && typeof i.dmSent === 'boolean' && (i.dm === undefined || typeof i.dm === 'string');
 }
 
 const GENERIC_REMINDER = 'a reminder came up';
@@ -158,6 +162,8 @@ export interface GameQuietDeps {
   sayAt(pc: QuietPc, owner: UserId, text: string): Promise<boolean>;
   /** No PC to say it at: her call if they're in it, else a DM of what didn't have one yet. */
   elsewhere(owner: UserId, items: HeldItem[], text: string): Promise<void>;
+  /** Send a held item's own DM (its `dm`). Resolves whether it went. */
+  dm?(owner: UserId, text: string): Promise<boolean>;
   now?(): number;
   log?(event: string, fields: Record<string, unknown>): void;
 }
@@ -254,16 +260,29 @@ export class GameQuiet {
     return [];
   }
 
+  /** The DMs held with these items go now, whatever happens to the spoken
+   *  line: they're the record. One that fails is left for `elsewhere`. */
+  private async records(owner: UserId, items: HeldItem[]): Promise<void> {
+    for (const i of items) {
+      if (i.dmSent || !i.dm || !this.d.dm) continue;
+      i.dmSent = await this.d.dm(owner, i.dm).catch(() => false);
+    }
+  }
+
   private release(owner: UserId, pc: QuietPc): void {
     const items = this.held.take(owner);
     if (!items.length) return;
     const text = releaseText(items);
     this.recent.set(owner, { items, until: this.now() + TOLD_MS });
     this.d.log?.('held items released', { count: items.length, at: 'pc' });
+    const sent = this.records(owner, items);
     void this.d
       .sayAt(pc, owner, text)
       .catch(() => false)
-      .then((heard) => (heard ? undefined : this.d.elsewhere(owner, items, text)))
+      .then(async (heard) => {
+        await sent;
+        if (!heard) await this.d.elsewhere(owner, items, text);
+      })
       .catch(() => undefined);
   }
 
@@ -271,7 +290,9 @@ export class GameQuiet {
     const text = releaseText(items);
     this.recent.set(owner, { items, until: this.now() + TOLD_MS });
     this.d.log?.('held items released', { count: items.length, at: 'elsewhere' });
-    void this.d.elsewhere(owner, items, text).catch(() => undefined);
+    void this.records(owner, items)
+      .then(() => this.d.elsewhere(owner, items, text))
+      .catch(() => undefined);
   }
 
   /** Expired items, owners no longer playing, PCs that went away. Runs every

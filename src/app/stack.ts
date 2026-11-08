@@ -295,6 +295,12 @@ export async function startVoiceStack(
       const unsent = items.filter((i) => !i.dmSent);
       if (unsent.length) await client.users.send(owner, `While you were playing:\n${unsent.map((i) => i.line.trim()).join('\n')}`).catch((e: Error) => log.warn('held items DM failed', { user: owner, error: e.message }));
     },
+    // A held reminder's own DM, sent when it's released.
+    dm: (owner, text) =>
+      client.users.send(owner, text).then(
+        () => true,
+        (e: Error) => (log.warn('reminder DM failed', { user: owner, error: e.message }), false),
+      ),
     log: (event, fields) => log.info(event, fields),
   });
   /** A stop also calls off their restart or shutdown, if one is counting down. */
@@ -349,10 +355,17 @@ export async function startVoiceStack(
     const plain = text.replace(/^[^,]+, /, '');
     const pc = r.room ? satRooms.get(r.room) : undefined;
     const route = reminderRoute({ audibleInCall: inHerCall(r.userId), inChannel: transport.isReady() && !!inHerChannel(r.userId), pcUp: !!pc?.ctl });
-    // In a game at that PC, a reminder waits for the end of the match; a timer,
-    // set to ring, doesn't. The DM goes now all the same: it's the record.
-    const holding = route.speak === 'pc' && r.kind === 'reminder' && quiet.playingAt(pc!.ui!);
+    // In a game at that PC, a reminder waits for the end of the match, and so
+    // does its DM (a Discord notification would pop up over the game): it goes
+    // when the reminder is released, worded as it was due. A timer, set to
+    // ring, doesn't wait. A full hold list says it now instead.
+    const holding =
+      route.speak === 'pc' &&
+      r.kind === 'reminder' &&
+      quiet.playingAt(pc!.ui!) &&
+      quiet.hold(pc!.ui!, { kind: 'reminder', line: dueMessage(r, 0).replace(/^[^,]+, /, ''), brief: reminderBrief(r.text), dmSent: !route.dm, ...(route.dm ? { dm: plain } : {}) });
     log.info('reminder due', { user: r.userId, kind: r.kind, lateMs, route: holding ? 'held' : (route.speak ?? 'dm') });
+    if (holding) return;
     const dm = route.dm
       ? client.users.send(r.userId, plain).then(
           () => true,
@@ -362,8 +375,6 @@ export async function startVoiceStack(
           },
         )
       : Promise.resolve(false);
-    // A full hold list says it now instead. Held, it isn't late: it's for after the match.
-    if (holding && quiet.hold(pc!.ui!, { kind: 'reminder', line: dueMessage(r, 0).replace(/^[^,]+, /, ''), brief: reminderBrief(r.text), dmSent: await dm })) return;
     if (route.speak === 'pc') pc!.ui?.transcript('her', plain);
     const heard = route.speak === 'call' ? controller.announce(r.userId, text) : route.speak === 'pc' ? pc!.ctl!.announce(r.userId, plain) : Promise.resolve(false);
     // Any way through counts: at a PC the DM is the record, so a dropped announcement isn't retried.
