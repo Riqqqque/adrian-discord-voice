@@ -1146,3 +1146,90 @@ describe('how an announcement went', () => {
     await expect(r.c.announce('a', 'Your timer is up.')).resolves.toBe(false);
   });
 });
+
+describe('quiet while they play (name only)', () => {
+  function quietRig() {
+    let gaming = true;
+    const r = rig([], { quiet: () => gaming });
+    return { ...r, setGaming: (on: boolean) => (gaming = on) };
+  }
+
+  it('takes no follow-up without her name, and says it is not listening', async () => {
+    const r = quietRig();
+    r.wake('a', 'what time is it');
+    await r.tick();
+    r.answers[0]!.finish();
+    await r.tick(100);
+    expect(r.c.listeningTo('a')).toBe(false);
+    expect(r.c.listenLeftMs('a')).toBe(0);
+    r.plain('a', 'push B, he is one shot');
+    await r.tick();
+    expect(r.answers).toHaveLength(1);
+    // Her name still works.
+    r.wake('a', 'set a timer for five minutes');
+    await r.tick();
+    expect(r.answers.at(-1)!.command).toBe('set a timer for five minutes');
+  });
+
+  it('closes a follow-up that was open when the game started, and opens again after it', async () => {
+    const r = quietRig();
+    r.setGaming(false);
+    r.wake('a', 'what time is it');
+    await r.tick();
+    r.answers[0]!.finish();
+    await r.tick(100);
+    expect(r.c.listeningTo('a')).toBe(true);
+    r.setGaming(true);
+    expect(r.c.listeningTo('a')).toBe(false);
+    r.plain('a', 'rotate to A');
+    await r.tick();
+    expect(r.answers).toHaveLength(1);
+    r.setGaming(false);
+    expect(r.c.listeningTo('a')).toBe(true);
+  });
+
+  it('still takes the words after "Yes?" without her name', async () => {
+    const r = quietRig();
+    r.c.heard({ userId: 'a', text: 'Hey Adrian.', woke: true, command: '' });
+    await r.tick();
+    expect(r.said).toEqual(['Yes?']);
+    expect(r.c.listenLeftMs('a')).toBeGreaterThan(0);
+    r.plain('a', 'how long is left on my timer');
+    await r.tick();
+    expect(r.answers.map((x) => x.command)).toEqual(['how long is left on my timer']);
+  });
+
+  it('still takes the answer to her own question', async () => {
+    const r = quietRig();
+    r.wake('a', 'restart the PC');
+    await r.tick();
+    r.answers[0]!.finish('asked');
+    await r.tick(100);
+    r.plain('a', 'yes');
+    await r.tick();
+    expect(r.answers.map((x) => x.command)).toEqual(['restart the PC', 'yes']);
+  });
+
+  it('keeps talking when they talk over her to their team, and stops for "stop"', async () => {
+    const r = quietRig();
+    r.wake('a', 'tell me about the patch');
+    await r.tick(3_000);
+    r.c.speaking('a');
+    r.c.voiceActivity('a', 5_000);
+    expect(r.answers[0]!.signal.aborted).toBe(false);
+    r.plain('a', 'stop');
+    await r.tick();
+    expect(r.answers[0]!.signal.aborted).toBe(true);
+  });
+
+  it('a room without the dependency behaves as before', async () => {
+    const r = rig();
+    r.wake('a', 'what time is it');
+    await r.tick();
+    r.answers[0]!.finish();
+    await r.tick(100);
+    r.plain('a', 'and the date');
+    await r.tick();
+    expect(r.answers.at(-1)!.command).toBe('and the date');
+  });
+});
