@@ -197,7 +197,7 @@ With [Helix](https://github.com/Riqqqque/Helix) running your game servers, A.D.R
    The second line is only for a server with Geyser and Floodgate.
 5. `sudo adrian restart`. The log shows `helix server ok` for each linked server, or `helix server check failed` with the problem: `denied` (the server isn't on the token, or View is off), `gateway` (wrong address), `auth` (the token is wrong or expired), `unreachable` (nothing answers there).
 
-Without the token she says "Server control isn't set up" and does nothing else; status checks keep working. The token goes only to `helix.url`: plain `http` is accepted only for addresses on your own network, redirects are never followed, and no cookie or Origin header is ever sent (Helix refuses token requests that have one).
+Without the token she says "Server control isn't set up" and does nothing else; status checks keep working. The token goes only to `helix.url`: plain `http` is accepted only for a private IP address or `localhost` (use `https` for a host name), redirects are never followed, and no cookie or Origin header is ever sent (Helix refuses token requests that have one).
 
 To let others use it, add their Discord user IDs or role IDs (owners can always do everything). Role checks need the member in the bot's cache, which they are once they've joined a call or written in a channel she reads. This is a hand edit to `config.json`:
 ```json
