@@ -1,5 +1,8 @@
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { HelixClient, HelixError } from '../src/features/helix.js';
 import {
@@ -173,8 +176,9 @@ const logger = () => {
   return { debug: push, info: push, warn: push, error: push };
 };
 
-function make(o: { token?: boolean; settings?: ControlSettings; list?: ControlledServer[]; client?: HelixClient } = {}) {
+function make(o: { token?: boolean; settings?: ControlSettings; list?: ControlledServer[]; client?: HelixClient; stateFile?: string } = {}) {
   return new ServerControl({
+    ...(o.stateFile ? { stateFile: o.stateFile } : {}),
     servers: o.list ?? servers,
     client: o.token === false ? undefined : (o.client ?? new HelixClient({ url: mock.url, token: TOKEN, timeoutMs: 2000 })),
     settings: o.settings ?? settings(),
@@ -299,6 +303,42 @@ describe('the Helix client', () => {
     other.close();
   });
 
+  it('an oversized answer is dropped as it streams in, never held whole', async () => {
+    let chunks = 0;
+    const big = http.createServer((req, res) => {
+      if (req.url?.includes('declared')) {
+        // Says it's huge up front: refused before the body is read.
+        res.writeHead(200, { 'content-type': 'application/json', 'content-length': String(50 * 1024 * 1024) });
+        res.write('{"status":');
+        return;
+      }
+      // No length, never ends: read until the cap, then cut off.
+      res.writeHead(200, { 'content-type': 'application/json' });
+      const piece = Buffer.alloc(64 * 1024, 0x20);
+      const t = setInterval(() => {
+        chunks++;
+        if (!res.write(piece)) return;
+      }, 1);
+      res.on('close', () => clearInterval(t));
+    });
+    await new Promise<void>((r) => big.listen(0, '127.0.0.1', () => r()));
+    const base = `http://127.0.0.1:${(big.address() as AddressInfo).port}`;
+    try {
+      const t0 = Date.now();
+      const endless = new HelixClient({ url: base, token: TOKEN, timeoutMs: 4000 });
+      await expect(endless.detail(SURVIVAL)).rejects.toMatchObject({ failure: { kind: 'other', code: 'too_large' } });
+      expect(Date.now() - t0).toBeLessThan(3000);
+      expect(chunks).toBeLessThan(200); // stopped near 1 MiB, not after the timeout
+      const declared = new HelixClient({ url: `${base}/declared`, token: TOKEN, timeoutMs: 4000 });
+      const t1 = Date.now();
+      await expect(declared.detail(SURVIVAL)).rejects.toMatchObject({ failure: { kind: 'other', code: 'too_large' } });
+      expect(Date.now() - t1).toBeLessThan(1000);
+    } finally {
+      big.closeAllConnections();
+      big.close();
+    }
+  });
+
   it('nothing listening is "unreachable"; a change with no answer is "lost"', async () => {
     const closed = http.createServer();
     await new Promise<void>((r) => closed.listen(0, '127.0.0.1', () => r()));
@@ -380,6 +420,19 @@ describe('start, stop, restart', () => {
     expect(c.busyWith(SURVIVAL)).toBeUndefined();
   });
 
+  it('a job that finishes within the tool also tells whoever joined it meanwhile', async () => {
+    mock.insts.get(SURVIVAL)!.status = 'stopped';
+    mock.jobPlan = { ms: 30, status: 'complete' };
+    const s = settings({ allow: { start: [FRIEND], stop: [], restart: [], whitelist: [], say: [] } });
+    const c = make({ settings: s });
+    const [x, y] = await Promise.all([c.lifecycle('start', 'survival', ctx(OWNER)), c.lifecycle('start', 'survival', ctx(FRIEND))]);
+    expect(x).toBe('Survival is up.');
+    expect(y).toBe("Survival is already starting. I'll tell you when it's up.");
+    await until(() => announced.length > 0);
+    expect(announced).toEqual([{ userId: FRIEND, text: 'Survival is up.' }]);
+    expect(mock.ops('server_action')).toHaveLength(1);
+  });
+
   it('two yeses at once send one restart', async () => {
     mock.insts.get(SURVIVAL)!.players = 1;
     mock.jobPlan = { ms: 300, status: 'complete' };
@@ -430,6 +483,79 @@ describe('start, stop, restart', () => {
     mock.insts.get(SURVIVAL)!.status = 'starting';
     expect(await make().lifecycle('stop', 'survival', ctx())).toBe("Survival is still starting. Try again once it's up.");
     expect(mock.ops('server_action')).toHaveLength(0);
+  });
+
+  it('stuck starting: stop and restart are allowed, with the usual yes; a fresh start is left alone', async () => {
+    const inst = mock.insts.get(SURVIVAL)!;
+    inst.status = 'starting';
+    inst.container = { Running: true, StartedAt: new Date(Date.now() - 3 * 60_000).toISOString() };
+    const c = make();
+    expect(await c.lifecycle('restart', 'survival', ctx(OWNER, 1))).toBe("Survival is still starting. Try again once it's up.");
+    inst.container = { Running: true, StartedAt: new Date(Date.now() - 25 * 60_000).toISOString() };
+    expect(await c.lifecycle('start', 'survival', ctx(OWNER, 3))).toBe('Survival is already starting, for 25 minutes now, so it may be stuck. A restart may help.');
+    const q = await c.lifecycle('restart', 'survival', ctx(OWNER, 5));
+    expect(q).toBe('Survival has been starting for 25 minutes, so it may be stuck. Restart it?');
+    expect(mock.ops('server_action')).toHaveLength(0);
+    expect(await c.lifecycle('restart', 'survival', ctx(OWNER, 6, 'yes'))).toBe('Survival is back up.');
+    expect(mock.ops('server_action')[0]!.body?.action).toBe('restart');
+    inst.status = 'starting';
+    expect(await c.lifecycle('stop', 'survival', ctx(OWNER, 8))).toBe('Survival has been starting for 25 minutes, so it may be stuck. Stop it?');
+  });
+
+  it('a restart while it watches: the old one goes quiet, the next one picks it up and tells them', async () => {
+    const stateFile = join(mkdtempSync(join(tmpdir(), 'sc-')), 'game-server-jobs.json');
+    mock.insts.get(SURVIVAL)!.status = 'stopped';
+    mock.jobPlan = { ms: -1, status: 'complete' }; // finishes only when the test says
+    const s = settings({ allow: { start: [FRIEND], stop: [], restart: [], whitelist: [], say: [] } });
+    const old = make({ stateFile, settings: s });
+    expect(await old.lifecycle('start', 'survival', ctx(OWNER))).toBe("Starting Survival. I'll tell you when it's up.");
+    expect(await old.lifecycle('start', 'survival', { ...ctx(FRIEND), channelId: 'sat:desk' })).toBe("Survival is already starting. I'll tell you when it's up.");
+    const saved = JSON.parse(readFileSync(stateFile, 'utf8')) as { instanceId: string; jobId: string; askers: { userId: string }[] }[];
+    expect(saved).toHaveLength(1);
+    expect(saved[0]).toMatchObject({ instanceId: SURVIVAL, action: 'start', name: 'Survival' });
+    expect(saved[0]!.askers.map((a) => a.userId)).toEqual([OWNER, FRIEND]);
+    // The stack stops (a settings save, or the process going down).
+    old.stop();
+    await new Promise((r) => setTimeout(r, 300));
+    expect(old.busyWith(SURVIVAL)).toBeUndefined();
+    expect(JSON.parse(readFileSync(stateFile, 'utf8'))).toHaveLength(1);
+    // The job finishes while nobody watches.
+    const job = mock.jobs.get(saved[0]!.jobId)!;
+    job.status = 'complete';
+    job.result = { detail: { online: true, already_running: false } };
+    mock.insts.get(SURVIVAL)!.status = 'online';
+    await new Promise((r) => setTimeout(r, 100));
+    expect(announced).toEqual([]);
+    // The next instance, once logged in.
+    const next = make({ stateFile, settings: s });
+    next.resume();
+    await until(() => announced.length === 2);
+    expect(announced).toEqual([
+      { userId: OWNER, text: 'Survival is up.' },
+      { userId: FRIEND, text: 'Survival is up.' },
+    ]);
+    expect(JSON.parse(readFileSync(stateFile, 'utf8'))).toEqual([]);
+    expect(logs.some((l) => l.msg === 'game server watch resumed')).toBe(true);
+  });
+
+  it('saved watches: a broken file, a server gone from the config, and one long past are dropped', async () => {
+    const stateFile = join(mkdtempSync(join(tmpdir(), 'sc-')), 'game-server-jobs.json');
+    writeFileSync(stateFile, '{not json');
+    make({ stateFile }).resume();
+    const base = { action: 'start', name: 'X', by: 'Alex', at: Date.now() - 60_000, jobId: 'job-x', askers: [{ userId: OWNER, speaker: 'Alex' }] };
+    writeFileSync(
+      stateFile,
+      JSON.stringify([
+        { ...base, instanceId: 'helix:33333333-3333-4333-8333-333333333333', deadline: Date.now() + 60_000 },
+        { ...base, instanceId: SURVIVAL, deadline: Date.now() - 2 * 3_600_000 },
+        { ...base, instanceId: CREATIVE, deadline: Date.now() + 60_000, askers: [{ userId: 5 }] },
+      ]),
+    );
+    make({ stateFile }).resume();
+    await new Promise((r) => setTimeout(r, 100));
+    expect(announced).toEqual([]);
+    expect(logs.filter((l) => l.msg === 'game server watch dropped after restart').map((l) => l.fields?.reason)).toEqual(['server gone', 'too old']);
+    expect(JSON.parse(readFileSync(stateFile, 'utf8'))).toEqual([]);
   });
 
   it('a job that fails says why, including a lock taken in the meantime', async () => {
