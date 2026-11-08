@@ -55,9 +55,14 @@ describe('held items', () => {
     const again = new HeldItems(file);
     expect(again.count(OWNER)).toBe(2);
     expect(again.owners().sort()).toEqual([OWNER, OTHER].sort());
-    expect(again.take(OWNER).map((i) => i.line)).toEqual(['reminder: laundry.', 'reminder: dishes.']);
+    const taken = again.take(OWNER);
+    expect(taken.map((i) => i.line)).toEqual(['reminder: laundry.', 'reminder: dishes.']);
     expect(again.take(OWNER)).toEqual([]);
-    // Taken is gone from the file too.
+    expect(again.count(OWNER)).toBe(0);
+    // Taken but not yet out: a restart now would release them again.
+    expect(new HeldItems(file).count(OWNER)).toBe(2);
+    // Out: gone from the file too.
+    again.done(taken);
     expect(new HeldItems(file).count(OWNER)).toBe(0);
     expect(new HeldItems(file).count(OTHER)).toBe(1);
   });
@@ -66,6 +71,21 @@ describe('held items', () => {
     const h = new HeldItems(tmp());
     for (let i = 0; i < HELD_MAX; i++) expect(h.add({ ...reminder(`r${i}`), owner: OWNER })).toBeDefined();
     expect(h.add({ ...reminder('one more'), owner: OWNER })).toBeUndefined();
+  });
+
+  it(`${HELD_MAX} is per person: someone else's full list doesn't stop theirs, also after a restart`, () => {
+    const file = tmp();
+    const h = new HeldItems(file);
+    for (let i = 0; i < HELD_MAX; i++) h.add({ ...reminder(`r${i}`), owner: OWNER });
+    expect(h.add({ ...reminder('laundry'), owner: OTHER })).toBeDefined();
+    const again = new HeldItems(file);
+    expect(again.count(OWNER)).toBe(HELD_MAX);
+    expect(again.count(OTHER)).toBe(1);
+    // A file with too many for one person keeps that person's newest.
+    writeFileSync(file, JSON.stringify(Array.from({ length: HELD_MAX + 5 }, (_, i) => ({ ...reminder(`r${i}`), id: `i${i}`, owner: OWNER, at: i }))));
+    const trimmed = new HeldItems(file).take(OWNER);
+    expect(trimmed).toHaveLength(HELD_MAX);
+    expect(trimmed[0]!.line).toBe('reminder: r5.');
   });
 
   it('hand over what waited 12 hours', () => {
@@ -246,6 +266,91 @@ describe('quiet while gaming', () => {
     // A broken dm field: not an item.
     writeFileSync(file, JSON.stringify([{ id: 'a2', owner: OWNER, kind: 'reminder', line: 'x', brief: 'y', at: 1, dmSent: false, dm: 42 }]));
     expect(new HeldItems(file).count(OWNER)).toBe(0);
+  });
+
+  it('a restart in the middle of a release sends them again, but never a DM twice', async () => {
+    const file = tmp();
+    let finish!: (v: boolean) => void;
+    const held = new HeldItems(file);
+    const dms: string[] = [];
+    const pcs: QuietPc[] = [];
+    const q = new GameQuiet(held, {
+      enabled: () => true,
+      pcs: () => pcs,
+      // The spoken line never finishes: the process is killed during it.
+      sayAt: () => new Promise((r) => (finish = r)),
+      elsewhere: async () => undefined,
+      dm: async (_o, text) => (dms.push(text), true),
+    });
+    const p = { device: { id: 'desk' }, owner: OWNER, isReady: () => true };
+    pcs.push(p);
+    q.connected(p);
+    q.activity(p, { gaming: true });
+    q.hold(p, withDm('laundry'));
+    q.hold(p, reminder('no dm needed'));
+    q.activity(p, { gaming: false });
+    await new Promise((r) => setTimeout(r, 5));
+    expect(dms).toEqual(['Reminder: laundry.']);
+    // Killed here: both are still on disk, the DM marked as gone.
+    const after = new HeldItems(file);
+    expect(after.count(OWNER)).toBe(2);
+    const again = after.take(OWNER);
+    expect(again.map((i) => i.dmSent)).toEqual([true, true]);
+    // Not killed: once the line is done they leave the file.
+    finish(true);
+    await new Promise((r) => setTimeout(r, 5));
+    expect(new HeldItems(file).count(OWNER)).toBe(0);
+  });
+
+  it('two PCs: when the gaming one drops, nothing goes out at the other for 2 minutes', async () => {
+    const r = rig();
+    const desk = r.pc('desk');
+    const laptop = r.pc('laptop'); // not playing, or an old app
+    r.tick(SETTLE_MS);
+    r.q.activity(desk, { gaming: true });
+    r.q.hold(desk, withDm('laundry'));
+    r.gone(desk);
+    r.tick(30_000);
+    r.q.sweep();
+    await settled(r);
+    expect(r.said).toEqual([]);
+    expect(r.dms).toEqual([]);
+    // Back, still playing: still held.
+    const back = r.pc('desk');
+    r.q.activity(back, { gaming: true });
+    r.tick(LOST_MS);
+    r.q.sweep();
+    expect(r.said).toEqual([]);
+    // Drops again and stays away: after the wait, the other PC gets it.
+    r.gone(back);
+    r.tick(LOST_MS - 1);
+    r.q.sweep();
+    expect(r.said).toEqual([]);
+    r.tick(2);
+    r.q.sweep();
+    await settled(r);
+    expect(r.said.map((x) => x.pc)).toEqual(['laptop']);
+    expect(r.dms).toHaveLength(1);
+    void laptop;
+  });
+
+  it('two PCs: the one that dropped comes back out of the game and says it there', async () => {
+    const r = rig();
+    const desk = r.pc('desk');
+    r.pc('laptop');
+    r.tick(SETTLE_MS);
+    r.q.activity(desk, { gaming: true });
+    r.q.hold(desk, reminder('laundry'));
+    r.gone(desk);
+    r.tick(20_000);
+    const back = r.pc('desk');
+    r.q.sweep();
+    expect(r.said).toEqual([]); // still settling: it may say it's playing
+    r.tick(SETTLE_MS);
+    r.q.sweep();
+    await settled(r);
+    expect(r.said.map((x) => x.pc)).toEqual(['desk']);
+    void back;
   });
 
   it('an old app never says it plays: nothing is held', () => {
