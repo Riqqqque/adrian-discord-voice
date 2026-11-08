@@ -5,7 +5,7 @@
 import type { IncomingMessage } from 'node:http';
 import { WebSocketServer } from 'ws';
 import type { Logger } from '../core/interfaces.js';
-import { SatelliteConnection } from './connection.js';
+import { capFrames, frameBytes, MAX_FRAME, SatelliteConnection, SMALL_FRAME } from './connection.js';
 import type { SatelliteDevices } from './devices.js';
 
 export interface SatelliteServerOptions {
@@ -26,15 +26,17 @@ const LOCKOUT_MS = 10 * 60_000;
 export function startSatelliteServer(o: SatelliteServerOptions): { close(): Promise<void>; connections(): SatelliteConnection[] } {
   const live = new Set<SatelliteConnection>();
   const fails = new Map<string, { n: number; until: number }>();
-  // Audio frames are small; anything big is not a satellite.
-  // Room for one screen picture (pc_screen: up to 1.5 MB, sent as base64 in JSON).
-  const wss = new WebSocketServer({ host: o.bind, port: o.port, path: '/satellite', maxPayload: 2 * 1024 * 1024 + 64 * 1024 });
+  // Audio frames are small; anything big is not a satellite. The cap leaves room
+  // for one screen picture, and only a welcomed satellite gets that far.
+  const wss = new WebSocketServer({ host: o.bind, port: o.port, path: '/satellite', maxPayload: MAX_FRAME });
 
   wss.on('listening', () => o.log.info('satellite server listening', { bind: o.bind, port: o.port }));
   wss.on('error', (e) => o.log.error('satellite server error', { error: e.message }));
 
   wss.on('connection', (ws, req: IncomingMessage) => {
     const addr = req.socket.remoteAddress ?? '?';
+    // Until it's welcomed, a socket gets audio-sized frames only.
+    capFrames(ws, SMALL_FRAME);
     // A bad frame arrives as 'error', even before a hello or after a refusal.
     // With nobody listening that throws and takes the whole bot down.
     ws.on('error', (e) => {
@@ -56,6 +58,12 @@ export function startSatelliteServer(o: SatelliteServerOptions): { close(): Prom
     const timer = setTimeout(() => fail('no hello'), HELLO_MS);
     ws.once('message', (data, isBinary) => {
       clearTimeout(timer);
+      // Not a token guess, so it doesn't count toward the lockout.
+      if (frameBytes(data) > SMALL_FRAME) {
+        o.log.warn('satellite rejected', { addr, reason: 'frame too big' });
+        ws.close(1009, 'frame too big');
+        return;
+      }
       let m: Record<string, unknown> = {};
       try {
         // "null" parses fine, and reading m.type off it would throw.
@@ -79,6 +87,8 @@ export function startSatelliteServer(o: SatelliteServerOptions): { close(): Prom
       // One live connection per device: a reconnect replaces the old one.
       for (const c of live) if (c.device.id === device.id) void c.disconnect();
       const conn = new SatelliteConnection(ws, device);
+      // Welcomed: room for a picture now (connection.ts lets only action_result be big).
+      capFrames(ws, MAX_FRAME);
       live.add(conn);
       conn.on('closed', () => {
         live.delete(conn);

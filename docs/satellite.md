@@ -116,8 +116,10 @@ A `pc_screen` result carries the picture in `action_result.image`. The server
 checks it before the model sees it: `image/jpeg` or `image/png` only, at most
 1.5 MB decoded (the base64 length is checked first), and the first bytes must
 match the type. A picture that fails is dropped, and the result text says why,
-so the model can say it couldn't see the screen. WebSocket frames may be up to
-2 MiB for this (256 KB in 0.15.5 and earlier).
+so the model can say it couldn't see the screen. Frames are limited to 256 KB
+until the satellite has been welcomed, and after that for everything except
+`action_result`, which may be up to 2 MiB for this (256 KB for every frame in
+0.15.5 and earlier). An oversized frame closes the connection with 1009.
 
 Claude gets the picture as an image block inside the tool result, for the one
 model call that follows; later tool rounds in the same answer carry only a

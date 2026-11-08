@@ -18,6 +18,27 @@ export interface ActionResult {
 
 export type SatelliteMode = 'idle' | 'listening' | 'thinking' | 'speaking';
 
+/** Largest frame before a satellite is welcomed, and after it for anything
+ *  but an action_result: audio frames and JSON are small. */
+export const SMALL_FRAME = 256 * 1024;
+/** Largest frame at all: one action_result with a screen picture (pc_screen:
+ *  up to 1.5 MB, base64 in JSON). */
+export const MAX_FRAME = 2 * 1024 * 1024 + 64 * 1024;
+
+/** Bytes in a ws message, whichever shape it arrived in. */
+export function frameBytes(data: Buffer | ArrayBuffer | Buffer[]): number {
+  if (Array.isArray(data)) return data.reduce((n, b) => n + b.length, 0);
+  return data instanceof ArrayBuffer ? data.byteLength : data.length;
+}
+
+/** ws takes one maxPayload per server, but ws 8 keeps a copy per socket in its
+ *  receiver: lowering it there stops a big frame before it's read in. Without
+ *  that field (another ws version) the size checks on each message still hold. */
+export function capFrames(ws: WebSocket, bytes: number): void {
+  const r = (ws as unknown as { _receiver?: { _maxPayload?: unknown } })._receiver;
+  if (r && typeof r._maxPayload === 'number') r._maxPayload = bytes;
+}
+
 /** Audio both ways: 48 kHz mono s16le. */
 export const SAT_RATE = 48_000;
 
@@ -52,8 +73,11 @@ export class SatelliteConnection extends EventEmitter implements VoiceTransport 
     super();
     ws.on('message', (data, isBinary) => {
       this.lastSeen = Date.now();
+      // Only an action_result may be big (a screen picture); audio never is.
+      const big = frameBytes(data) > SMALL_FRAME;
+      if (big && isBinary) return this.tooBig();
       if (isBinary) this.onAudio(data as Buffer);
-      else this.onJson(String(data));
+      else this.onJson(String(data), big);
     });
     ws.on('close', () => this.close());
     ws.on('error', () => this.close());
@@ -78,14 +102,21 @@ export class SatelliteConnection extends EventEmitter implements VoiceTransport 
     this.emit('audio', this.owner, { samples, sampleRate: SAT_RATE, receivedAt: performance.now() });
   }
 
-  private onJson(text: string): void {
+  private tooBig(): void {
+    this.ws.close(1009, 'frame too big');
+    this.close();
+  }
+
+  private onJson(text: string, big = false): void {
     let m: Record<string, unknown>;
     try {
       // "null" parses fine, and reading m.type off it would throw.
       m = (JSON.parse(text) ?? {}) as Record<string, unknown>;
     } catch {
+      if (big) this.tooBig();
       return;
     }
+    if (big && m.type !== 'action_result') return this.tooBig();
     switch (m.type) {
       case 'speech_start':
         this.emit('speechStart', this.owner);
