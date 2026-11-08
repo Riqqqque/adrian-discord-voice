@@ -87,7 +87,20 @@ Everything else goes to the language model.
 
 ## Game servers and media
 
-With `gameServers` set, you can ask "Is the server up?", "who's on the survival server?" and "how many players are on?". These are read-only status pings and never change anything.
+With `gameServers` set, you can ask "Is the server up?", "who's on the survival server?" and "how many players are on?". On their own these are read-only status pings.
+
+With Helix server control set up (see [configuration.md](configuration.md#minecraft-server-control-helix)), she also knows when a server is starting, stopped, stuck or crashed, and the owners (plus anyone in `helix.allow`) can say:
+- "Start the survival server." She starts it right away. If that takes more than a few seconds she says "Starting Survival. I'll tell you when it's up." and tells you once it is, or why it failed: in the call, at your PC, in the chat you asked in, or by DM. She stops watching after `helix.startWaitSec` and says so.
+- "Restart Survival." / "Stop Creative." These always ask first: "3 people are on Survival. Restart it anyway?" Only your own yes on your very next turn counts ("yes", "yeah, restart it"); anything else, or someone else's yes, and nothing happens. A stopped server is just started, without the question.
+- "Whitelist Steve on Survival", "take Steve off the whitelist", "who's on the whitelist?". Java names are 3 to 16 letters, numbers or underscores; anything else is refused. For a Bedrock player on a server with `bedrock` on, say it's a Bedrock player, or use the in-game name with its dot (".Gamer_Tag"). She adds the gamertag through Floodgate and checks the whitelist afterwards.
+- "Tell everyone on Survival dinner's ready." She posts it in the game chat as "Alex: dinner's ready": one line, without color codes or @ selectors, up to `helix.sayMaxChars` characters.
+
+Good to know:
+- With one server she uses it; with several and no name, she asks which. A half-heard name ("survivor") finds the closest one.
+- One job per server. If someone asks while a restart runs, she says it's already restarting and tells them too when it's back. A different order has to wait until it's done.
+- If Helix is busy with a backup, an update or a restore on that server, she says so and does nothing; ask again when it's finished.
+- If Helix doesn't answer a start, stop or restart, she never sends it again. She looks for the job, and if she can't find it she says she can't tell and asks you to check the panel.
+- Every order is logged as `game server action`: what, which server, who asked and how it went. A chat message is logged only by its length.
 
 With Plex, Sonarr and Radarr keys set:
 - "What's new on Plex?"

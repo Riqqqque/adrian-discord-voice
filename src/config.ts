@@ -11,7 +11,7 @@ const snowflake = z.string().regex(/^\d{17,20}$/, 'must be a Discord ID (17-20 d
 /** Keys with one fixed job. A setting may only name a key meant for its own
  *  purpose, so an endpoint changed in the config (or the admin UI) can never
  *  be handed the bot token or another service's key. */
-export const SECRET_PURPOSE: Readonly<Record<string, 'discord' | 'search' | 'voice' | 'media' | 'steam'>> = {
+export const SECRET_PURPOSE: Readonly<Record<string, 'discord' | 'search' | 'voice' | 'media' | 'steam' | 'helix'>> = {
   DISCORD_TOKEN: 'discord',
   TAVILY_API_KEY: 'search',
   SPEECHIFY_API_KEY: 'voice',
@@ -19,6 +19,8 @@ export const SECRET_PURPOSE: Readonly<Record<string, 'discord' | 'search' | 'voi
   SONARR_API_KEY: 'media',
   RADARR_API_KEY: 'media',
   STEAM_API_KEY: 'steam',
+  /** Helix server API token: starts, stops and restarts game servers. */
+  HELIX_TOKEN: 'helix',
 };
 const SECRET_NAME = /^[A-Z][A-Z0-9_]{1,63}$/;
 /** A secret name for one purpose: llm keys may be empty (local servers). */
@@ -35,6 +37,28 @@ export const cloudVoiceSpeed = (model: string) => (model.startsWith('simba-3.2')
 /** The Starter plan's 1.9M characters a month; simba-3.5 counts each one twice
  *  from 21 Nov 2026. */
 export const cloudVoiceChars = (model: string) => (model.startsWith('simba-3.5') ? 950_000 : 1_900_000);
+
+/** Who else may do a server action: Discord user or role IDs. */
+const allowList = z.array(snowflake).max(50).default([]);
+/** True for addresses that never leave the home network. */
+export function privateHost(host: string): boolean {
+  const h = host.replace(/^\[|\]$/g, '').toLowerCase();
+  if (h === 'localhost' || h === '::1') return true;
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(h);
+  if (!m) return /^f[cd][0-9a-f]{2}:/.test(h) || /^fe80:/.test(h);
+  const [a, b] = [Number(m[1]), Number(m[2])];
+  return a === 127 || a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127) || (a === 169 && b === 254);
+}
+/** Helix's dashboard address: the token goes with every request, so plain
+ *  http only to an address on the home network, and nothing but the origin. */
+const helixUrl = z
+  .string()
+  .url()
+  .refine((u) => {
+    if (!URL.canParse(u)) return false;
+    const x = new URL(u);
+    return (x.protocol === 'https:' || (x.protocol === 'http:' && privateHost(x.hostname))) && !x.username && !x.password && !x.search && !x.hash && (x.pathname === '/' || x.pathname === '');
+  }, 'must be the Helix dashboard address, like http://192.168.1.50:3100 (https, or http on your own network; no path)');
 
 export const PocConfigSchema = z.object({
   guildId: snowflake,
@@ -194,9 +218,27 @@ export const PocConfigSchema = z.object({
       creatorIds: z.array(z.string().regex(/^\d{15,22}$/)).max(5).default([]),
     })
     .default({ creatorHeardAs: [], creatorIds: [] }),
-  /** Game servers A.D.R.I.A.N. may check (read-only status ping). */
+  /** Game servers A.D.R.I.A.N. may check (status ping), and with `helix`
+   *  set and the server linked, start, stop, restart, whitelist and message. */
   gameServers: z
-    .array(z.object({ name: z.string().min(1).max(60), host: z.string().min(1), port: z.number().int().min(1).max(65535), kind: z.literal('minecraft').default('minecraft') }))
+    .array(
+      z.object({
+        name: z.string().min(1).max(60),
+        host: z.string().min(1),
+        port: z.number().int().min(1).max(65535),
+        kind: z.literal('minecraft').default('minecraft'),
+        /** The same server in Helix (its Advanced tab shows the ID). */
+        helix: z
+          .object({
+            instanceId: z.string().regex(/^[a-z][a-z0-9]{0,15}:[A-Za-z0-9._-]{1,128}$/, 'must be the exact Helix server ID, like helix:0b9a6c7e-...'),
+            /** Geyser and Floodgate let Bedrock players join. */
+            bedrock: z.boolean().default(false),
+            /** Floodgate's username-prefix: Bedrock names start with it in game. */
+            bedrockPrefix: z.string().regex(/^[^\sA-Za-z0-9§]{0,3}$/, 'must be up to 3 symbols, like "."').default('.'),
+          })
+          .optional(),
+      }),
+    )
     .max(20)
     .default([]),
   /** Steam (read-only): friends online, wishlist sales, store prices. Friends need STEAM_API_KEY. */
@@ -214,6 +256,23 @@ export const PocConfigSchema = z.object({
       shareWithServer: z.boolean().default(false),
     })
     .default({ enabled: true, accounts: {}, country: 'US', shareWithServer: false }),
+  /** Server control through Helix's automation API. The token is the
+   *  HELIX_TOKEN key. Owners may do everything; `allow` adds Discord user or
+   *  role IDs per action. */
+  helix: z
+    .object({
+      url: helixUrl,
+      allow: z
+        .object({ start: allowList, stop: allowList, restart: allowList, whitelist: allowList, say: allowList })
+        .default({ start: [], stop: [], restart: [], whitelist: [], say: [] }),
+      /** Longest wait for a start or restart to finish (Helix itself gives up after 6 minutes, 20 for modpacks). */
+      startWaitSec: z.number().int().min(30).max(1500).default(420),
+      /** Longest wait for a stop (it saves the world first). */
+      stopWaitSec: z.number().int().min(15).max(900).default(180),
+      /** Longest in-game chat message. */
+      sayMaxChars: z.number().int().min(10).max(256).default(200),
+    })
+    .optional(),
   /** Local media apps (read-only). Each is used only if its key is in the secrets file:
    *  PLEX_TOKEN, SONARR_API_KEY, RADARR_API_KEY. */
   media: z
