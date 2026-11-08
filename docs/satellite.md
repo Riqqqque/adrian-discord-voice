@@ -171,13 +171,16 @@ time, whether or not the line was heard: it's the record. A line that isn't
 heard goes by DM too, for items whose DM didn't go.
 
 Held items are kept per owner in `<state>/held-while-gaming.json`, at most 50
-(another one is said at once), and survive a restart. If the PC drops in a
-game, they wait 2 minutes for it: back and still playing, they stay held; back
-and not playing, she says them there; still gone, they go out the way they
-would with no PC: their DMs, then her call if they're in it, else a DM of
-what had none.
+per owner (another one is said at once), and survive a restart. If the PC drops in a
+game, they wait 2 minutes for it, even when another of the owner's PCs is
+connected: back and still playing, they stay held; back and not playing, she
+says them there; still gone, they go to another PC of theirs, or out the way
+they would with no PC: their DMs, then her call if they're in it, else a DM
+of what had none.
 Anything held for 12 hours goes out that way too, even mid-game. After a
 restart with nobody back, the saved ones go after 2 minutes the same way.
+Items leave the file only once they have gone out, so a restart in the
+middle of that sends them again (a DM that already went is not sent twice).
 
 ## PC and Discord together
 
