@@ -201,6 +201,9 @@ describe('songs YouTube will not play', () => {
     const r = rig({ broken: { [id('song')]: 'ERROR: [youtube] x: Video unavailable. This video is private' }, search: [id('song'), id('lyrics')] });
     expect(await r.p.request('song', 'some song', 'now', sig())).toMatchObject({ ok: true });
     expect(r.p.nowPlaying!.id).toBe(id('lyrics'));
+    const geo = rig({ broken: { [id('song')]: 'ERROR: [youtube] x: The uploader has not made this video available in your country' }, search: [id('song'), id('lyrics')] });
+    expect(await geo.p.request('song', 'some song', 'now', sig())).toMatchObject({ ok: true });
+    expect(geo.p.nowPlaying!.id).toBe(id('lyrics'));
   });
 
   it('leaves a passing failure alone: no extra searches, and never "not on YouTube"', async () => {
