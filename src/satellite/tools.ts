@@ -87,7 +87,7 @@ export function pcTools(d: PcToolDeps): Tool[] {
     },
     pc_windows: {
       description:
-        'Arrange app windows on the PC. snap: to a side (left, right, top, bottom) or a corner (top_left, top_right, bottom_left, bottom_right). maximize. restore: out of maximized or minimized. center. move: to another monitor. back: undo the last change ("put it back"). monitors: the screens and what is on each. name: the app as they said it; leave it out for "it", "this" or "this window" (the window in front). monitor: the screen they named (main, other, left, right, or a number), also with snap, maximize and center ("snap Discord to the left of my main monitor"). Games and full-screen windows are never moved.',
+        'Arrange app windows on the PC. snap: to a side (left, right, top, bottom) or a corner (top_left, top_right, bottom_left, bottom_right). maximize. restore: out of maximized or minimized. center. move: to another monitor. back: undo the last change ("put it back"). monitors: the screens and what is on each. name: the app as they said it; leave it out for "it", "this" or "this window" (the window in front). monitor: the screen they named (main, other, left, right, or a number), also with snap, maximize and center ("snap Discord to the left of my main monitor"). It finds the app\'s open window by name itself, so never open or switch to the app first: "put Spotify on my other monitor" is just move. Games and full-screen windows are never moved.',
       properties: {
         action: { type: 'string', enum: ['snap', 'maximize', 'restore', 'center', 'move', 'back', 'monitors'] },
         name: { type: 'string', description: 'The app, as they said it. Leave out for "it" or "this window".' },

@@ -55,7 +55,7 @@ const result = (name, x) => {
 const pc = { action: async (name, args) => (calls.push({ name, args }), { ok: true, result: result(name, args) }) };
 const stub = new Proxy({}, {
   get: (_t, k) => {
-    if (k === 'nowPlaying') return undefined;
+    if (k === 'nowPlaying' || k === 'lent') return undefined; // no music quiz going
     if (k === 'upNext' || k === 'recent') return [];
     if (k === 'paused' || k === 'youtubePaused') return false;
     if (k === 'autoplay') return true;
@@ -126,7 +126,7 @@ await ask('open the JEI Mod Drinth page', call('pc_open', (x) => /jei/i.test(x.u
 await ask('pull up the wiki page for the ender dragon', call('pc_open', (x) => /ender(%20|\+|_| )dragon/i.test(x.url ?? '')));
 await ask('put on some lofi on youtube', (cs) => call('pc_open', (x) => /lofi/i.test(x.youtube ?? '') || !!x.video_id)(cs) || cs.some((k) => k.name === 'music.request'));
 await ask('lock my pc', call('pc_system', (x) => a(x) === 'lock'));
-// Window layout (pc_windows). Not run yet against the real model.
+// Window layout (pc_windows). 2026-11-08: "put spotify on my other monitor" opened Spotify instead of moving it.
 await ask('snap discord to the left', call('pc_windows', (x) => a(x) === 'snap' && x.side === 'left' && /discord/i.test(x.name ?? '')));
 await ask('put spotify on my other monitor', call('pc_windows', (x) => a(x) === 'move' && /spotify/i.test(x.name ?? '') && (!x.monitor || /other/i.test(x.monitor))));
 await ask('move chrome to my main screen', call('pc_windows', (x) => a(x) === 'move' && /chrome/i.test(x.name ?? '') && /main|primary/i.test(x.monitor ?? '')));
