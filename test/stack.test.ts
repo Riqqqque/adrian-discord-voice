@@ -1518,12 +1518,17 @@ describe('startup', () => {
     expect(turn).not.toHaveBeenCalled();
   });
 
-  it('a good one still loads them', async () => {
-    const whisper = vi.spyOn(WhisperStt, 'load').mockResolvedValue({} as never);
+  it('a good one loads Smart Turn, and Whisper waits for the first question in another language', async () => {
+    const whisper = vi.spyOn(WhisperStt, 'load').mockResolvedValue({ transcribe: async () => ({ text: '', lang: 'en', decodeMs: 1 }) } as never);
     const turn = vi.spyOn(SmartTurn, 'load').mockResolvedValue({} as never);
     const r = await rig(heavy, { prepare: models });
-    expect(whisper).toHaveBeenCalledTimes(1);
     expect(turn).toHaveBeenCalledTimes(1);
+    expect(whisper).not.toHaveBeenCalled(); // about 1.3 GB with the voices it brought
+    r.heard(r.discordPipe, SAM, 'oye adrian qué hora es', '¿qué hora es?');
+    await sleep(40);
+    expect(whisper).not.toHaveBeenCalled(); // Spanish is spotted without it
+    r.heard(r.discordPipe, SAM, 'hey adrian ni hao ma xian zai ji dian', 'ni hao ma xian zai ji dian');
+    await until(() => whisper.mock.calls.length === 1, 'the first load');
     await r.stack.stop();
   });
 

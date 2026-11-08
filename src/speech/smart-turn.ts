@@ -5,6 +5,8 @@
 // bench/turn-bench.py measured it on 460 clips: used after the normal 0.8 s
 // wait, it halves mid-sentence cut-offs for about 0.2 s more waiting.
 
+import { Worker } from 'node:worker_threads';
+
 const RATE = 16_000;
 const SECONDS = 8;
 const N_FFT = 400;
@@ -120,8 +122,47 @@ export class SmartTurn implements TurnDetector {
     private readonly Tensor: new (type: 'float32', data: Float32Array, dims: number[]) => unknown,
   ) {}
 
-  /** onnxruntime-node is loaded only when Smart Turn is used. */
-  static async load(modelPath: string): Promise<SmartTurn> {
+  /** The detector, run on a worker thread (see smart-turn-worker.ts). */
+  static load(modelPath: string): Promise<TurnDetector> {
+    return new Promise((resolve, reject) => {
+      const w = new Worker(new URL('./smart-turn-worker.js', import.meta.url), { workerData: { modelPath } });
+      w.unref(); // never what keeps the process alive
+      const waiting = new Map<number, { ok: (p: number) => void; fail: (e: Error) => void }>();
+      let next = 0;
+      let dead: Error | undefined;
+      const die = (e: Error) => {
+        dead = e;
+        for (const x of waiting.values()) x.fail(e);
+        waiting.clear();
+        reject(e); // still loading: the load fails; later this does nothing
+      };
+      w.on('error', die);
+      w.on('exit', (code) => die(new Error(`smart turn worker exited (${code})`)));
+      w.on('message', (m: { ready?: true; id?: number; p?: number; error?: string }) => {
+        if (m.ready) {
+          resolve({
+            complete: (samples) =>
+              dead
+                ? Promise.reject(dead)
+                : new Promise<number>((ok, fail) => {
+                    const id = next++;
+                    waiting.set(id, { ok, fail });
+                    w.postMessage({ id, samples });
+                  }),
+          });
+          return;
+        }
+        const x = waiting.get(m.id!);
+        if (!x) return;
+        waiting.delete(m.id!);
+        if (m.error !== undefined) x.fail(new Error(m.error));
+        else x.ok(m.p!);
+      });
+    });
+  }
+
+  /** On this thread. onnxruntime-node is loaded only when Smart Turn is used. */
+  static async loadHere(modelPath: string): Promise<SmartTurn> {
     const ort = (await import('onnxruntime-node')) as unknown as {
       InferenceSession: { create(path: string, opts: object): Promise<OrtSession> };
       Tensor: new (type: 'float32', data: Float32Array, dims: number[]) => unknown;
