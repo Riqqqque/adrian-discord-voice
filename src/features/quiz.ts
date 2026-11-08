@@ -39,7 +39,7 @@ export const GENRES: Record<string, number> = {
   christian: 186, gospel: 186, 'movie': 173, film: 173, soundtrack: 173, 'video game': 173, anime: 16,
 };
 
-const QUIZ_WORDS = /\b(music quiz|song quiz|songs quiz|guess (?:the|that) (?:song|songs|track|tune|artist)|name that tune|music trivia|song trivia|music game|song game|guessing game)\b/i;
+const QUIZ_WORDS = /\b(music quiz|song quiz|songs quiz|guess (?:the|that) (?:song|songs|track|tune|artist)|name that tune|music trivia|song trivia|music game|song game|song guessing game)\b/i;
 const DECADE = /\b(?:the )?(?:(?:19)?([5-9]0)|(20[0-2]0)|(two thousands|noughties)|(fifties|sixties|seventies|eighties|nineties))'?s?\b/i;
 const DECADE_WORDS: Record<string, string> = { fifties: '50s', sixties: '60s', seventies: '70s', eighties: '80s', nineties: '90s', 'two thousands': '2000s', noughties: '2000s' };
 const PLAYED = /\b(?:(?:songs?|music|stuff|tracks?) (?:we(?:'?ve| have)?|you(?:'?ve| have)?|i(?:'?ve| have)?) (?:played|listened to|heard|had on)|from (?:our|the|my) (?:history|queue)|(?:our|my) (?:songs|music))\b/i;

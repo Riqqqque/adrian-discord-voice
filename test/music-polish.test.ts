@@ -4,6 +4,7 @@ import { classifyMusic } from '../src/conversation/intents.js';
 import type { PlaybackHandle } from '../src/core/interfaces.js';
 import {
   decoderArgs,
+  deezerTopTracks,
   heatmapPeak,
   MusicPlayer,
   type MusicOutput,
@@ -201,6 +202,24 @@ describe('quiz clips through the player', () => {
     back();
     expect(r.p.lent).toBeUndefined();
     expect(await r.p.request('song', 'x', 'now', sig())).toMatchObject({ ok: true });
+  });
+});
+
+describe('a bare "play X"', () => {
+  const deezer = (artists: { id: number; name: string; nb_fan: number }[]) =>
+    deezerTopTracks((async (url: unknown) =>
+      new Response(JSON.stringify(String(url).includes('/top') ? { data: ['One', 'Two', 'Three', 'Four', 'Five', 'Six'].map((title) => ({ title, artist: { id: artists[0]!.id } })) } : { data: artists })),
+    ) as unknown as typeof fetch);
+
+  it('plays the song when only a small act has that name', async () => {
+    const m = await deezer([{ id: 1, name: 'Believer', nb_fan: 7_665 }]).match!('believer', sig());
+    expect(m?.known).toBe(false);
+  });
+
+  it('finds the real artist past small acts of the same name', async () => {
+    const acts = [...Array.from({ length: 6 }, (_, i) => ({ id: 10 + i, name: 'Queen', nb_fan: 400 + i })), { id: 412, name: 'Queen', nb_fan: 12_862_367 }];
+    const m = await deezer(acts).match!('queen', sig());
+    expect(m).toMatchObject({ artist: 'Queen', known: true });
   });
 });
 

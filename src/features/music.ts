@@ -631,8 +631,11 @@ export function trackKey(t: { title: string; artist?: string | undefined }): str
 const VARIANT = /\b(nightcore|daycore|sped[\s-]*up|slowed|reverb|8d(?: audio)?|bass boosted)\b/i;
 
 /** Fans an exact name match needs before a bare "play X" counts as the artist:
- *  below this, X is more likely a song that some small act is also called. */
-const KNOWN_FANS = 5_000;
+ *  below this, X is more likely a song that some small act is also called.
+ *  At 5,000, "play Believer" (7,665) and "play Thunder" (18,758) shuffled those
+ *  acts instead of playing the Imagine Dragons songs; Bush (217K) and Journey
+ *  (666K) still count as artists. */
+export const KNOWN_FANS = 50_000;
 
 /** Deezer's public catalog (no key): the artist by name, then their top
  *  tracks by popularity. It's only sent a name: the artist asked for, or the X
@@ -1062,14 +1065,18 @@ export class MusicPlayer {
         // Their best-known songs, shuffled; then autoplay carries on with similar
         // ones. Their top song is looked up beside Deezer's list and goes first,
         // so the wait for Deezer costs nothing.
-        const lead = yt.find(q, signal).catch((e: Error) => {
-          if (signal.aborted || e instanceof YoutubePaused) throw e;
-          return undefined;
-        });
-        lead.catch(() => {});
+        // Queued behind a song, nothing waits on it: no lookup ahead.
+        const starts = mode === 'now' || !this.current;
+        const lead = starts
+          ? yt.find(q, signal).catch((e: Error) => {
+              if (signal.aborted || e instanceof YoutubePaused) throw e;
+              return undefined;
+            })
+          : undefined;
+        lead?.catch(() => {});
         const best = await this.topOf([q], 25, signal, asked);
-        if (best.tracks.length >= MIN_TOP) return this.artistList(mode === 'now' || !this.current ? this.withLead(best, await lead) : best, mode, signal, asked);
-        const top = await lead;
+        if (best.tracks.length >= MIN_TOP) return this.artistList(lead ? this.withLead(best, await lead) : best, mode, signal, asked);
+        const top = lead ? await lead : await yt.find(q, signal);
         if (!top?.id) return one(await this.find(q, signal));
         // Their top song starts now: its radio takes another yt-dlp run, and follows.
         const r = await this.playList([top], mode, signal, `${top.artist ?? q} radio`, asked);
