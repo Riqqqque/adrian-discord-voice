@@ -4,19 +4,21 @@
 
 import { readFileSync } from 'node:fs';
 import { z } from 'zod';
+import { parseSteamAccount } from './features/steam.js';
 
 const snowflake = z.string().regex(/^\d{17,20}$/, 'must be a Discord ID (17-20 digits)');
 
 /** Keys with one fixed job. A setting may only name a key meant for its own
  *  purpose, so an endpoint changed in the config (or the admin UI) can never
  *  be handed the bot token or another service's key. */
-export const SECRET_PURPOSE: Readonly<Record<string, 'discord' | 'search' | 'voice' | 'media'>> = {
+export const SECRET_PURPOSE: Readonly<Record<string, 'discord' | 'search' | 'voice' | 'media' | 'steam'>> = {
   DISCORD_TOKEN: 'discord',
   TAVILY_API_KEY: 'search',
   SPEECHIFY_API_KEY: 'voice',
   PLEX_TOKEN: 'media',
   SONARR_API_KEY: 'media',
   RADARR_API_KEY: 'media',
+  STEAM_API_KEY: 'steam',
 };
 const SECRET_NAME = /^[A-Z][A-Z0-9_]{1,63}$/;
 /** A secret name for one purpose: llm keys may be empty (local servers). */
@@ -195,6 +197,21 @@ export const PocConfigSchema = z.object({
     .array(z.object({ name: z.string().min(1).max(60), host: z.string().min(1), port: z.number().int().min(1).max(65535), kind: z.literal('minecraft').default('minecraft') }))
     .max(20)
     .default([]),
+  /** Steam (read-only): friends online, wishlist sales, store prices. Friends need STEAM_API_KEY. */
+  steam: z
+    .object({
+      enabled: z.boolean().default(true),
+      /** Discord user ID → that person's SteamID64 (in quotes), profile link or custom profile name. */
+      accounts: z
+        .record(snowflake, z.string({ error: 'must be a SteamID64 in quotes, a steamcommunity.com profile link, or a profile name' }).refine((v) => parseSteamAccount(v) !== undefined, 'must be a SteamID64 (17 digits starting 7656119), a steamcommunity.com profile link, or a profile name'))
+        .refine((r) => Object.keys(r).length <= 50, 'at most 50 accounts')
+        .default({}),
+      /** Store country (two letters); prices come in its currency. */
+      country: z.string().regex(/^[A-Za-z]{2}$/, 'must be a two-letter country code').transform((c) => c.toUpperCase()).default('US'),
+      /** Let members ask about each other's Steam (only members with an account linked). */
+      shareWithServer: z.boolean().default(false),
+    })
+    .default({ enabled: true, accounts: {}, country: 'US', shareWithServer: false }),
   /** Local media apps (read-only). Each is used only if its key is in the secrets file:
    *  PLEX_TOKEN, SONARR_API_KEY, RADARR_API_KEY. */
   media: z

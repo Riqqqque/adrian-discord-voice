@@ -147,7 +147,7 @@ switch (cmd) {
     if (!arg) fail('usage: config KEY [VALUE]');
     if (rawError) fail(`${rawError} Nothing was changed.`);
     const path = arg.split('.');
-    const ALLOWED = ['brain', 'voice', 'limits', 'identity', 'gameServers', 'timezone', 'priorityRoleIds', 'playbackVolume', 'guildId', 'channelId', 'media', 'silenceMs', 'listen', 'mature', 'languages', 'owners', 'ownerStopReply', 'ownerAck', 'ownerAffection', 'nicknames', 'botGender', 'textChat', 'serverInfo', 'messaging', 'satellite', 'cloudStt', 'autoMemory', 'cloudVoice', 'music'];
+    const ALLOWED = ['brain', 'voice', 'limits', 'identity', 'gameServers', 'timezone', 'priorityRoleIds', 'playbackVolume', 'guildId', 'channelId', 'media', 'silenceMs', 'listen', 'mature', 'languages', 'owners', 'ownerStopReply', 'ownerAck', 'ownerAffection', 'nicknames', 'botGender', 'textChat', 'serverInfo', 'messaging', 'satellite', 'cloudStt', 'autoMemory', 'cloudVoice', 'music', 'steam'];
     if (!ALLOWED.includes(path[0]!) || /(file|dir)$|^vadmodel$|^secrets/i.test(path[path.length - 1]!)) fail(`"${arg}" can't be changed here (file paths belong to the installer).`);
     const get = (o: unknown, p: string[]): unknown => p.reduce<unknown>((x, k) => (x && typeof x === 'object' ? (x as Record<string, unknown>)[k] : undefined), o);
     const rawValue = process.argv[4];
@@ -161,6 +161,8 @@ switch (cmd) {
     } catch {
       /* plain string */
     }
+    // Long digit strings are IDs (Discord, SteamID64): as numbers they'd lose digits.
+    if (/^\d{16,}$/.test(rawValue)) value = rawValue;
     const next = JSON.parse(JSON.stringify(raw)) as Record<string, unknown>;
     let o: Record<string, unknown> = next;
     for (const k of path.slice(0, -1)) {

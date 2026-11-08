@@ -196,4 +196,12 @@ describe('adrian config on a good file', () => {
     expect(existsSync(configFile)).toBe(true);
     expect(JSON.parse(readFileSync(configFile, 'utf8'))).toEqual({ music: { volume: 0.4 } });
   });
+
+  it('a long ID stays exact (as a number it would lose digits), and a bad SteamID is refused', async () => {
+    writeFileSync(configFile, JSON.stringify(GOOD));
+    expect((await tool('config', 'steam.accounts.123456789012345678', '76561198000000001')).code).toBe(0);
+    expect(JSON.parse(readFileSync(configFile, 'utf8')).steam).toEqual({ accounts: { '123456789012345678': '76561198000000001' } });
+    expect((await tool('config', 'steam.accounts.123456789012345678', '76561208000000001')).code).toBe(1);
+    expect((await tool('config', 'steam.shareWithServer', 'true')).code).toBe(0);
+  });
 });
