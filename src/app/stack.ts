@@ -1002,13 +1002,13 @@ export async function startVoiceStack(
         } finally {
           finished();
           clearTimeout(genTimer);
+          const privateTurn = privateTurns.delete(userId);
           if (said.length) {
             saidAll = said.join(' ');
             lastSpoken.set(userId, said.join(' '));
             const pl = rm.place();
             if (pl.channelId) room.add(pl.channelId, 'bot', `You (answering ${nameOf(userId)})`, said.join(' '));
             rm.ui?.transcript('her', said.join(' '));
-            const privateTurn = privateTurns.delete(userId);
             if (rm.ui && config.satellite.logTranscripts) log.info('pc answer', { room: rm.key, asked: command.slice(0, 300), ...answerForLog(said.join(' '), privateTurn) });
           }
         }
