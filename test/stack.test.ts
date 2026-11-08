@@ -2200,3 +2200,76 @@ describe('a skip and a stop', () => {
     await r.stack.stop();
   });
 });
+
+describe('a PC in a game', () => {
+  const FILE = 'reminders.json';
+  const due = (kind: 'timer' | 'reminder', what: string) => (dir: string) =>
+    writeFileSync(join(dir, FILE), JSON.stringify([{ id: 'r1', userId: OWNER, speaker: 'Sam', kind, text: what, dueAt: Date.now() - 1_000, createdAt: 0, room: 'sat:d1' }]));
+  const kept = (r: Rig) => (JSON.parse(readFileSync(join(r.dir, FILE), 'utf8')) as unknown[]).length;
+  const playing = (conn: EventEmitter, game?: string) => conn.emit('activity', { gaming: true, ...(game ? { game } : {}) });
+
+  it('keeps a reminder for after the match, with the DM now as the record', async () => {
+    const r = await rig({}, { prepare: due('reminder', 'laundry') });
+    const { conn } = r.connect();
+    playing(conn, 'VALORANT');
+    r.loggedIn();
+    await until(() => r.dms.sent.length === 1, 'the DM');
+    await until(() => kept(r) === 0, 'the file');
+    await sleep(50);
+    expect(r.tts.calls).toEqual([]);
+    expect(conn.transcripts).toEqual([]);
+    expect(JSON.parse(readFileSync(join(r.dir, 'held-while-gaming.json'), 'utf8'))).toHaveLength(1);
+    conn.emit('activity', { gaming: false });
+    await until(() => r.tts.calls.includes('While you were playing: Reminder: laundry.'), 'the line after the match');
+    expect(conn.transcripts).toContain('her: While you were playing: Reminder: laundry.');
+    expect(r.dms.sent).toHaveLength(1);
+    await r.stack.stop();
+  });
+
+  it('still rings a timer', async () => {
+    const r = await rig({}, { prepare: due('timer', 'tea') });
+    const { conn } = r.connect();
+    playing(conn);
+    r.loggedIn();
+    await until(() => r.tts.calls.includes('your tea timer is done.'), 'the timer');
+    await r.stack.stop();
+  });
+
+  it('with the config off, says reminders as before', async () => {
+    const r = await rig({ satellite: { enabled: true, port: 40000, unfinishedWaitMs: 0, quietWhileGaming: false } }, { prepare: due('reminder', 'laundry') });
+    const { conn } = r.connect();
+    playing(conn);
+    r.loggedIn();
+    await until(() => r.tts.calls.includes('reminder: laundry.'), 'the reminder');
+    await r.stack.stop();
+  });
+
+  it('answers only to her name there, briefly, and tells the model the game', async () => {
+    const r = await rig();
+    const { conn, pipe } = r.connect();
+    playing(conn, 'VALORANT');
+    await answered(r, OWNER, pipe);
+    expect(asPrompt(r.llmBodies[0])).toContain('is playing VALORANT at this PC right now');
+    r.heard(pipe, OWNER, 'and the one for france');
+    await sleep(80);
+    expect(r.llmBodies).toHaveLength(1);
+    // Out of the game: the follow-up works again.
+    conn.emit('activity', { gaming: false });
+    await answered(r, OWNER, pipe);
+    expect(asPrompt(r.llmBodies[1])).not.toContain('is playing');
+    r.heard(pipe, OWNER, 'and the one for france');
+    await until(() => r.llmBodies.length === 3, 'the follow-up');
+    await r.stack.stop();
+  });
+
+  it('leaves the Discord call alone', async () => {
+    const r = await rig();
+    const { conn } = r.connect();
+    playing(conn);
+    await answered(r, SAM);
+    expect(asPrompt(r.llmBodies[0])).not.toContain('is playing');
+    r.heard(r.discordPipe, SAM, 'and the one for france');
+    await until(() => r.llmBodies.length === 2, 'the follow-up in the call');
+    await r.stack.stop();
+  });
+});

@@ -6,6 +6,7 @@ import { EventEmitter } from 'node:events';
 import type { WebSocket } from 'ws';
 import type { PlaybackHandle, UserId, VoiceTransport, VoiceTransportEvents } from '../core/interfaces.js';
 import type { Device } from './devices.js';
+import { type Activity, parseActivity } from './quiet.js';
 
 export type SatelliteMode = 'idle' | 'listening' | 'thinking' | 'speaking';
 
@@ -19,6 +20,8 @@ export interface SatelliteEvents extends VoiceTransportEvents {
   text: (text: string) => void;
   /** The stop button. */
   stop: () => void;
+  /** Playing a game started or stopped (apps from 0.15.6; older ones never send it). */
+  activity: (a: Activity) => void;
   closed: () => void;
 }
 
@@ -102,6 +105,11 @@ export class SatelliteConnection extends EventEmitter implements VoiceTransport 
       case 'ping':
         this.send({ type: 'pong' });
         break;
+      case 'activity': {
+        const a = parseActivity(m);
+        if (a) this.emit('activity', a);
+        break;
+      }
     }
   }
 
