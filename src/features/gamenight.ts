@@ -7,7 +7,8 @@
 //
 // Pings reach only people who signed up ("ping me for game night", or the
 // config's gameNight.optIn), never @everyone or roles, at most ten at a time,
-// once per game per cooldown, in a fixed message she writes herself.
+// once per game per cooldown, in a fixed message she writes herself. Each
+// person is pinged at most once per cooldown, whatever the game is called.
 
 import { readFileSync } from 'node:fs';
 import { ActivityType, escapeMarkdown, type Guild, type GuildMember } from 'discord.js';
@@ -166,12 +167,18 @@ const NO_PRESENCE = "I can't see who's online or what people are playing: that n
 
 /** Their words asked for the pings: "ping everyone", "get the squad on". */
 const PING_ORDER =
-  /\b(?:ping|tag|notify|alert|summon|rally|round up|gather|call (?:up|in)|get)\b(?:\s+\S+){0,3}?\s+(?:everyone|everybody|the (?:squad|boys|guys|girls|team|crew|gang|group|homies|lads)|squad|people|the others|them|y'?all)\b|\bping\b/i;
+  /\b(?:ping|tag|notify|alert|summon|rally|round up|gather|call (?:up|in)|get)\b(?:\s+\S+){0,3}?\s+(?:everyone|everybody|the (?:squad|boys|guys|girls|team|crew|gang|group|homies|lads)|squad|people|the others|them|y'?all)\b/i;
+/** Words that never send pings without a yes: "don't ping anyone yet". */
+const NOT_ORDER = /\b(?:don'?t|do not|never|not|no need to|stop|shouldn'?t|won'?t|wouldn'?t|cancel)\b/i;
+/** "ping me for valorant" is signing up (join), not pinging others. */
+const PING_ME = /\b(?:ping|tag|notify|alert|remind)\s+me\b/i;
 
 export function gameNightTool(d: GameNightDeps): Tool {
   const now = d.now ?? Date.now;
   const told = new Set<UserId>();
   const cooldown = new Map<string, number>();
+  /** guild:person → when they were last pinged, for any game. */
+  const pinged = new Map<string, number>();
   const limiter = new WindowLimiter(d.perUserPerHour, 3_600_000, now);
   const waiting = new PendingYes<{ guildId: string; game: string; minutes: number | undefined }>(now);
 
@@ -183,6 +190,27 @@ export function gameNightTool(d: GameNightDeps): Tool {
     if (!asker) throw new Error("you're not in that server");
     return { guild, asker };
   }
+
+  /** The display names of these people, fetching the ones not seen since the
+   *  restart (the member cache only fills as people speak or join voice). */
+  async function named(guild: Guild, ids: UserId[]): Promise<{ names: string[]; unknown: number }> {
+    const missing = ids.filter((id) => !guild.members.cache.has(id)).slice(0, 100);
+    let failed = false;
+    if (missing.length)
+      await guild.members.fetch({ user: missing, time: 5_000 }).catch(() => {
+        failed = true;
+      });
+    const names: string[] = [];
+    let unknown = 0;
+    for (const id of ids) {
+      const m = guild.members.cache.get(id);
+      if (m && !m.user.bot) names.push(m.displayName);
+      // Not found after a fetch that worked: they left the server.
+      else if (!m && (failed || !missing.includes(id))) unknown++;
+    }
+    return { names, unknown };
+  }
+  const unknownNote = (n: number) => (n ? ` (and ${n} more I couldn't look up right now)` : '');
 
   /** Everyone she can say something about, as the asker could see it. */
   function people(guild: Guild, asker: GuildMember): Person[] {
@@ -240,16 +268,19 @@ export function gameNightTool(d: GameNightDeps): Tool {
     return `${what} ${voice}`;
   }
 
-  function whoFree(guild: Guild, asker: GuildMember, game: string, ctx: ToolContext): string {
+  async function whoFree(guild: Guild, asker: GuildMember, game: string, ctx: ToolContext): Promise<string> {
+    const signedUp = await named(
+      guild,
+      d.signups.everyone().filter((id) => id !== ctx.userId && d.signups.wants(id, game || undefined)),
+    );
     const all = people(guild, asker).filter((p) => p.id !== ctx.userId);
     const signed = (p: Person) => (d.signups.wants(p.id, game || undefined) ? ['signed up for game-night pings'] : []);
-    const signedNames = d.signups
-      .everyone()
-      .filter((id) => id !== ctx.userId && d.signups.wants(id, game || undefined))
-      .map((id) => guild.members.cache.get(id))
-      .filter((m): m is GuildMember => !!m && !m.user.bot)
-      .map((m) => m.displayName);
-    const signedLine = signedNames.length ? `Signed up for ${game || 'game-night'} pings: ${signedNames.slice(0, 20).join(', ')}.` : `Nobody has signed up for ${game || 'game-night'} pings.`;
+    const signedNames = signedUp.names;
+    const signedLine = signedNames.length
+      ? `Signed up for ${game || 'game-night'} pings: ${signedNames.slice(0, 20).join(', ')}${unknownNote(signedUp.unknown)}.`
+      : signedUp.unknown
+        ? `${signedUp.unknown} signed up for ${game || 'game-night'} pings, but I couldn't look up who right now.`
+        : `Nobody has signed up for ${game || 'game-night'} pings.`;
     if (!d.presences) {
       const here = all.filter((p) => p.voice && !p.voice.afk && !p.voice.deafened);
       const away = all.filter((p) => p.voice && (p.voice.afk || p.voice.deafened));
@@ -291,8 +322,19 @@ export function gameNightTool(d: GameNightDeps): Tool {
       const left = Math.ceil((d.cooldownMs - (now() - last)) / 60_000);
       return `Not sent: ${game} pings already went out ${Math.max(1, Math.round((now() - last) / 60_000))} minutes ago. The next one can go in ${left} minute${left === 1 ? '' : 's'}.`;
     }
+    // Taken now, before anything waits: a second ask arriving meanwhile (the
+    // call and a chat at once) finds it and sends nothing. Given back below
+    // when nothing went out.
+    cooldown.set(key, now());
+    const sent = await send(guild, asker, game, minutes, ctx).catch((e: unknown) => ({ ok: false, text: `Not sent: ${(e as Error).message}` }));
+    if (!sent.ok) cooldown.delete(key);
+    return sent.text;
+  }
+
+  async function send(guild: Guild, asker: GuildMember, game: string, minutes: number | undefined, ctx: ToolContext): Promise<{ ok: boolean; text: string }> {
+    const no = (text: string) => ({ ok: false, text });
     const where = pickTextChannel(guild, asker, { configured: d.channelId, current: ctx.channelId, lastUsed: d.lastText(guild.id), voice: d.voiceChannel(guild.id) });
-    if ('error' in where) return `Not sent: ${where.error}`;
+    if ('error' in where) return no(`Not sent: ${where.error}`);
     const ch = where.channel;
     const ids = d.signups.everyone().filter((id) => id !== ctx.userId && d.signups.wants(id, game));
     // The ones not seen yet, in one request (works without the Server Members intent).
@@ -303,9 +345,16 @@ export function gameNightTool(d: GameNightDeps): Tool {
     let skippedVoice = 0;
     let skippedDnd = 0;
     let hidden = 0;
+    let recent = 0;
     const targets: GuildMember[] = [];
+    for (const [k, t] of pinged) if (now() - t >= d.cooldownMs) pinged.delete(k);
     for (const m of found) {
       if (!m || m.user.bot) continue;
+      // Pinged for any game within the cooldown: a new game name doesn't ping them again.
+      if (pinged.has(`${guild.id}:${m.id}`)) {
+        recent++;
+        continue;
+      }
       const vs = guild.voiceStates.cache.get(m.id);
       if (vs?.channelId && vs.channelId !== guild.afkChannelId) {
         skippedVoice++;
@@ -321,24 +370,27 @@ export function gameNightTool(d: GameNightDeps): Tool {
       }
       targets.push(m);
     }
+    const recentNote = `${recent} pinged in the last ${Math.round(d.cooldownMs / 60_000)} minutes`;
     if (!targets.length) {
-      if (!ids.length) return `Nobody has signed up for ${game} pings. Anyone can say "ping me for game night" to sign up.`;
-      return `Nobody to ping: ${[skippedVoice ? `${skippedVoice} already in voice` : '', skippedDnd ? `${skippedDnd} on do not disturb` : '', hidden ? `${hidden} can't see #${ch.name}` : ''].filter(Boolean).join(', ') || "the people signed up aren't in this server"}.`;
+      if (!ids.length) return no(`Nobody has signed up for ${game} pings. Anyone can say "ping me for game night" to sign up.`);
+      return no(`Nobody to ping: ${[skippedVoice ? `${skippedVoice} already in voice` : '', skippedDnd ? `${skippedDnd} on do not disturb` : '', hidden ? `${hidden} can't see #${ch.name}` : '', recent ? recentNote : ''].filter(Boolean).join(', ') || "the people signed up aren't in this server"}.`);
     }
     // Online people first, when that's visible.
     const rank = (m: GuildMember) => ({ online: 0, idle: 1 })[present(m.id) as 'online' | 'idle'] ?? 2;
     targets.sort((a, b) => rank(a) - rank(b));
     const sending = targets.slice(0, d.maxMentions);
-    if (limiter.take(ctx.userId) !== undefined) return `Not sent: that's ${d.perUserPerHour} game-night pings from you in the last hour.`;
+    if (limiter.take(ctx.userId) !== undefined) return no(`Not sent: that's ${d.perUserPerHour} game-night pings from you in the last hour.`);
     const when = minutes === undefined || minutes <= 0 ? 'now' : minutes === 1 ? 'in 1 minute' : `in ${minutes} minutes`;
     const content = `**${escapeMarkdown(asker.displayName)}** is getting ${escapeMarkdown(game)} going ${when}. Who's in? ${sending.map((m) => `<@${m.id}>`).join(' ')}`;
+    // Theirs before the send waits, so a second ping meanwhile skips them.
+    for (const m of sending) pinged.set(`${guild.id}:${m.id}`, now());
     try {
       await ch.send({ content, allowedMentions: { users: sending.map((m) => m.id), parse: [] } });
     } catch {
       limiter.release(ctx.userId);
-      return `Not sent: I couldn't post in #${ch.name}.`;
+      for (const m of sending) pinged.delete(`${guild.id}:${m.id}`);
+      return no(`Not sent: I couldn't post in #${ch.name}.`);
     }
-    cooldown.set(key, now());
     for (const [k, t] of cooldown) if (now() - t > d.cooldownMs) cooldown.delete(k);
     const left = targets.length - sending.length;
     const notes = [
@@ -346,8 +398,9 @@ export function gameNightTool(d: GameNightDeps): Tool {
       skippedVoice ? `left out ${skippedVoice} already in voice` : '',
       skippedDnd ? `${skippedDnd} on do not disturb` : '',
       hidden ? `${hidden} who can't see #${ch.name}` : '',
+      recent ? `left out ${recentNote}` : '',
     ].filter(Boolean);
-    return `Pinged ${sending.length} ${sending.length === 1 ? 'person' : 'people'} in #${ch.name} for ${game}${notes.length ? ` (${notes.join('; ')})` : ''}.`;
+    return { ok: true, text: `Pinged ${sending.length} ${sending.length === 1 ? 'person' : 'people'} in #${ch.name} for ${game}${notes.length ? ` (${notes.join('; ')})` : ''}.` };
   }
 
   return {
@@ -381,12 +434,9 @@ export function gameNightTool(d: GameNightDeps): Tool {
         case 'leave':
           return d.signups.leave(ctx.userId, game || undefined);
         case 'signed_up': {
-          const names = d.signups
-            .everyone()
-            .filter((id) => d.signups.wants(id, game || undefined))
-            .map((id) => guild.members.cache.get(id)?.displayName)
-            .filter(Boolean);
-          return names.length ? `Signed up for ${game || 'game-night'} pings: ${names.slice(0, 30).join(', ')}.` : `Nobody has signed up for ${game || 'game-night'} pings yet.`;
+          const { names, unknown } = await named(guild, d.signups.everyone().filter((id) => d.signups.wants(id, game || undefined)));
+          if (names.length) return `Signed up for ${game || 'game-night'} pings: ${names.slice(0, 30).join(', ')}${unknownNote(unknown)}.`;
+          return unknown ? `${unknown} signed up for ${game || 'game-night'} pings, but I couldn't look up who right now.` : `Nobody has signed up for ${game || 'game-night'} pings yet.`;
         }
         case 'who_playing':
           return whoPlaying(guild, asker, game, ctx);
@@ -398,7 +448,9 @@ export function gameNightTool(d: GameNightDeps): Tool {
           if (!game) return 'Which game? Ask them.';
           const n = Number(a.in_minutes);
           const minutes = Number.isFinite(n) && n > 0 ? Math.min(Math.round(n), 240) : undefined;
-          if (PING_ORDER.test(ctx.said ?? '')) return ping(guild, asker, game, minutes, ctx);
+          const said = ctx.said ?? '';
+          if (PING_ME.test(said) && !PING_ORDER.test(said)) return 'Nothing sent: "ping me" is them signing up (join), not pinging others.';
+          if (PING_ORDER.test(said) && !NOT_ORDER.test(said)) return ping(guild, asker, game, minutes, ctx);
           const line = `Ping the people signed up for ${game}?`;
           return waiting.hold(ctx, { guildId: guild.id, game, minutes }, ['ping', 'them', 'do', 'it', 'send'], line.length * 70) ? line : 'Not sent: one thing at a time.';
         }

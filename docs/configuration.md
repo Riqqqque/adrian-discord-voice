@@ -126,7 +126,7 @@ With Claude, the bot uses prompt caching. The rules, the tool descriptions and e
 | `gameNight.enabled` | `true` | "Who's free for Valorant?", "who's playing?", "ping everyone for Valorant in 10", "ping me for game night" |
 | `gameNight.channelId` | (unset) | Where pings go. Unset: the chat it's asked from, else the one she last wrote in, else her voice channel's chat, else the system channel. A set channel she can't post in is an error, not a fallback |
 | `gameNight.optIn` | `[]` | Discord IDs always signed up for every game, until they say "stop pinging me" |
-| `gameNight.cooldownMinutes` | `15` | Minutes between pings for the same game (1-240) |
+| `gameNight.cooldownMinutes` | `15` | Minutes between pings for the same game, and before the same person is pinged again for any game (1-240) |
 | `gameNight.maxMentions` | `10` | Most people one ping mentions (1-10) |
 | `gameNight.perUserPerHour` | `4` | Pings one person may send per hour (1-20) |
 | `botGender` | `"none"` | `female` (she/her), `male` (he/him) or `none`: how it talks about itself |
