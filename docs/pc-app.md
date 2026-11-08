@@ -143,6 +143,22 @@ media, volume, system info, lock, screen off, and sleep, restart and shut down
 focused or minimized. Anything she asks for that's turned off is refused on the
 PC itself, whatever the server says.
 
+Two settings let her look at things, only when you ask:
+
+- Clipboard ("read what I copied", "summarize this", "translate what I
+  copied"): she reads the text you copied, up to 8000 characters. Anything a
+  password manager marks as secret is refused, and copied images and files are
+  only described, never opened.
+- Screen ("what's this error on my screen?", "what does this say?"): she takes
+  one picture of the window in front, a window you name, or, if you ask, the
+  whole screen it's on. Never of a game, never while a full-screen app is in
+  front, and never of her own window. The picture goes to the language model
+  for that one answer and is not kept or logged. Protected video (DRM) comes out
+  black, and she says so.
+
+Both are on by default; turn them off in the settings (gear). PC apps 0.15.5 and
+earlier don't have them: she says the app needs an update.
+
 ## Optional extras on the server
 
 - `cloudStt`: a more accurate second listen for what's said to her at a PC,

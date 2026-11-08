@@ -4,6 +4,7 @@
 import { PendingYes } from '../brain/tools.js';
 import type { Tool, ToolContext, UserId } from '../core/interfaces.js';
 import type { SatelliteConnection } from './connection.js';
+import { forLog, forModel, SENSES_RULE, SENSES_SPECS } from './senses.js';
 
 export interface PcToolDeps {
   /** The asker's connected PC: the one they're talking through, else their most recently active one. */
@@ -22,7 +23,7 @@ export interface PcToolDeps {
   now?(): number;
 }
 
-const NAMES = ['pc_apps', 'pc_open', 'pc_media', 'pc_volume', 'pc_system', 'pc_info'] as const;
+const NAMES = ['pc_apps', 'pc_open', 'pc_media', 'pc_volume', 'pc_system', 'pc_info', 'pc_clipboard', 'pc_screen'] as const;
 
 /** pc_system actions that need the person's own yes: the question, and what
  *  a yes may say about it ("yes restart it"). */
@@ -69,7 +70,8 @@ export class PowerDownWindow {
 
 /** Prompt line: when to use them. */
 export const PC_RULE =
-  "If the person has their PC connected (the PC satellite), you can control it with the pc_ tools: open, close or switch to apps and games, open websites, YouTube and folders, control what's playing, set volume (also per app), lock it, turn the screens off, sleep, restart or shut it down, and check CPU, memory and disk. When someone talks to you through their PC, short orders are about that PC: \"pause\", \"skip\", \"what's playing\", \"turn it down\" mean pc_media and pc_volume, unless your own music is the thing playing (see Music now). \"Turn my music down\" or \"turn it down\" is pc_volume with playing true: it lowers just what they're listening to and leaves their game and Discord alone. Change the master volume only when they ask for the PC's own or overall volume. Act right away, then confirm in a few words (\"Done.\", \"Spotify's open.\", \"Down to 30.\"); don't describe how you did it and don't offer more help. Do every part of a combined order. For sleep, restart and shutdown, just call pc_system: it asks them itself, so don't ask first. If they answer yes, call it again with the same action. If a tool says no PC is connected, tell them.";
+  "If the person has their PC connected (the PC satellite), you can control it with the pc_ tools: open, close or switch to apps and games, open websites, YouTube and folders, control what's playing, set volume (also per app), lock it, turn the screens off, sleep, restart or shut it down, and check CPU, memory and disk. When someone talks to you through their PC, short orders are about that PC: \"pause\", \"skip\", \"what's playing\", \"turn it down\" mean pc_media and pc_volume, unless your own music is the thing playing (see Music now). \"Turn my music down\" or \"turn it down\" is pc_volume with playing true: it lowers just what they're listening to and leaves their game and Discord alone. Change the master volume only when they ask for the PC's own or overall volume. Act right away, then confirm in a few words (\"Done.\", \"Spotify's open.\", \"Down to 30.\"); don't describe how you did it and don't offer more help. Do every part of a combined order. For sleep, restart and shutdown, just call pc_system: it asks them itself, so don't ask first. If they answer yes, call it again with the same action. If a tool says no PC is connected, tell them. " +
+  SENSES_RULE;
 
 export function pcTools(d: PcToolDeps): Tool[] {
   const yes = new PendingYes<string>(d.now);
@@ -125,10 +127,12 @@ export function pcTools(d: PcToolDeps): Tool[] {
       required: ['action'],
     },
     pc_info: {
-      description: 'PC status: summary (CPU, memory, disk space, uptime, battery) or processes (what uses the most memory).',
-      properties: { action: { type: 'string', enum: ['summary', 'processes'] } },
+      description:
+        'PC status: summary (CPU, memory, disk space, uptime, battery), processes (what uses the most memory), or health (why it is slow: CPU, memory, GPU load, video memory and temperature, disks and the busiest programs, with a verdict).',
+      properties: { action: { type: 'string', enum: ['summary', 'processes', 'health'] } },
       required: ['action'],
     },
+    ...SENSES_SPECS,
   };
 
   return NAMES.map((name) => ({
@@ -137,7 +141,7 @@ export function pcTools(d: PcToolDeps): Tool[] {
       description: specs[name].description,
       parameters: { type: 'object', properties: specs[name].properties, required: specs[name].required, additionalProperties: false },
     },
-    timeoutMs: name === 'pc_open' ? 20_000 : 15_000,
+    timeoutMs: name === 'pc_open' || name === 'pc_screen' ? 20_000 : 15_000,
     run: async (a, signal, ctx) => {
       const pc = d.pcFor(ctx);
       if (!pc) return `No PC is connected for ${ctx.speaker}. Their A.D.R.I.A.N. satellite app has to be running on it.`;
@@ -170,16 +174,17 @@ export function pcTools(d: PcToolDeps): Tool[] {
         d.onCall?.(name, args, refused);
         return refused;
       }
-      const r = await pc.action(name, args);
-      const result = r.ok ? r.result : `${NOT_DONE}${r.result}`;
-      d.onCall?.(name, args, result);
+      const r = await pc.action(name, args, name === 'pc_screen' ? 19_000 : undefined);
+      const out = forModel(r, NOT_DONE);
+      const result = typeof out === 'string' ? out : out.text;
+      d.onCall?.(name, args, forLog(name, result));
       if (r.ok && name === 'pc_system' && (a.action === 'restart' || a.action === 'shutdown')) d.onPowerDown?.(ctx.userId, pc);
       if (r.ok && name === 'pc_system' && a.action === 'cancel_shutdown') d.onPowerCancelled?.(ctx.userId, pc);
-      return result;
+      return out;
     },
     speak: (a, result) => confirmation(name, a, result),
     asks: (result) => name === 'pc_system' && QUESTIONS.has(result),
-    acts: (a) => !LOOKUPS.has(`${name}.${String(a.action ?? '')}`) && name !== 'pc_info',
+    acts: (a) => !LOOKUPS.has(`${name}.${String(a.action ?? '')}`) && !['pc_info', 'pc_clipboard', 'pc_screen'].includes(name),
   }));
 }
 

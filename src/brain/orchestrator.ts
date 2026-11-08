@@ -1,10 +1,11 @@
 // ConversationOrchestrator: one user's request → LLM (with read-only tools)
 // → speakable chunks, streamed so speech can start before the answer ends.
 
-import type { ChatMessage, LlmEvent, LlmProvider, MemoryStore, Tool, ToolContext, UserId } from '../core/interfaces.js';
+import type { ChatMessage, LlmEvent, LlmProvider, MemoryStore, Tool, ToolContext, ToolImage, UserId } from '../core/interfaces.js';
 import { dateFormat } from '../core/time.js';
 import { LlmHttpError } from './openai-compatible.js';
 import { SentenceSplitter, type SplitterOptions, toSpeakable } from './speech-text.js';
+import { countable, stripImages } from './images.js';
 import { asUntrustedData } from './tools.js';
 
 export interface OrchestratorOptions {
@@ -270,7 +271,7 @@ export class ConversationOrchestrator {
           // estimate: everything at the plain input price, no cache discount,
           // which errs high for the spend caps.
           if (signal.aborted && !metered) {
-            usage.inputTokens += roughTokens(JSON.stringify([messages, tools.map((t) => t.spec)]));
+            usage.inputTokens += roughTokens(JSON.stringify([countable(messages), tools.map((t) => t.spec)]));
             usage.outputTokens += roughTokens(roundText);
           }
           // One retry with jitter, only for transient errors and only if
@@ -290,6 +291,8 @@ export class ConversationOrchestrator {
         } finally {
           signal.removeEventListener('abort', endRound);
         }
+        // The model has seen any picture now: later rounds don't carry it.
+        stripImages(messages);
 
         if (silent) break;
         if (holding && held.trim()) {
@@ -325,6 +328,7 @@ export class ConversationOrchestrator {
           if (signal.aborted) throw new Error('cancelled');
           const tool = tools.find((t) => t.spec.name === c.name);
           let result: string;
+          let image: ToolImage | undefined;
           if (!tool) {
             result = `Unknown tool ${c.name}.`;
             lines = null;
@@ -335,7 +339,7 @@ export class ConversationOrchestrator {
               const ctl = AbortSignal.any([signal, AbortSignal.timeout(tool.timeoutMs ?? 5_000)]);
               const acts = typeof tool.acts === 'function' ? tool.acts(args) : tool.acts;
               if (acts) opts.onWorking?.(true);
-              let raw: string;
+              let out: Awaited<ReturnType<Tool['run']>>;
               try {
                 const run = untilStopped(tool.run(args, ctl, ctx), signal);
                 // A slow lookup (music, search) with nothing said yet: a quick line
@@ -345,10 +349,12 @@ export class ConversationOrchestrator {
                   spoken = f;
                   yield f;
                 }
-                raw = await run;
+                out = await run;
               } finally {
                 if (acts) opts.onWorking?.(false);
               }
+              const raw = typeof out === 'string' ? out : out.text;
+              if (typeof out !== 'string') image = out.image;
               result = asUntrustedData(c.name, raw);
               if (acts) opts.onActed?.();
               const line = tool.speak?.(args, raw, ctx);
@@ -363,7 +369,7 @@ export class ConversationOrchestrator {
             }
           }
           if (!tool?.endsTurn) ended = false;
-          messages.push({ role: 'tool', toolCallId: c.id, content: result });
+          messages.push({ role: 'tool', toolCallId: c.id, content: result, ...(image ? { image } : {}) });
         }
         // A tool that finishes the answer by itself (a sound played): stop here.
         if (ended) break;

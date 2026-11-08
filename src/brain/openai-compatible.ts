@@ -3,6 +3,7 @@
 // DeepSeek, Groq, Mistral, or a local server (llama.cpp, vLLM, Ollama).
 
 import type { ChatMessage, LlmEvent, LlmProvider, ToolCall, ToolSpec } from '../core/interfaces.js';
+import { IMAGE_UNREADABLE } from './images.js';
 
 export interface OpenAiCompatibleOptions {
   /** e.g. https://generativelanguage.googleapis.com/v1beta/openai */
@@ -26,7 +27,7 @@ export class LlmHttpError extends Error {
   }
 }
 
-function wire(m: ChatMessage): Record<string, unknown> {
+export function wire(m: ChatMessage): Record<string, unknown> {
   if (m.role === 'assistant' && m.toolCalls?.length) {
     return {
       role: 'assistant',
@@ -39,7 +40,8 @@ function wire(m: ChatMessage): Record<string, unknown> {
       })),
     };
   }
-  if (m.role === 'tool') return { role: 'tool', tool_call_id: m.toolCallId, content: m.content };
+  // Text only here: a picture is left out, and the model is told it couldn't be read.
+  if (m.role === 'tool') return { role: 'tool', tool_call_id: m.toolCallId, content: m.image ? `${m.content}\n${IMAGE_UNREADABLE}` : m.content };
   return { role: m.role, content: m.content };
 }
 
