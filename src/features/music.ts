@@ -125,7 +125,7 @@ export class YoutubePaused extends Error {
 }
 
 /** yt-dlp's words for a video that will never play here, whenever asked. */
-const WONT_PLAY = /confirm your age|age[- ]restrict|inappropriate|video unavailable|this video is (?:private|unavailable|no longer available)|private video|has been removed|removed by the uploader|account associated with this video has been terminated|not (?:made )?available in your country|blocked (?:it )?in your country|copyright (?:claim|grounds)|members[- ]only|join this channel/i;
+const WONT_PLAY = /confirm your age|age[- ]restrict|inappropriate|video unavailable|this video is (?:private|unavailable|no longer available)|private video|has been removed|removed by the uploader|account associated with this video has been terminated|available in your country|blocked (?:it )?in your country|copyright (?:claim|grounds)|members[- ]only|join this channel/i;
 
 /** YouTube has the song but won't play it here (age-restricted, removed, blocked). */
 export class Unplayable extends Error {
