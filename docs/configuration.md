@@ -40,7 +40,7 @@ sudo adrian restart                        # most settings apply on restart
 | `satellite.enabled` | `false` | The endpoint PCs connect to (see [pc-app.md](pc-app.md)) |
 | `satellite.bind` | `"0.0.0.0"` | Address that endpoint listens on |
 | `satellite.port` | `8791` | Port that endpoint listens on |
-| `satellite.logTranscripts` | `false` | For fixing misunderstandings: log what PCs hear and what she answers. Leave off otherwise. |
+| `satellite.logTranscripts` | `false` | For fixing misunderstandings: log what PCs hear and what she answers (only the length of an answer after reading the clipboard or the screen, and no window titles). Leave off otherwise. |
 | `satellite.recordDays` | `0` | Keep recordings of requests made at a PC (never side talk) for this many days, in `<state>/pc-recordings`, to test speech-to-text on your own voice. 0 = off. |
 | `satellite.unfinishedWaitMs` | `1200` | At a PC, when a pause sounds mid-sentence (the Smart Turn model), wait this much longer before answering, in ms. 0 = off (only the plain silence wait). |
 | `satellite.quietWhileGaming` | `true` | While a PC app (0.15.6 and later) says its owner is in a game: her name for every turn at that PC, short answers there, and reminders, with their DMs, held until the match ends (timers still ring). See [satellite.md](satellite.md#quiet-while-gaming). |
