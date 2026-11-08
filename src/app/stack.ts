@@ -25,6 +25,7 @@ import { PartyGames } from '../features/games.js';
 import { AutoMemory } from '../features/automemory.js';
 import { gameServerTool } from '../features/gameservers.js';
 import { mediaTools } from '../features/media.js';
+import { Steam, STEAM_KEY, steamTools } from '../features/steam.js';
 import { UserNotes } from '../features/notes.js';
 import { dueMessage, reminderRoute, Reminders } from '../features/reminders.js';
 import { join } from 'node:path';
@@ -434,6 +435,9 @@ export async function startVoiceStack(
           timezone: config.timezone,
         }).map((t) => cachedTool(t, 60_000)),
       );
+      // Steam: its own short caches; failures aren't kept, so a retry really retries.
+      if (config.steam.enabled)
+        tools.push(...steamTools(new Steam({ ...config.steam, apiKey: secrets.get(STEAM_KEY), nameOf: (id) => nameOf(id), timezone: config.timezone })));
       // Claude through its own SDK, anything else through the OpenAI-compatible adapter.
       const makeLlm = (p: { provider: 'openai' | 'anthropic'; baseUrl: string; model: string; effort: 'low' | 'medium' | 'high'; extraBody?: Record<string, unknown> | undefined }, key?: string): LlmProvider =>
         p.provider === 'anthropic'

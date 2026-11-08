@@ -97,6 +97,16 @@ With Plex, Sonarr and Radarr keys set:
 
 All read-only.
 
+## Steam
+
+From Discord (voice or text) and from a PC:
+- "Which of my friends are online?" / "What are my friends playing?"
+- "Is anyone playing Elden Ring?" Steam only sees games launched through Steam, so Valorant, League or Fortnite won't show unless a friend added them to Steam.
+- "Is anything on my wishlist on sale?" Biggest discounts first: five by voice ("and 7 more"), up to twelve in text with the end dates.
+- "Is Elden Ring on sale?" / "How much is Hades II on Steam?" Free-to-play, not out yet, taken off the store, not sold in your region, DLC, and other editions on sale are all said as such. A store link or app number works in text.
+
+Prices need no setup. Wishlists and friends use your own Steam account only, once the admin links it (configuration.md, Steam); friends also need the Steam key. If something's private, she says which Steam privacy setting to change. With `steam.shareWithServer` on, you can also ask about another member who has linked theirs.
+
 ## Languages
 
 With `languages` on (the default), it answers in English, Spanish, Chinese, Japanese or Vietnamese: whatever you spoke. The always-on speech recognizer handles English and Spanish directly. For other languages, a second pass with Whisper (about 1 second) identifies the language and transcribes it.

@@ -37,6 +37,10 @@ const GROUPS: { tools: string[]; words: RegExp; when?: (h: RouteHints) => boolea
     tools: ['plex_recently_added', 'plex_search', 'downloads', 'upcoming_episodes'],
     words: /\b(plex|movies?|shows?|episodes?|series|download(ing|s|ed)?|added|watch|library|airing|comes? out|new on|anime|film)\b/i,
   },
+  {
+    tools: ['steam_friends', 'steam_wishlist_sales', 'steam_price'],
+    words: /\b(steam|wish ?list|on sale|sales?|discount(ed|s)?|deals?|price[ds]?|cost(s|ing)?|how much|cheap|friends?|online|playing|anyone|anybody|who'?s on)\b/i,
+  },
 ];
 
 /** Tools for this request: the always-on ones plus any matching group. */
