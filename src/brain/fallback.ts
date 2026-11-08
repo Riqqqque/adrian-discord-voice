@@ -2,6 +2,11 @@
 // (rate limit, outage, bad key, network) or hangs without answering, the same
 // request goes to the secondary. Once the primary has streamed an event, its
 // errors propagate: switching mid-answer would make Adrian repeat himself.
+// A request carrying a picture (pc_screen) gets no stall deadline: the
+// upload and the look take longer than text, and the fallback can't see the
+// picture, so it would only say it couldn't see the screen. A primary that
+// fails outright still falls back; one that hangs is ended by the answer's
+// own time limit.
 
 import type { ChatMessage, LlmEvent, LlmProvider, ToolSpec } from '../core/interfaces.js';
 
@@ -26,7 +31,8 @@ export class FallbackLlm implements LlmProvider {
     // Only this request is ended by the deadline, not the caller's.
     const stall = new AbortController();
     const signal = opts.signal ? AbortSignal.any([opts.signal, stall.signal]) : stall.signal;
-    const timer = this.firstEventMs ? setTimeout(() => stall.abort(), this.firstEventMs) : undefined;
+    const picture = messages.some((m) => m.role === 'tool' && !!m.image);
+    const timer = this.firstEventMs && !picture ? setTimeout(() => stall.abort(), this.firstEventMs) : undefined;
     try {
       for await (const ev of this.primary.stream(messages, { ...opts, signal })) {
         started = true;
