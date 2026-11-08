@@ -45,7 +45,8 @@ async function rig() {
 const BAD_FRAMES = {
   unmasked: Buffer.from([0x81, 0x01, 0x41]),
   'a reserved opcode': Buffer.from([0x83, 0x80, 0, 0, 0, 0]),
-  'more than the size limit': Buffer.from([0x82, 0xff, 0, 0, 0, 0, 0, 0x10, 0, 0]),
+  // Declares 16 MiB, past the 2 MiB limit (room for one screen picture).
+  'more than the size limit': Buffer.from([0x82, 0xff, 0, 0, 0, 0, 0x01, 0, 0, 0]),
   'broken UTF-8': Buffer.from([0x81, 0x82, 0, 0, 0, 0, 0xff, 0xff]),
 };
 
@@ -281,7 +282,7 @@ describe('PC tools', () => {
     expect(await open.run({ youtube: 'never gonna give you up', play: true }, AbortSignal.timeout(1000), ctx)).toBe('done');
     expect(sent[0]).toEqual({ name: 'pc_open', args: { video_id: 'dQw4w9WgXcQ' } });
     expect(await open.run({ youtube: 'lofi' }, AbortSignal.timeout(1000), { userId: '999999999999999999', speaker: 'Sam' })).toMatch(/No PC/);
-    expect(tools.map((t) => t.spec.name)).toEqual(['pc_apps', 'pc_open', 'pc_media', 'pc_volume', 'pc_system', 'pc_info']);
+    expect(tools.map((t) => t.spec.name)).toEqual(['pc_apps', 'pc_open', 'pc_media', 'pc_volume', 'pc_system', 'pc_info', 'pc_clipboard', 'pc_screen']);
   });
 });
 

@@ -108,7 +108,20 @@ export type ChatMessage =
   /** cache: Claude caches everything up to and including this system block. */
   | { role: 'system' | 'user'; content: string; cache?: boolean }
   | { role: 'assistant'; content: string; toolCalls?: ToolCall[]; cache?: boolean }
-  | { role: 'tool'; content: string; toolCallId: string };
+  /** image: a picture the tool returned (pc_screen), for this request only. */
+  | { role: 'tool'; content: string; toolCallId: string; image?: ToolImage };
+
+/** A picture for the model, base64. Never logged or kept past the request. */
+export interface ToolImage {
+  mime: 'image/jpeg' | 'image/png';
+  data: string;
+}
+
+/** A tool result with a picture beside the text. */
+export interface ToolOutput {
+  text: string;
+  image?: ToolImage;
+}
 
 export interface ToolSpec {
   name: string;
@@ -155,8 +168,9 @@ export interface Tool {
   spec: ToolSpec;
   /** Returns text the model treats as untrusted data. Tools change only the
    *  bot's own state (timers, notes, games, music), except message_member,
-   *  which sends a rate-limited, attributed Discord message. */
-  run(args: Record<string, unknown>, signal: AbortSignal, ctx: ToolContext): Promise<string>;
+   *  which sends a rate-limited, attributed Discord message. A ToolOutput
+   *  carries a picture as well (pc_screen). */
+  run(args: Record<string, unknown>, signal: AbortSignal, ctx: ToolContext): Promise<string | ToolOutput>;
   /** Longest the tool may take (default 5 s). Music lookups need more. */
   timeoutMs?: number;
   /** Takes long enough that a short "one sec" is worth it if it isn't back quickly. */

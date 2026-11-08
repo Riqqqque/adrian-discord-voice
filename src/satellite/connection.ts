@@ -4,8 +4,16 @@
 
 import { EventEmitter } from 'node:events';
 import type { WebSocket } from 'ws';
-import type { PlaybackHandle, UserId, VoiceTransport, VoiceTransportEvents } from '../core/interfaces.js';
+import type { PlaybackHandle, ToolImage, UserId, VoiceTransport, VoiceTransportEvents } from '../core/interfaces.js';
 import type { Device } from './devices.js';
+import { readImage } from './images.js';
+
+/** A PC's answer to an action; `image` only from pc_screen, already checked. */
+export interface ActionResult {
+  ok: boolean;
+  result: string;
+  image?: ToolImage;
+}
 
 export type SatelliteMode = 'idle' | 'listening' | 'thinking' | 'speaking';
 
@@ -23,7 +31,7 @@ export interface SatelliteEvents extends VoiceTransportEvents {
 }
 
 interface Pending {
-  resolve: (r: { ok: boolean; result: string }) => void;
+  resolve: (r: ActionResult) => void;
   timer: ReturnType<typeof setTimeout>;
 }
 
@@ -96,7 +104,10 @@ export class SatelliteConnection extends EventEmitter implements VoiceTransport 
         if (!p) break;
         clearTimeout(p.timer);
         this.pending.delete(m.id as string);
-        p.resolve({ ok: m.ok === true, result: typeof m.result === 'string' ? m.result.slice(0, 4000) : '' });
+        const result = typeof m.result === 'string' ? m.result.slice(0, 9000) : '';
+        // A picture that fails the checks is dropped, and the text says so.
+        const { image, problem } = readImage(m.image);
+        p.resolve({ ok: m.ok === true, result: problem ? `${result} ${problem}`.trim() : result, ...(image ? { image } : {}) });
         break;
       }
       case 'ping':
@@ -124,7 +135,7 @@ export class SatelliteConnection extends EventEmitter implements VoiceTransport 
   }
 
   /** Ask the PC to do something; resolves with its answer or a timeout. */
-  action(name: string, args: Record<string, unknown>, timeoutMs = 15_000): Promise<{ ok: boolean; result: string }> {
+  action(name: string, args: Record<string, unknown>, timeoutMs = 15_000): Promise<ActionResult> {
     if (!this.open) return Promise.resolve({ ok: false, result: 'The PC disconnected.' });
     const id = String(this.nextAction++);
     return new Promise((resolve) => {
