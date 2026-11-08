@@ -182,10 +182,12 @@ export class ConversationController {
   /** Say something unprompted (a timer going off) as soon as nothing else is
    *  being said. It goes ahead of waiting questions and can be stopped like
    *  an answer by the person it's for. Resolves false if it never got heard:
-   *  the queue is in memory, so whoever must not lose it waits for this. */
-  announce(userId: UserId, text: string): Promise<boolean> {
+   *  the queue is in memory, so whoever must not lose it waits for this.
+   *  `listen: false`: no follow-up after it (a quiz's lines, where their next
+   *  words are answers, not more for her). */
+  announce(userId: UserId, text: string, o: { listen?: boolean } = {}): Promise<boolean> {
     return new Promise((delivered) => {
-      const req: Request = { userId, command: '', at: this.d.now(), announce: text, delivered, ...(this.stopping ? { closes: true } : {}) };
+      const req: Request = { userId, command: '', at: this.d.now(), announce: text, delivered, ...(this.stopping || o.listen === false ? { closes: true } : {}) };
       if (!this.active) void this.run(req);
       else this.queue.unshift(req);
     });
