@@ -166,6 +166,27 @@ sudo adrian restart
 | `media.plexUrl` | `http://127.0.0.1:32400` | |
 | `media.sonarrUrl` | `http://127.0.0.1:8989` | |
 | `media.radarrUrl` | `http://127.0.0.1:7878` | |
+| `steam.enabled` | `true` | Steam questions: friends online, wishlist sales, store prices (read-only) |
+| `steam.accounts` | `{}` | Discord user ID → that person's SteamID64, in quotes: `{"123456789012345678": "76561198000000000"}`. A `steamcommunity.com/profiles/…` or `/id/…` link or a custom profile name also works; profile names need `STEAM_API_KEY` to look up |
+| `steam.country` | `"US"` | Store country (two letters). Prices come in its currency |
+| `steam.shareWithServer` | `false` | Let members ask about each other's Steam ("is anything on Alex's wishlist on sale"). Only members with an account in `steam.accounts` can be asked about. Off: everyone gets only their own |
+
+### Steam
+
+Prices work with no setup. Wishlists need the person's account in `steam.accounts`. Friends need that and a Steam Web API key.
+
+1. **API key** (for friends): sign in at https://steamcommunity.com/dev/apikey, enter any domain name (for example `localhost`), agree, and copy the key. Limited Steam accounts (less than $5 spent) can't get one. Then: `sudo adrian secret set STEAM_API_KEY`.
+2. **SteamID64**: in Steam, click your name at the top right, then Account details: the 17-digit number starting `7656119` under your name is it. Your profile link shows it too, as `steamcommunity.com/profiles/7656119…`. If your link is `steamcommunity.com/id/yourname`, you can give that name instead (it needs the key).
+3. **Discord ID**: in Discord, Settings → Advanced → Developer Mode on, then right-click yourself → Copy User ID.
+4. Link them and restart:
+   ```bash
+   sudo adrian config steam.accounts.123456789012345678 76561198000000000
+   sudo adrian config steam.country US        # only if your store isn't the US one
+   sudo adrian restart
+   ```
+5. **Privacy** (Steam → your profile → Edit Profile → Privacy Settings): *My profile* Public for anything; *Friends List* Public for friends; *Game details* Public for the wishlist. Friends whose own *Game details* are private show as online without a game.
+
+Steam is only asked when someone asks. Answers are kept briefly so asking twice doesn't ask Steam twice: friends' status 1 minute, friend lists 10 minutes, wishlists 30 minutes, prices 1 hour. A Steam rate limit pauses Steam questions for a minute. SteamIDs are never said or written in answers.
 
 ## Limits
 
@@ -198,6 +219,7 @@ These are hand edits to `config.json` (see the top of this page).
 | `TAVILY_API_KEY` | Web search |
 | `SPEECHIFY_API_KEY` | Cloud voice |
 | `PLEX_TOKEN`, `SONARR_API_KEY`, `RADARR_API_KEY` | Media (read-only) |
+| `STEAM_API_KEY` | Steam friends (prices and wishlists work without it) |
 
 Set with `sudo adrian secret set NAME` (hidden prompt) or the admin page. Values are never shown again.
 

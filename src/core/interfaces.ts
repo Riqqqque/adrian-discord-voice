@@ -162,6 +162,8 @@ export interface ToolContext {
   /** Counts this person's turns in this place, so a tool can tell their next
    *  turn from a later one, even if it wasn't called in between. */
   turn?: number;
+  /** A text chat, not speech: answers may be longer and use digits and symbols. */
+  text?: boolean;
 }
 
 export interface Tool {

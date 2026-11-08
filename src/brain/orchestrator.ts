@@ -160,7 +160,7 @@ export class ConversationOrchestrator {
     const where = `${userId}:${place?.channelId ?? ''}`;
     const turn = (this.turns.get(where) ?? 0) + 1;
     this.turns.set(where, turn);
-    const ctx: ToolContext = { userId, speaker, said: text, turn, ...place };
+    const ctx: ToolContext = { userId, speaker, said: text, turn, ...place, ...(opts.text ? { text: true } : {}) };
     const tools = this.o.stablePrefix ? this.tools : (this.o.selectTools?.(text, ctx, this.tools) ?? this.tools);
     const today = dateFormat('en-US', {
       timeZone: this.o.timezone,
