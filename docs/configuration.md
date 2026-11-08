@@ -116,6 +116,19 @@ With Claude, the bot uses prompt caching. The rules, the tool descriptions and e
 | `messaging.perUserPerHour` | `10` | Messages each person can send through it per hour (owners exempt) |
 | `messaging.perTargetPerHour` | `5` | Messages each person can receive through it per hour |
 | `messaging.maxChars` | `600` | Longest passed-on message |
+| `handoff.enabled` | `true` | Between a PC and Discord: "send that link to my PC", "move the music to my PC", "put what I'm watching into the call" (needs `satellite.enabled`), and `tell_call` |
+| `handoff.keepMinutes` | `30` | How long links and songs count as "that" (5-120). Other people's links count for 10 minutes |
+| `handoff.tellCall.enabled` | `true` | "Tell the call I'll be on in 5": said in her voice call, or posted in text when nobody's there |
+| `handoff.tellCall.max` | `3` | Messages per person per window (1-10) |
+| `handoff.tellCall.windowMinutes` | `5` | That window (1-60) |
+| `handoff.tellCall.maxChars` | `200` | Longest message (50-500) |
+| `handoff.tellCall.channelId` | (unset) | Text channel for when nobody's in a call with her. Unset: the one she last wrote in, else her voice channel's chat, else the server's system channel |
+| `gameNight.enabled` | `true` | "Who's free for Valorant?", "who's playing?", "ping everyone for Valorant in 10", "ping me for game night" |
+| `gameNight.channelId` | (unset) | Where pings go. Unset: the chat it's asked from, else the one she last wrote in, else her voice channel's chat, else the system channel. A set channel she can't post in is an error, not a fallback |
+| `gameNight.optIn` | `[]` | Discord IDs always signed up for every game, until they say "stop pinging me" |
+| `gameNight.cooldownMinutes` | `15` | Minutes between pings for the same game (1-240) |
+| `gameNight.maxMentions` | `10` | Most people one ping mentions (1-10) |
+| `gameNight.perUserPerHour` | `4` | Pings one person may send per hour (1-20) |
 | `botGender` | `"none"` | `female` (she/her), `male` (he/him) or `none`: how it talks about itself |
 | `nicknames` | `{}` | What to call particular people, by Discord user ID: `{"123456789012345678": "Big Mike"}` |
 | `identity.creator` | (unset) | Your name, for "who made you?" |

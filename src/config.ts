@@ -202,6 +202,41 @@ export const PocConfigSchema = z.object({
       maxChars: z.number().int().min(50).max(1500).default(600),
     })
     .default({ enabled: true, perUserPerHour: 10, perTargetPerHour: 5, maxChars: 600 }),
+  /** Between a PC and Discord: "send that link to my PC", "move the music to my PC", "tell the call I'll be on in 5". */
+  handoff: z
+    .object({
+      enabled: z.boolean().default(true),
+      /** How long links and songs count as "that", minutes. */
+      keepMinutes: z.number().int().min(5).max(120).default(30),
+      tellCall: z
+        .object({
+          enabled: z.boolean().default(true),
+          /** Most messages per person per window. */
+          max: z.number().int().min(1).max(10).default(3),
+          windowMinutes: z.number().int().min(1).max(60).default(5),
+          maxChars: z.number().int().min(50).max(500).default(200),
+          /** Text channel for when nobody's in a call with her. Unset: the one she last wrote in, else the voice channel's chat. */
+          channelId: snowflake.optional(),
+        })
+        .default({ enabled: true, max: 3, windowMinutes: 5, maxChars: 200 }),
+    })
+    .default({ enabled: true, keepMinutes: 30, tellCall: { enabled: true, max: 3, windowMinutes: 5, maxChars: 200 } }),
+  /** Game nights: who's free or playing, and pings for the people who signed up. */
+  gameNight: z
+    .object({
+      enabled: z.boolean().default(true),
+      /** Where pings go. Unset: the chat it's asked from, else the one she last wrote in, else the voice channel's chat. */
+      channelId: snowflake.optional(),
+      /** Always signed up for every game (until they say "stop pinging me"). */
+      optIn: z.array(snowflake).max(100).default([]),
+      /** Minutes between pings for the same game. */
+      cooldownMinutes: z.number().int().min(1).max(240).default(15),
+      /** Most people one ping mentions. */
+      maxMentions: z.number().int().min(1).max(10).default(10),
+      /** Pings one person may send per hour. */
+      perUserPerHour: z.number().int().min(1).max(20).default(4),
+    })
+    .default({ enabled: true, optIn: [], cooldownMinutes: 15, maxMentions: 10, perUserPerHour: 4 }),
   /** Who the bot is: female (she/her), male (he/him) or none (doesn't say). */
   botGender: z.enum(['female', 'male', 'none']).default('none'),
   /** What to call particular people, by Discord user ID: {"123…": "Big Mike"}. */
