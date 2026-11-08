@@ -258,6 +258,9 @@ export const PocConfigSchema = z.object({
       /** Characters per month before switching to the local voice (0 = unlimited). */
       monthlyChars: z.number().int().min(0).default(1_900_000),
       timeoutMs: z.number().int().min(500).max(15_000).default(4000),
+      /** Speaking rate on top of voice.speed. Sabrina's own pace measured 133 words a
+       *  minute, slow for a conversation; 1.2 brings her to about 160. */
+      speed: z.number().min(0.75).max(1.5).default(1.2),
     })
     .optional(),
 });

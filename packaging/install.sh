@@ -150,7 +150,9 @@ if ! id adrian >/dev/null 2>&1; then
 fi
 install -d -m 0755 "$OPT" "$OPT/releases"
 refuse_symlinks "$ETC" "$VAR" "$VAR/models"
-install -d -m 0750 -o adrian -g adrian "$ETC" "$VAR" "$VAR/models"
+install -d -m 0750 -o adrian -g adrian "$ETC" "$VAR"
+# Root's from the start, so the service account never gets to plant links in it.
+install -d -m 0750 -o root -g adrian "$VAR/models"
 
 # --- Node.js runtime -----------------------------------------------------------
 install_node "$OPT" "$TMP"
@@ -179,6 +181,8 @@ chmod -R u=rwX,g=rX,o= "$VAR/models"
 # --- config ------------------------------------------------------------------------
 TZ_NAME=$(timedatectl show -p Timezone --value 2>/dev/null || cat /etc/timezone 2>/dev/null || echo UTC)
 [ -n "$TZ_NAME" ] || TZ_NAME=UTC
+# Before anything is written: a dangling link would be followed and created as root.
+refuse_symlinks "$ETC/config.json" "$ETC/secrets.env"
 if [ ! -f "$ETC/config.json" ]; then
   cat >"$ETC/config.json" <<EOF
 {

@@ -45,6 +45,15 @@ describe('speechify voice', () => {
     expect(budget.used()).toBeGreaterThan(4);
   });
 
+  it('speaks at its own rate on top of the one asked for, and the local voice keeps the plain one', async () => {
+    const { f, bodies } = fakeFetch();
+    const tts = new SpeechifyTts({ apiKey: 'k', voiceId: 'sabrina', model: 'simba-3.2', timeoutMs: 2000, speed: 1.2, budget: new CharBudget(undefined, 0, 'UTC'), log: quiet, fetch: f }, local, 'af_heart');
+    await tts.synthesize('A whole sentence that is long enough not to be cached here.', { voice: 'cloud:en', speed: 1 });
+    expect(bodies.at(-1)!.input).toContain('rate="+20%"');
+    await tts.synthesize('Another sentence, long enough to skip the short-line cache.', { voice: 'cloud:en', speed: 0.9 });
+    expect(bodies.at(-1)!.input).toContain('rate="+8%"'); // "slower" still slows her down
+  });
+
   it('falls back to the local voice on errors and when the month is used up', async () => {
     let now = 0;
     local.calls = [];

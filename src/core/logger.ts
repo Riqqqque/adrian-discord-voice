@@ -15,6 +15,7 @@ const SECRET_PATTERNS: RegExp[] = [
   /sk-[A-Za-z0-9_-]{16,}/g, // OpenAI-style
   /[MNO][A-Za-z\d_-]{23,27}\.[A-Za-z\d_-]{6}\.[A-Za-z\d_-]{27,40}/g, // Discord bot token
   /\$argon2id\$[^"\s]+/g,
+  /sat_[A-Za-z0-9_-]{20,}/g, // PC pairing token
 ];
 
 export function redact(s: string): string {

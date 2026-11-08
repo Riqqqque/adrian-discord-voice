@@ -69,7 +69,7 @@ export class PowerDownWindow {
 
 /** Prompt line: when to use them. */
 export const PC_RULE =
-  "If the person has their PC connected (the PC satellite), you can control it with the pc_ tools: open, close or switch to apps and games, open websites, YouTube and folders, control what's playing, set volume (also per app), lock it, turn the screens off, sleep, restart or shut it down, and check CPU, memory and disk. When someone talks to you through their PC, short orders are about that PC: \"pause\", \"skip\", \"what's playing\", \"turn it down\" mean pc_media and pc_volume, unless your own music is the thing playing (see Music now). Act right away, then confirm in a few words (\"Done.\", \"Spotify's open.\", \"Down to 30.\"); don't describe how you did it and don't offer more help. Do every part of a combined order. For sleep, restart and shutdown, just call pc_system: it asks them itself, so don't ask first. If they answer yes, call it again with the same action. If a tool says no PC is connected, tell them.";
+  "If the person has their PC connected (the PC satellite), you can control it with the pc_ tools: open, close or switch to apps and games, open websites, YouTube and folders, control what's playing, set volume (also per app), lock it, turn the screens off, sleep, restart or shut it down, and check CPU, memory and disk. When someone talks to you through their PC, short orders are about that PC: \"pause\", \"skip\", \"what's playing\", \"turn it down\" mean pc_media and pc_volume, unless your own music is the thing playing (see Music now). \"Turn my music down\" or \"turn it down\" is pc_volume with playing true: it lowers just what they're listening to and leaves their game and Discord alone. Change the master volume only when they ask for the PC's own or overall volume. Act right away, then confirm in a few words (\"Done.\", \"Spotify's open.\", \"Down to 30.\"); don't describe how you did it and don't offer more help. Do every part of a combined order. For sleep, restart and shutdown, just call pc_system: it asks them itself, so don't ask first. If they answer yes, call it again with the same action. If a tool says no PC is connected, tell them.";
 
 export function pcTools(d: PcToolDeps): Tool[] {
   const yes = new PendingYes<string>(d.now);
@@ -106,10 +106,12 @@ export function pcTools(d: PcToolDeps): Tool[] {
       required: ['action'],
     },
     pc_volume: {
-      description: 'PC volume: get, set (level 0-100), up / down (by level, default 10), mute, unmute. With app, only that app ("spotify", "discord", "chrome").',
+      description:
+        'PC volume: get, set (level 0-100), up / down (by level, default 10), mute, unmute. playing true: only the apps making sound right now that could be music or video (Spotify, a YouTube tab, any player), never a game, Discord or other voice chat. Use playing for "my music", "the music", "this song", "the video", "turn it down" and anything else that means what they are listening to. app: only the app they named ("spotify", "discord", "chrome"). Neither: the master volume, only when they ask for the PC\'s own or overall volume ("set the volume to 30", "turn everything down"). If an app they named isn\'t found, try playing.',
       properties: {
         action: { type: 'string', enum: ['get', 'set', 'up', 'down', 'mute', 'unmute'] },
         level: { type: 'number' },
+        playing: { type: 'boolean', description: 'What they are listening to, not the game or voice chat.' },
         app: { type: 'string' },
       },
       required: ['action'],

@@ -81,6 +81,7 @@ install_models() { # install_models <models dir> <scratch dir>
   for m in "${MODELS[@]}"; do
     IFS='|' read -r name url sha kind drop <<<"$m"
     marker="$dir/.$name.sha256"
+    refuse_symlinks "$marker" "$dir/$name"
     if [ -e "$dir/$name" ] && [ "$(cat "$marker" 2>/dev/null)" = "$sha" ]; then continue; fi
     file="$tmp/$(basename "$url")"
     fetch "$url" "$sha" "$file"
@@ -96,6 +97,7 @@ install_models() { # install_models <models dir> <scratch dir>
       for f in $drop; do rm -rf "${dir:?}/$name/$f"; done
     fi
     rm -f "$file"
-    echo "$sha" >"$marker"
+    # mv replaces a link instead of writing through it.
+    echo "$sha" >"$tmp/marker" && mv -fT "$tmp/marker" "$marker"
   done
 }

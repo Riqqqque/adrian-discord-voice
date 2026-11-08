@@ -95,11 +95,15 @@ describe('satellite connection', () => {
     await r.server.close();
   });
 
-  it('shuts out an address after repeated bad tokens', async () => {
+  it('shuts out more guesses from an address after repeated bad tokens, but never the real PC', async () => {
     const r = await rig();
     for (let i = 0; i < 5; i++) await (await r.client({ type: 'hello', token: 'sat_wrong' })).closed;
+    const guess = await r.client({ type: 'hello', token: 'sat_wrong' });
+    await guess.closed;
+    expect(guess.got).not.toContainEqual(expect.objectContaining({ type: 'denied' })); // closed without a reply
+    // Behind a proxy every PC has the same address: a stranger's guesses mustn't lock the owner out.
     const good = await r.client({ type: 'hello', token: r.token });
-    expect(good.got).not.toContainEqual(expect.objectContaining({ type: 'welcome' }));
+    expect(good.got).toContainEqual(expect.objectContaining({ type: 'welcome' }));
     await r.server.close();
   });
 
