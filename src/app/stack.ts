@@ -498,6 +498,8 @@ export async function startVoiceStack(
   /** People whose answer being made read their clipboard or screen: the
    *  transcript log keeps only its length (cleared when it's logged). */
   const privateTurns = new Set<UserId>();
+  /** Minecraft server control, when Helix is set up: stopped with the stack. */
+  let control: ServerControl | undefined;
   const brain = config.brain;
   if (brain) {
     const apiKey = brain.apiKeySecret ? secrets.get(brain.apiKeySecret) : undefined;
@@ -565,8 +567,9 @@ export async function startVoiceStack(
       if (config.gameServers.length && config.helix) {
         const hx = config.helix;
         const helixToken = secrets.get('HELIX_TOKEN');
-        const control = new ServerControl({
+        control = new ServerControl({
           servers: config.gameServers,
+          stateFile: stateDir ? join(stateDir, 'game-server-jobs.json') : undefined,
           client: helixToken ? new HelixClient({ url: hx.url, token: helixToken }) : undefined,
           settings: hx,
           isOwner: (id) => isOwner(id),
@@ -1499,6 +1502,8 @@ export async function startVoiceStack(
     // After the join, so one that came due while offline can be said in the call.
     if (!closing) reminders.start();
     if (!closing) recap.start();
+    // Server jobs watched before a restart: told now that she can talk.
+    if (!closing) control?.resume();
   });
 
   // The manager tries again after a passing failure, every 30 s to 5 min, so a
@@ -1629,6 +1634,7 @@ export async function startVoiceStack(
       reminders.stop();
       quiet.stop();
       recap.stop();
+      control?.stop();
       headsUp.left();
       headsUp.flush();
       music?.stop();
