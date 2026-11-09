@@ -7,7 +7,7 @@ const custom = (keySecret: string) => ({ preset: 'custom', baseUrl: 'https://llm
 
 describe('a setting can only name a key meant for its own job', () => {
   it('an LLM endpoint can never be given the bot token or another service key', () => {
-    for (const k of ['DISCORD_TOKEN', 'PLEX_TOKEN', 'SONARR_API_KEY', 'RADARR_API_KEY', 'SPEECHIFY_API_KEY', 'TAVILY_API_KEY', 'HELIX_TOKEN']) {
+    for (const k of ['DISCORD_TOKEN', 'PLEX_TOKEN', 'SONARR_API_KEY', 'RADARR_API_KEY', 'SPEECHIFY_API_KEY', 'TAVILY_API_KEY', 'HELIX_TOKEN', 'STEAM_API_KEY']) {
       expect(CustomLlmSchema.safeParse(custom(k)).success, k).toBe(false);
       expect(PocConfigSchema.safeParse({ ...base, brain: { model: 'm', apiKeySecret: k } }).success, k).toBe(false);
       expect(PocConfigSchema.safeParse({ ...base, brain: { model: 'm', fallback: { model: 'f', apiKeySecret: k } } }).success, k).toBe(false);

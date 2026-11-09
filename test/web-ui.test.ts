@@ -263,6 +263,13 @@ describe('a button whose request fails', () => {
     expect(p.notice()).toBe('');
   });
 
+  it('the Keys tab lists the Helix and Steam keys before they are set', async () => {
+    const p = await page({ '/api/secrets': () => ({ body: { secrets: [] } }) });
+    await p.press('Keys');
+    expect(p.text()).toContain('HELIX_TOKEN');
+    expect(p.text()).toContain('STEAM_API_KEY');
+  });
+
   it('Back says why at the top of the page', async () => {
     const p = await page({}, '?step=2');
     p.api['/api/check/discord'] = failing;
