@@ -10,7 +10,7 @@
 //   check                  list what's missing before the bot can start
 //   port                   print the admin UI port from the config
 //   voice [NAME [SPEED]]   show or set the voice (Kokoro name, speed 0.7-1.4)
-//   config KEY [VALUE]     show or set a setting by dotted path (validated)
+//   config KEY [VALUE]     show or set a setting by dotted path (validated); VALUE null removes it
 //   satellite-add NAME OWNER_ID   pair a PC; prints its token once
 //   satellite-list
 //   satellite-remove ID|NAME
@@ -164,18 +164,38 @@ switch (cmd) {
     // Long digit strings are IDs (Discord, SteamID64): as numbers they'd lose digits.
     if (/^\d{16,}$/.test(rawValue)) value = rawValue;
     const next = JSON.parse(JSON.stringify(raw)) as Record<string, unknown>;
-    let o: Record<string, unknown> = next;
-    for (const k of path.slice(0, -1)) {
-      if (!o[k] || typeof o[k] !== 'object') o[k] = {};
-      o = o[k] as Record<string, unknown>;
+    if (value === null) {
+      // null: remove the key, so an optional setting goes back to unset. Parents
+      // it leaves empty go too ("helix": {} would be a Helix with no address).
+      const chain: Record<string, unknown>[] = [next];
+      for (const k of path.slice(0, -1)) {
+        const c = chain[chain.length - 1]![k];
+        if (!c || typeof c !== 'object') break;
+        chain.push(c as Record<string, unknown>);
+      }
+      const leaf = path[path.length - 1]!;
+      const parent = chain.length === path.length ? chain[chain.length - 1]! : undefined;
+      if (!parent || !Object.hasOwn(parent, leaf)) {
+        console.log(`${arg} isn't set. Nothing was changed.`);
+        break;
+      }
+      const drop = (o: Record<string, unknown>, k: string) => (Array.isArray(o) ? o.splice(Number(k), 1) : delete o[k]);
+      drop(parent, leaf);
+      for (let i = chain.length - 1; i > 0 && !Object.keys(chain[i]!).length; i--) drop(chain[i - 1]!, path[i - 1]!);
+    } else {
+      let o: Record<string, unknown> = next;
+      for (const k of path.slice(0, -1)) {
+        if (!o[k] || typeof o[k] !== 'object') o[k] = {};
+        o = o[k] as Record<string, unknown>;
+      }
+      o[path[path.length - 1]!] = value;
     }
-    o[path[path.length - 1]!] = value;
     const modelsDir = resolve(process.env.ADRIAN_MODELS ?? join(stateDir, 'models'));
     const full = baseConfig({ secretsFile: secrets.path, stateDir, modelsDir }, { secretsFile: secrets.path, ...next });
     const problems = configProblems(full, secrets.read()).filter((p) => p.startsWith('Config '));
     if (problems.length) fail(`Not saved:\n${problems.join('\n')}`);
     writeConfigFile(configFile, next);
-    console.log(`${arg} = ${JSON.stringify(value)}. Restart to apply: sudo adrian restart`);
+    console.log(value === null ? `${arg} removed. Restart to apply: sudo adrian restart` : `${arg} = ${JSON.stringify(value)}. Restart to apply: sudo adrian restart`);
     break;
   }
   case 'version':
