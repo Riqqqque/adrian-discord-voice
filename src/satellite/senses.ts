@@ -75,11 +75,13 @@ export function answerForLog(said: string, privateTurn: boolean): { said: string
   return privateTurn ? { saidChars: said.length } : { said: said.slice(0, 500) };
 }
 
-/** Who has had a private tool used for them lately, per room and person. Her
- *  history keeps the clipboard text or the screen for the rest of that
- *  conversation, so a later answer ("what was that address again?") can repeat
- *  it: the mark lasts `holdMs` after the last private tool use, and each answer
- *  given while it lasts keeps it going. Bounded: the oldest marks go first. */
+/** Who has had a private tool used for them lately. Her history keeps the
+ *  clipboard text or the screen for the rest of that conversation, so a later
+ *  answer ("what was that address again?") can repeat it: the mark lasts
+ *  `holdMs` after the last private tool use, and each answer given while it
+ *  lasts keeps it going. Per person, not per room: her history is per person,
+ *  so a read from the Discord call can come up again at their PC. Bounded: the
+ *  oldest marks go first. */
 export class PrivateTurns {
   private readonly marks = new Map<string, number>();
 
@@ -89,27 +91,25 @@ export class PrivateTurns {
     private readonly now: () => number = Date.now,
   ) {}
 
-  /** A private tool ran for this person here. */
-  mark(room: string, userId: string): void {
-    const k = `${room}\u0000${userId}`;
-    this.marks.delete(k);
-    this.marks.set(k, this.now());
+  /** A private tool ran for this person. */
+  mark(userId: string): void {
+    this.marks.delete(userId);
+    this.marks.set(userId, this.now());
     for (const [key, at] of this.marks) {
       if (this.marks.size <= this.max && this.now() - at <= this.holdMs) break;
       this.marks.delete(key);
     }
   }
 
-  /** An answer for this person here is done: was it (or may it be) private? */
-  answered(room: string, userId: string): boolean {
-    const k = `${room}\u0000${userId}`;
-    const at = this.marks.get(k);
+  /** An answer for this person is done: was it (or may it be) private? */
+  answered(userId: string): boolean {
+    const at = this.marks.get(userId);
     if (at === undefined) return false;
     if (this.now() - at > this.holdMs) {
-      this.marks.delete(k);
+      this.marks.delete(userId);
       return false;
     }
-    this.mark(room, userId);
+    this.mark(userId);
     return true;
   }
 

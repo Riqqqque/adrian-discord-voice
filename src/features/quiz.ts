@@ -240,11 +240,12 @@ export function judgeGuess(guess: string, ans: Answer, titleOnly = false, woke =
   const by = ans.artist ? /^(.+?)\s+by\s+(.+)$/.exec(rest) : null;
   const named = !!by && artistNames(ans.artist!).some((n) => answerScore(by[2]!.replace(/\bthe\s+/g, ''), n) >= 0.8);
   let title = Math.max(answerScore(guess, answerTitle(ans.title), artistWords), answerScore(rest, answerTitle(ans.title), artistWords), named ? answerScore(by[1]!, answerTitle(ans.title)) : 0);
-  if (common(titleWords) && !shaped && !named) title = 0;
+  const words = answerWords(guess);
+  const withArtist = artistWords.some((w) => !STOP_WORDS.has(w) && words.some((g) => sameWord(g, w)));
+  if (common(titleWords) && !shaped && !named && !withArtist) title = 0;
   if (title >= 0.75) return { right: true, got: 'title' };
   let artist = 0;
   if (ans.artist && !titleOnly) {
-    const words = answerWords(guess);
     const withTitle = titleWords.some((t) => !STOP_WORDS.has(t) && words.some((g) => sameWord(g, t)));
     for (const name of artistNames(ans.artist)) {
       // A one-word everyday name ("Yes"): with her name, as a guess, or with the title.

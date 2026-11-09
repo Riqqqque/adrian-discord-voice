@@ -161,6 +161,7 @@ describe('matching a guess', () => {
     expect(judgeGuess('Hello?', hello).right).toBe(false);
     expect(judgeGuess('i think its hello', hello).right).toBe(true);
     expect(judgeGuess('hello by adele', hello).right).toBe(true);
+    expect(judgeGuess('hello adele', hello, true)).toEqual({ right: true, got: 'title' });
     expect(judgeGuess('hello', hello, false, true).right).toBe(true);
     for (const [t, a] of [['Run', 'Snow Patrol'], ['Stay', 'Rihanna'], ['Faded', 'Alan Walker'], ['Closer', 'The Chainsmokers'], ['Maybe', 'Someone']] as const) {
       expect(judgeGuess(t.toLowerCase(), { title: t, artist: a }).right, t).toBe(false);

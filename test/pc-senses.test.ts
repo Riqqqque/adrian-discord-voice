@@ -153,32 +153,31 @@ describe('the PC tools for health, clipboard and screen', () => {
     expect((answerForLog('x'.repeat(900), false) as { said: string }).said).toHaveLength(500);
   });
 
-  it('keep a person private for the rest of that conversation, per room, not just one answer', () => {
+  it('keep a person private for the rest of that conversation, not just one answer', () => {
     let now = 0;
     const p = new PrivateTurns(10 * 60_000, 3, () => now);
-    expect(p.answered('sat:pc1', OWNER)).toBe(false);
-    p.mark('sat:pc1', OWNER);
+    expect(p.answered(OWNER)).toBe(false);
+    p.mark(OWNER);
     // The answer that read the clipboard, then follow-ups answered from history.
-    expect(p.answered('sat:pc1', OWNER)).toBe(true);
+    expect(p.answered(OWNER)).toBe(true);
     now += 9 * 60_000;
-    expect(p.answered('sat:pc1', OWNER)).toBe(true);
+    expect(p.answered(OWNER)).toBe(true);
     now += 9 * 60_000; // 18 minutes after the read, 9 after the last answer
-    expect(p.answered('sat:pc1', OWNER)).toBe(true);
-    // Someone else, or the same person somewhere else: not marked.
-    expect(p.answered('sat:pc1', '223456789012345678')).toBe(false);
-    expect(p.answered('discord', OWNER)).toBe(false);
+    expect(p.answered(OWNER)).toBe(true);
+    // Someone else: not marked.
+    expect(p.answered('223456789012345678')).toBe(false);
     // Over 10 minutes of quiet: the conversation is over.
     now += 10 * 60_000 + 1;
-    expect(p.answered('sat:pc1', OWNER)).toBe(false);
+    expect(p.answered(OWNER)).toBe(false);
     expect(p.size).toBe(0);
     // Bounded: the oldest mark goes first.
-    for (const u of ['u1', 'u2', 'u3', 'u4']) p.mark('sat:pc1', u);
+    for (const u of ['u1', 'u2', 'u3', 'u4']) p.mark(u);
     expect(p.size).toBe(3);
-    expect(p.answered('sat:pc1', 'u1')).toBe(false);
-    expect(p.answered('sat:pc1', 'u4')).toBe(true);
+    expect(p.answered('u1')).toBe(false);
+    expect(p.answered('u4')).toBe(true);
     // Expired marks are dropped when a new one comes.
     now += 11 * 60_000;
-    p.mark('sat:pc1', 'u5');
+    p.mark('u5');
     expect(p.size).toBe(1);
   });
 
