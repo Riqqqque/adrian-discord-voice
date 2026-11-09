@@ -577,7 +577,7 @@ async function dashSettings(body) {
 
 async function dashKeys(body) {
   const { secrets } = await api('GET', '/api/secrets');
-  const known = ['DISCORD_TOKEN', 'ANTHROPIC_API_KEY', 'GROQ_API_KEY', 'GEMINI_API_KEY', 'TAVILY_API_KEY', 'SPEECHIFY_API_KEY', 'PLEX_TOKEN', 'SONARR_API_KEY', 'RADARR_API_KEY', 'HELIX_TOKEN'];
+  const known = ['DISCORD_TOKEN', 'ANTHROPIC_API_KEY', 'GROQ_API_KEY', 'GEMINI_API_KEY', 'TAVILY_API_KEY', 'SPEECHIFY_API_KEY', 'PLEX_TOKEN', 'SONARR_API_KEY', 'RADARR_API_KEY', 'HELIX_TOKEN', 'STEAM_API_KEY'];
   const names = [...new Set([...known, ...secrets.map((s) => s.name)])];
   const rows = names.map((n) => {
     const set = secrets.some((s) => s.name === n);

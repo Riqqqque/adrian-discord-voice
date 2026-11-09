@@ -92,6 +92,7 @@ describe('satellite connection', () => {
     const good = await r.client({ type: 'hello', token: r.token, version: '0.1.0' });
     expect(good.got[0]).toMatchObject({ type: 'welcome', name: 'Desk PC', owner: 'Rique' });
     expect(r.conns).toHaveLength(1);
+    expect(r.conns[0]!.version).toBe('0.1.0');
     good.ws.close();
     await r.server.close();
   });

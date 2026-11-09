@@ -69,6 +69,8 @@ export class SatelliteConnection extends EventEmitter implements VoiceTransport 
   constructor(
     private readonly ws: WebSocket,
     readonly device: Device,
+    /** The PC app's version from its hello, when it sent one. */
+    readonly version?: string,
   ) {
     super();
     ws.on('message', (data, isBinary) => {
