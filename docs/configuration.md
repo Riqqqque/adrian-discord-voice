@@ -173,7 +173,7 @@ sudo adrian restart
 | `music.quiz.enabled` | `true` | "Start a music quiz" |
 | `music.quiz.rounds` | `8` | Rounds when none are asked for, 1 to 20 |
 | `music.quiz.clipSeconds` | `20` | How long each clip plays, 8 to 45 |
-| `music.quiz.hintSeconds` | `12` | When the hint comes, 3 to 40 |
+| `music.quiz.hintSeconds` | `12` | When the hint comes, 3 to 40. Never later than 60% of the clip (with `clipSeconds` 20, at most 12) |
 
 ## Integrations
 
