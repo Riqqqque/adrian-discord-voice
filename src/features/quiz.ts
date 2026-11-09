@@ -55,14 +55,15 @@ const SCORE = /^(?:(?:what'?s|what is|whats) the score|scores?|the score|score (
 const HINT = /^(?:(?:give (?:us|me) )?(?:a )?(?:hint|clue)|hint please|any hints?|can (?:we|i) (?:get|have) a hint)$/;
 const STATUS = /^(?:what'?s playing|what is playing|what song is (?:this|that|playing)|what is this song|whats this song|who is this|who'?s this)$/;
 /** The orders taken without her name: said on their own and clearly about the
- *  quiz. "Next", "skip", "I'm done", "pass", "who's this" and "scores" come up
- *  in any call, so the rest of the list above needs her name. "Stop the game"
+ *  quiz. "Next", "skip", "skip this one", "I'm done", "pass", "who's winning",
+ *  "who's this" and "scores" come up in any call (people say them to each
+ *  other), so the rest of the list above needs her name. "Stop the game"
  *  could be any game: only "quiz" counts. */
 const UNNAMED: [RegExp, 'stop' | 'skip' | 'score' | 'hint'][] = [
   [/^(?:stop|end|quit|cancel|finish) (?:the |this )?(?:music |song )?quiz$/, 'stop'],
-  [/^(?:skip|next|skip (?:it|this|this one|this song|the song|this round)|next (?:song|round))$/, 'skip'],
-  [/^(?:(?:what'?s|what is|whats) the score|who'?s winning|who is winning|what are the scores)$/, 'score'],
-  [/^(?:(?:give (?:us|me) )?(?:a )?hint|hint please|can (?:we|i) (?:get|have) a hint)$/, 'hint'],
+  [/^(?:skip (?:this|the) (?:round|song)|next (?:song|round))$/, 'skip'],
+  [/^(?:(?:what'?s|what is|whats) the score|what are the scores)$/, 'score'],
+  [/^(?:give (?:us|me) a hint|hint please|can (?:we|i) (?:get|have) a hint)$/, 'hint'],
 ];
 
 /** The order itself, without her name, "can you" and the politeness. */
@@ -215,15 +216,42 @@ export interface Answer {
 
 export type Verdict = { right: true; got: 'title' | 'artist' } | { right: false; close: boolean };
 
-/** Right if it names the title (most of it) or, unless `titleOnly`, the artist. */
-export function judgeGuess(guess: string, ans: Answer, titleOnly = false): Verdict {
+/** Song titles and names that are one everyday word: said on their own they're
+ *  talk ("yeah", "hello", "run", "go"), so they count only as a clear guess. */
+const COMMON_ANSWERS = new Set(
+  'yeah yes yep no nope ok okay alright hey hi hello bye goodbye sorry thanks please wow oh so now again why what maybe sure right wait stop help run go jump push drop hold home love baby happy believe faded closer hurt smile stay crazy tonight forever always never nothing something everything whatever together dance cry fire'.split(' '),
+);
+/** A line said as a guess: "is it X", "it's X", "I think it's X". */
+const GUESS_SHAPED = /^(?:is it|is this|it'?s|its|it is|i think(?: it'?s| it is)?|my guess is|i'?m guessing|i guess|the song is|that'?s called|it'?s called)\s+(?=\S)/;
+
+/** Right if it names the title (most of it) or, unless `titleOnly`, the artist.
+ *  `woke`: said with her name. A title or name that is one everyday word wins
+ *  only said with her name, said as a guess, or with the other half ("yeah by
+ *  Usher"); on its own it's not even close, so the model isn't asked either. */
+export function judgeGuess(guess: string, ans: Answer, titleOnly = false, woke = false): Verdict {
   const titleWords = answerWords(answerTitle(ans.title));
   const artistWords = ans.artist ? answerWords(ans.artist) : [];
-  const title = answerScore(guess, answerTitle(ans.title), artistWords);
+  const said = bare(guess);
+  const shaped = woke || GUESS_SHAPED.test(said);
+  // The guess without "is it": "is it yeah" is all of "Yeah!".
+  const rest = said.replace(GUESS_SHAPED, '');
+  const common = (words: string[]) => words.length === 1 && COMMON_ANSWERS.has(words[0]!);
+  // "X by <artist>": X is the title.
+  const by = ans.artist ? /^(.+?)\s+by\s+(.+)$/.exec(rest) : null;
+  const named = !!by && artistNames(ans.artist!).some((n) => answerScore(by[2]!.replace(/\bthe\s+/g, ''), n) >= 0.8);
+  let title = Math.max(answerScore(guess, answerTitle(ans.title), artistWords), answerScore(rest, answerTitle(ans.title), artistWords), named ? answerScore(by[1]!, answerTitle(ans.title)) : 0);
+  const words = answerWords(guess);
+  const withArtist = artistWords.some((w) => !STOP_WORDS.has(w) && words.some((g) => sameWord(g, w)));
+  if (common(titleWords) && !shaped && !named && !withArtist) title = 0;
   if (title >= 0.75) return { right: true, got: 'title' };
   let artist = 0;
   if (ans.artist && !titleOnly) {
-    for (const name of artistNames(ans.artist)) artist = Math.max(artist, answerScore(guess.replace(/\bthe\s+/gi, ''), name, [...titleWords, ...artistWords]));
+    const withTitle = titleWords.some((t) => !STOP_WORDS.has(t) && words.some((g) => sameWord(g, t)));
+    for (const name of artistNames(ans.artist)) {
+      // A one-word everyday name ("Yes"): with her name, as a guess, or with the title.
+      if (common(answerWords(name)) && !shaped && !withTitle) continue;
+      artist = Math.max(artist, answerScore(guess.replace(/\bthe\s+/gi, ''), name, [...titleWords, ...artistWords]));
+    }
     if (artist >= 0.8) return { right: true, got: 'artist' };
   }
   return { right: false, close: Math.max(title, artist) >= 0.5 };
@@ -491,16 +519,19 @@ export class MusicQuiz {
     this.judgeCalls = 0;
     this.hinted = false;
     this.d.log.info('quiz round', { round: this.round, startS: clip.startS, seconds: clip.seconds });
-    this.timers.push(this.d.after(this.times.hintSeconds * 1000, () => token === this.token && this.phase === 'round' && void this.hint()));
+    // The hint comes while the clip still plays: at most 60% of the way in.
+    const hintMs = Math.min(this.times.hintSeconds, clip.seconds * 0.6) * 1000;
+    this.timers.push(this.d.after(hintMs, () => token === this.token && this.phase === 'round' && void this.hint()));
     this.timers.push(this.d.after(clip.seconds * 1000 + 500, () => token === this.token && this.phase === 'round' && void this.timeUp()));
     // A short song or a stream that ends early: the round ends with it. One
     // that ends at once (a dead stream URL, a failed seek) was never heard:
     // another song takes its place, unrevealed.
     const startedAt = this.d.now();
     const early = Math.min(EARLY_END_MS, clip.seconds * 500);
-    void clip.done.then((how) => {
+    void clip.done.then(() => {
       if (token !== this.token || this.phase !== 'round') return;
-      if (how === 'error' || this.d.now() - startedAt < early) void this.clipFailed(tries);
+      // A late error (the stream broke halfway) was heard: the round ends as usual.
+      if (this.d.now() - startedAt < early) void this.clipFailed(tries);
       else void this.timeUp();
     });
   }
@@ -603,9 +634,9 @@ export class MusicQuiz {
     // Between rounds an answer to the song just revealed is late, not news.
     if (this.phase !== 'round' || !this.answer || !text.trim()) return false;
     const titleOnly = !!this.options.artist;
-    let v = judgeGuess(text, this.answer, titleOnly);
+    let v = judgeGuess(text, this.answer, titleOnly, woke);
     if (!v.right && this.answer.alt) {
-      const alt = judgeGuess(text, { title: this.answer.alt }, true);
+      const alt = judgeGuess(text, { title: this.answer.alt }, true, woke);
       if (alt.right) v = alt;
     }
     // Only a try at the song counts as playing along: said to her, guess-shaped

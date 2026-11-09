@@ -14,7 +14,7 @@ import type { ChatMessage, LlmEvent, LlmProvider, Tool, ToolOutput } from '../sr
 import type { SatelliteConnection } from '../src/satellite/connection.js';
 import { SatelliteDevices } from '../src/satellite/devices.js';
 import { MAX_IMAGE_BYTES, readImage } from '../src/satellite/images.js';
-import { answerForLog, forLog, forModel, PRIVATE_TOOLS } from '../src/satellite/senses.js';
+import { answerForLog, beforeHealth, forLog, forModel, HEALTH_NEEDS_UPDATE, PRIVATE_TOOLS, PrivateTurns } from '../src/satellite/senses.js';
 import { startSatelliteServer } from '../src/satellite/server.js';
 import { PC_RULE, pcTools } from '../src/satellite/tools.js';
 
@@ -151,6 +151,49 @@ describe('the PC tools for health, clipboard and screen', () => {
     expect(answerForLog('Your clipboard says: meet at 5 on Main Street.', true)).toEqual({ saidChars: 46 });
     expect(answerForLog('It is 9 PM.', false)).toEqual({ said: 'It is 9 PM.' });
     expect((answerForLog('x'.repeat(900), false) as { said: string }).said).toHaveLength(500);
+  });
+
+  it('keep a person private for the rest of that conversation, not just one answer', () => {
+    let now = 0;
+    const p = new PrivateTurns(10 * 60_000, 3, () => now);
+    expect(p.answered(OWNER)).toBe(false);
+    p.mark(OWNER);
+    // The answer that read the clipboard, then follow-ups answered from history.
+    expect(p.answered(OWNER)).toBe(true);
+    now += 9 * 60_000;
+    expect(p.answered(OWNER)).toBe(true);
+    now += 9 * 60_000; // 18 minutes after the read, 9 after the last answer
+    expect(p.answered(OWNER)).toBe(true);
+    // Someone else: not marked.
+    expect(p.answered('223456789012345678')).toBe(false);
+    // Over 10 minutes of quiet: the conversation is over.
+    now += 10 * 60_000 + 1;
+    expect(p.answered(OWNER)).toBe(false);
+    expect(p.size).toBe(0);
+    // Bounded: the oldest mark goes first.
+    for (const u of ['u1', 'u2', 'u3', 'u4']) p.mark(u);
+    expect(p.size).toBe(3);
+    expect(p.answered('u1')).toBe(false);
+    expect(p.answered('u4')).toBe(true);
+    // Expired marks are dropped when a new one comes.
+    now += 11 * 60_000;
+    p.mark('u5');
+    expect(p.size).toBe(1);
+  });
+
+  it('tell the model when a PC app is too old for the full health check', async () => {
+    const summary = 'CPU 12%, memory 40%, 300 GB free, up 2 days.';
+    for (const [version, old] of [['0.15.5', true], ['0.14.9', true], ['0.9.99', true], [undefined, true], ['dev', true], ['0.15.6', false], ['0.15.10', false], ['0.16.0', false], ['1.0.0', false]] as const) expect(beforeHealth(version), String(version)).toBe(old);
+    const run = async (version: string | undefined, action: string) => {
+      const pc = { version, action: async () => ({ ok: true, result: summary }) } as never;
+      return find(pcTools({ pcFor: () => pc }), 'pc_info').run({ action }, AbortSignal.timeout(1000), ctx);
+    };
+    expect(await run('0.15.5', 'health')).toBe(`${summary}\n${HEALTH_NEEDS_UPDATE}`);
+    expect(HEALTH_NEEDS_UPDATE).toBe('Their PC app needs an update for the full health check.');
+    expect(await run('0.15.6', 'health')).toBe(summary);
+    expect(await run('0.15.5', 'summary')).toBe(summary);
+    // A failure stays a failure.
+    expect(forModel({ ok: false, result: 'Busy.' }, 'No: ', { healthFrom: '0.15.5' })).toBe('No: Busy.');
   });
 
   it('turn an old PC app\'s "Unknown PC action" into "needs an update"', async () => {

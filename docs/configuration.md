@@ -6,10 +6,11 @@ Settings live in `/etc/adrian/config.json`, and keys live in `/etc/adrian/secret
 sudo adrian config music.volume            # show a value
 sudo adrian config music.volume 0.4        # set it (validated before saving)
 sudo adrian config owners '["123456789012345678"]'
+sudo adrian config recap.channelId null    # remove it (back to unset)
 sudo adrian restart                        # most settings apply on restart
 ```
 
-`adrian config` validates against the schema and won't save an invalid value. File paths (models, secrets, usage file) belong to the installer and can't be changed this way.
+`adrian config` validates against the schema and won't save an invalid value. The value `null` removes the key, which turns an optional setting back off (`sudo adrian config helix.url null`, `gameNight.channelId null`, `recap.channelId null`); a setting left empty goes with it, and one that still needs the removed part isn't saved (remove the whole thing instead: `sudo adrian config helix null`). File paths (models, secrets, usage file) belong to the installer and can't be changed this way.
 
 `server.*` and `allowedGuilds` can't be changed with `adrian config` or the admin page. Edit the file by hand with `sudo nano /etc/adrian/config.json`, keep it valid JSON, then run `sudo adrian restart`. `allowedGuilds` is a top-level array of server IDs: `"allowedGuilds": ["123456789012345678"],`.
 
@@ -173,7 +174,7 @@ sudo adrian restart
 | `music.quiz.enabled` | `true` | "Start a music quiz" |
 | `music.quiz.rounds` | `8` | Rounds when none are asked for, 1 to 20 |
 | `music.quiz.clipSeconds` | `20` | How long each clip plays, 8 to 45 |
-| `music.quiz.hintSeconds` | `12` | When the hint comes, 3 to 40 |
+| `music.quiz.hintSeconds` | `12` | When the hint comes, 3 to 40. Never later than 60% of the clip (with `clipSeconds` 20, at most 12) |
 
 ## Integrations
 
@@ -206,7 +207,7 @@ Prices work with no setup. Wishlists need the person's account in `steam.account
 4. Link them and restart:
    ```bash
    sudo adrian config steam.accounts.123456789012345678 76561198000000000
-   sudo adrian config steam.country US        # only if your store isn't the US one
+   sudo adrian config steam.country GB        # your store's two-letter country; the default is US
    sudo adrian restart
    ```
 5. **Privacy** (Steam → your profile → Edit Profile → Privacy Settings): *My profile* Public for anything; *Friends List* Public for friends; *Game details* Public for the wishlist. Friends whose own *Game details* are private show as online without a game.

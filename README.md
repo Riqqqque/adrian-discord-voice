@@ -31,6 +31,7 @@ This is one module of the A.D.R.I.A.N. household assistant suite. Every module f
 - "Play Travis Scott" shuffles their best-known songs. "Play some music" plays what you like: she learns your taste from what you ask for, and has her own.
 - Autoplay keeps similar songs coming when the queue runs out (YouTube Music radio), without repeats.
 - Music ducks under the voice whenever someone talks to it.
+- Music quiz: "start a music quiz", "guess the song, 90s hip hop". Short clips, anyone in the call answers, she keeps score.
 
 **Sounds**
 - "Make an airhorn sound", "give me a drum roll", "what does a cow sound like?": it finds a short sound effect and plays it in the call (up to 15 seconds, over any music).
@@ -41,6 +42,10 @@ This is one module of the A.D.R.I.A.N. household assistant suite. Every module f
 - Party games: trivia, dice, coin flips.
 - Minecraft server status: who's online, player counts. With [Helix](https://github.com/Riqqqque/Helix), the owners can also start, stop and restart servers, change the whitelist and post in game chat (stop and restart ask first).
 - Plex, Sonarr and Radarr, read-only: what's new, is a movie on Plex, what's downloading, upcoming episodes.
+- Steam: which friends are online and what they're playing, wishlist sales, and store prices ("is Hades II on sale?").
+- Game nights: "who's free for Valorant?", "ping me for game night", "get the squad on" (pings only people who signed up).
+- A weekly recap posted in a channel you pick: top songs, new episodes and movies, server uptime. Counts only, no transcripts.
+- Heads-ups when an owner joins after a while away: one short line about what's new (off by default).
 
 **Voice**
 - 50+ built-in voices (Kokoro, runs locally), plus a Vietnamese voice (Piper).
@@ -51,6 +56,10 @@ This is one module of the A.D.R.I.A.N. household assistant suite. Every module f
 - She listens through your PC's mic ("Hey Adrian", or hold Ctrl+Alt+Space), answers through its speakers in the same voice, and shows a small animated window.
 - Controls the PC: open apps and games, web pages, YouTube and Spotify searches, pause or skip what's playing in a named app, volume, lock, and sleep/restart/shut down after a spoken yes. Each PC decides what's allowed.
 - In the tray it uses a few MB and stays out of the way of games. When you're in the bot's Discord call too, the call answers instead, so music plays for everyone.
+- Quiet while gaming: during a game she only answers to her name, keeps it short, and holds reminders until you're done.
+- Window layout: "put Discord on the left", "move Chrome to my other monitor", "undo that".
+- PC health ("why is my PC slow?", "how hot is my GPU?"), and, only when you ask, what you copied ("summarize what I copied") or what's on screen ("what's this error?").
+- Between your PC and Discord: "send that link to my PC", "move the music to my PC", and from the PC, "tell the call I'll be on in 5".
 
 **Running it**
 - A web admin page with a setup wizard, live status (latency, spend), settings, keys and logs.

@@ -204,4 +204,27 @@ describe('adrian config on a good file', () => {
     expect((await tool('config', 'steam.accounts.123456789012345678', '76561208000000001')).code).toBe(1);
     expect((await tool('config', 'steam.shareWithServer', 'true')).code).toBe(0);
   });
+
+  it('null removes a key, and the parents it leaves empty, so an optional setting can be turned off', async () => {
+    writeFileSync(configFile, JSON.stringify({ ...GOOD, helix: { url: 'http://192.168.1.50:8080' }, recap: { channelId: '123456789012345678', hour: 20 }, gameNight: { channelId: '123456789012345678' } }));
+    const r = await tool('config', 'helix.url', 'null');
+    expect(r.code).toBe(0);
+    expect(r.out).toContain('helix.url removed.');
+    expect((await tool('config', 'recap.channelId', 'null')).code).toBe(0);
+    expect((await tool('config', 'gameNight.channelId', 'null')).code).toBe(0);
+    const saved = JSON.parse(readFileSync(configFile, 'utf8'));
+    expect(saved).toEqual({ ...GOOD, recap: { hour: 20 } });
+    // Not set: said so, nothing written.
+    const before = readFileSync(configFile, 'utf8');
+    const none = await tool('config', 'helix.url', 'null');
+    expect(none.code).toBe(0);
+    expect(none.out).toContain("helix.url isn't set");
+    expect((await tool('config', 'music.quiz.rounds', 'null')).out).toContain("isn't set");
+    expect(readFileSync(configFile, 'utf8')).toBe(before);
+    // Removing a required part of a setting is still validated: Helix needs its address.
+    writeFileSync(configFile, JSON.stringify({ ...GOOD, helix: { url: 'http://192.168.1.50:8080', startWaitSec: 300 } }));
+    expect((await tool('config', 'helix.url', 'null')).code).toBe(1);
+    expect((await tool('config', 'helix', 'null')).code).toBe(0);
+    expect(JSON.parse(readFileSync(configFile, 'utf8'))).toEqual(GOOD);
+  });
 });
