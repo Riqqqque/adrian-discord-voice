@@ -33,12 +33,27 @@ export const SENSES_SPECS: Record<'pc_clipboard' | 'pc_screen', { description: s
 /** What a PC app too old for a tool answers. */
 const UNKNOWN = /^Unknown PC action\b/;
 
+/** The first PC app with pc_info health. Older ones answer it with the plain summary. */
+const HEALTH_SINCE = [0, 15, 6];
+export const HEALTH_NEEDS_UPDATE = 'Their PC app needs an update for the full health check.';
+
+/** A PC app version from before pc_info health (or none given). */
+export function beforeHealth(version: string | undefined): boolean {
+  const m = /^v?(\d+)\.(\d+)\.(\d+)/.exec(version?.trim() ?? '');
+  if (!m) return true;
+  const v = m.slice(1, 4).map(Number);
+  for (let i = 0; i < 3; i++) if (v[i] !== HEALTH_SINCE[i]) return v[i]! < HEALTH_SINCE[i]!;
+  return false;
+}
+
 /** The PC's answer as the model gets it (`notDone` prefixes a failure). A
  *  picture travels beside the text; a PC app that doesn't know the tool yet
- *  gets an honest "needs an update". */
-export function forModel(r: ActionResult, notDone: string): string | ToolOutput {
+ *  gets an honest "needs an update". `healthFrom`: this was a health check,
+ *  asked of the PC app with this version; an older one only sent its summary. */
+export function forModel(r: ActionResult, notDone: string, health?: { healthFrom: string | undefined }): string | ToolOutput {
   if (!r.ok) return `${notDone}${UNKNOWN.test(r.result) ? 'Your PC app needs an update for that.' : r.result}`;
-  return r.image ? { text: r.result, image: r.image } : r.result;
+  const text = health && beforeHealth(health.healthFrom) ? `${r.result}\n${HEALTH_NEEDS_UPDATE}` : r.result;
+  return r.image ? { text, image: r.image } : text;
 }
 
 /** The result as the optional transcript log may show it: never the
@@ -58,4 +73,47 @@ export const PRIVATE_TOOLS: ReadonlySet<string> = new Set(['pc_clipboard', 'pc_s
 /** Her answer as the optional transcript log may show it. */
 export function answerForLog(said: string, privateTurn: boolean): { said: string } | { saidChars: number } {
   return privateTurn ? { saidChars: said.length } : { said: said.slice(0, 500) };
+}
+
+/** Who has had a private tool used for them lately, per room and person. Her
+ *  history keeps the clipboard text or the screen for the rest of that
+ *  conversation, so a later answer ("what was that address again?") can repeat
+ *  it: the mark lasts `holdMs` after the last private tool use, and each answer
+ *  given while it lasts keeps it going. Bounded: the oldest marks go first. */
+export class PrivateTurns {
+  private readonly marks = new Map<string, number>();
+
+  constructor(
+    private readonly holdMs = 10 * 60_000,
+    private readonly max = 100,
+    private readonly now: () => number = Date.now,
+  ) {}
+
+  /** A private tool ran for this person here. */
+  mark(room: string, userId: string): void {
+    const k = `${room}\u0000${userId}`;
+    this.marks.delete(k);
+    this.marks.set(k, this.now());
+    for (const [key, at] of this.marks) {
+      if (this.marks.size <= this.max && this.now() - at <= this.holdMs) break;
+      this.marks.delete(key);
+    }
+  }
+
+  /** An answer for this person here is done: was it (or may it be) private? */
+  answered(room: string, userId: string): boolean {
+    const k = `${room}\u0000${userId}`;
+    const at = this.marks.get(k);
+    if (at === undefined) return false;
+    if (this.now() - at > this.holdMs) {
+      this.marks.delete(k);
+      return false;
+    }
+    this.mark(room, userId);
+    return true;
+  }
+
+  get size(): number {
+    return this.marks.size;
+  }
 }

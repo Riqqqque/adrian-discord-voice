@@ -64,7 +64,7 @@ import { SatelliteDevices } from '../satellite/devices.js';
 import { PcRecorder } from '../satellite/recorder.js';
 import { startSatelliteServer } from '../satellite/server.js';
 import { PC_RULE, pcTools, PowerDownWindow } from '../satellite/tools.js';
-import { answerForLog, PRIVATE_TOOLS } from '../satellite/senses.js';
+import { answerForLog, PRIVATE_TOOLS, PrivateTurns } from '../satellite/senses.js';
 import { GameQuiet, gamingLine, HeldItems, reminderBrief, toldLine } from '../satellite/quiet.js';
 import { pcDiscordTools, watchDiscord } from '../features/handoff-discord.js';
 import { MusicStarts, notingStarts } from '../features/handoff.js';
@@ -497,9 +497,10 @@ export async function startVoiceStack(
   let orchestrator: ConversationOrchestrator | undefined;
   let dmOrchestrator: ConversationOrchestrator | undefined;
   let autoMemory: AutoMemory | undefined;
-  /** People whose answer being made read their clipboard or screen: the
-   *  transcript log keeps only its length (cleared when it's logged). */
-  const privateTurns = new Set<UserId>();
+  /** People, per room, whose clipboard or screen was read lately: the
+   *  transcript log keeps only the length of her answers to them for the rest
+   *  of that conversation (10 minutes after the last answer). */
+  const privateTurns = new PrivateTurns();
   /** Minecraft server control, when Helix is set up: stopped with the stack. */
   let control: ServerControl | undefined;
   const brain = config.brain;
@@ -523,7 +524,7 @@ export async function startVoiceStack(
             ...(ytForSounds ? { findVideo: (q: string, signal: AbortSignal) => ytForSounds.videoId(q, signal) } : {}),
             ...(searchKey ? { findUrl: (q: string, signal: AbortSignal) => topResultUrl(searchKey, q, signal) } : {}),
             onCall: (name, args, result, ctx) => {
-              if (ctx && PRIVATE_TOOLS.has(name)) privateTurns.add(ctx.userId);
+              if (ctx && PRIVATE_TOOLS.has(name)) privateTurns.mark(roomFor(ctx).key, ctx.userId);
               if (config.satellite.logTranscripts) log.info('pc action', { name, args, result: result.slice(0, 200) });
             },
           }),
@@ -1019,7 +1020,7 @@ export async function startVoiceStack(
         } finally {
           finished();
           clearTimeout(genTimer);
-          const privateTurn = privateTurns.delete(userId);
+          const privateTurn = privateTurns.answered(rm.key, userId);
           if (said.length) {
             saidAll = said.join(' ');
             lastSpoken.set(userId, said.join(' '));
