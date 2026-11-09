@@ -78,7 +78,8 @@ export function answerForLog(said: string, privateTurn: boolean): { said: string
 /** Who has had a private tool used for them lately. Her history keeps the
  *  clipboard text or the screen for the rest of that conversation, so a later
  *  answer ("what was that address again?") can repeat it: the mark lasts
- *  `holdMs` after the last private tool use, and each answer given while it
+ *  `holdMs` (as long as her history keeps the conversation) after the last
+ *  private tool use, and each answer given while it
  *  lasts keeps it going. Per person, not per room: her history is per person,
  *  so a read from the Discord call can come up again at their PC. Bounded: the
  *  oldest marks go first. */

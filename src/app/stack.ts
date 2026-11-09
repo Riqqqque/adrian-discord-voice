@@ -487,7 +487,9 @@ export async function startVoiceStack(
       .map((m) => memberLabel(m.displayName, { creator, isCreator: isCreator(m.id), isAsker: m.id === askerId, creatorNames: config.identity.creatorHeardAs, ...(config.nicknames[m.id] ? { nickname: config.nicknames[m.id] } : {}) }));
     return people.length ? [`People in this voice call right now (${ch.name}): ${people.join(', ')}.`] : [];
   }
-  const sessions = new SessionMemory(16, 60 * 60_000);
+  /** How long her history keeps a person's conversation after they go quiet. */
+  const SESSION_IDLE_MS = 60 * 60_000;
+  const sessions = new SessionMemory(16, SESSION_IDLE_MS);
   /** Discord's age-restricted flag on the channel the bot is talking in. */
   const isAgeRestricted = (channelId?: string) =>
     !!channelId && (client.channels.cache.get(channelId) as { nsfw?: boolean } | undefined)?.nsfw === true;
@@ -500,7 +502,8 @@ export async function startVoiceStack(
   /** People whose clipboard or screen was read lately: the transcript log
    *  keeps only the length of her answers to them for the rest of that
    *  conversation (until 10 minutes pass without one). */
-  const privateTurns = new PrivateTurns();
+  // As long as her history can bring a clipboard or screen answer back.
+  const privateTurns = new PrivateTurns(SESSION_IDLE_MS);
   /** Minecraft server control, when Helix is set up: stopped with the stack. */
   let control: ServerControl | undefined;
   const brain = config.brain;
