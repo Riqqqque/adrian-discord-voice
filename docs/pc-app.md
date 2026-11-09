@@ -110,6 +110,23 @@ app connects: then she shows as not connected, and the settings say why.
   everyone. PC orders ("pause Spotify", "open Valorant") still reach your PC.
   Mute yourself in Discord, hold Ctrl+Alt+Space or type in the window to talk
   to the PC alone.
+- **Quiet while gaming:** while a game is in front, she only answers to her
+  name (or push-to-talk), keeps answers to one short sentence, and holds
+  reminders said at that PC until the game ends. "Quiet while I play" in the
+  settings turns it off.
+- **Window layout:** "put Discord on the left", "snap Chrome to the top right",
+  "move Spotify to my other monitor", "maximize that", "undo that". Games and
+  full-screen windows are never moved.
+- **PC health:** "why is my PC slow?", "how hot is my GPU?", "how much space is
+  left?": a verdict first, then only the numbers that matter.
+- **Clipboard and screen**, only when you ask: "summarize what I copied", "what's
+  this error on my screen?" (see below).
+- **Your PC and Discord:** "send that link to my PC", "move the music to my
+  PC", "put what I'm watching into the call", and from the PC, "tell the call
+  I'll be on in 5".
+- **Music quiz** works at the PC too, just for you: "start a music quiz".
+- **Steam:** "which of my Steam friends are online?", "is anything on my
+  wishlist on sale?", "how much is Hades II?".
 
 ## Updates
 
