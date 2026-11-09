@@ -86,7 +86,7 @@ export function startSatelliteServer(o: SatelliteServerOptions): { close(): Prom
       fails.delete(addr);
       // One live connection per device: a reconnect replaces the old one.
       for (const c of live) if (c.device.id === device.id) void c.disconnect();
-      const conn = new SatelliteConnection(ws, device);
+      const conn = new SatelliteConnection(ws, device, typeof m.version === 'string' ? m.version.slice(0, 20) : undefined);
       // Welcomed: room for a picture now (connection.ts lets only action_result be big).
       capFrames(ws, MAX_FRAME);
       live.add(conn);

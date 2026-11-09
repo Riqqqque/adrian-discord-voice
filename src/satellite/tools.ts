@@ -186,7 +186,7 @@ export function pcTools(d: PcToolDeps): Tool[] {
         return refused;
       }
       const r = await pc.action(name, args, name === 'pc_screen' ? 19_000 : undefined);
-      const out = forModel(r, NOT_DONE);
+      const out = forModel(r, NOT_DONE, name === 'pc_info' && a.action === 'health' ? { healthFrom: pc.version } : undefined);
       const result = typeof out === 'string' ? out : out.text;
       d.onCall?.(name, args, forLog(name, result), ctx);
       if (r.ok && name === 'pc_system' && (a.action === 'restart' || a.action === 'shutdown')) d.onPowerDown?.(ctx.userId, pc);
