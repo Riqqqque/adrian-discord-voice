@@ -69,9 +69,9 @@ Everything else goes to the language model.
 - **`/leave`, or `/join` to another channel:** stops the music. Being dragged to another channel keeps it playing.
 - **Lyrics:** it won't sing or read out song lyrics. It just names what's playing.
 
-### Music slash commands
+### Music commands in text
 
-The same music, typed instead of said. They work in any text channel of the server she's in.
+The same music, typed instead of said: as slash commands (`/play`, `/music ...`) or with a `!` prefix (`!play`, `!skip`). They work in any text channel of the server she's in.
 
 | Command | It does |
 |---|---|
@@ -88,9 +88,27 @@ The same music, typed instead of said. They work in any text channel of the serv
 | `/music who` | Who asked for this song. |
 
 - **Who can use them:** the same people as by voice. Changing the music takes being in her call (owners can from anywhere). Looking at it (`now`, `queue`, `volume` without a level, `who`) works for anyone in the server.
-- **Not in a call yet:** `/play` from a voice channel brings her there first, by `/join`'s rules: she won't leave a call that has other people in it.
-- **What everyone sees:** a started song posts the card with its buttons in the channel, and changes say who made them ("Sam skipped"). Refusals and lists only show to you.
-- **Limits:** `/play` counts toward the hourly limit like a spoken request. During a music quiz, skip and stop go to the quiz and the rest waits for it.
+- **She comes to you:** playing something from a voice channel she isn't in brings her there first, by `/join`'s rules: she won't leave a call that has other people in it, unless an owner asks. An owner who isn't in any call plays into hers.
+- **What everyone sees:** a started song posts the card with its buttons in the channel, and changes say who made them ("Sam skipped"). With slash commands, refusals and lists only show to you; `!` commands answer in the channel.
+- **Limits:** a play counts toward the hourly limit like a spoken request. During a music quiz, skip and stop go to the quiz and the rest waits for it.
+- **Slash commands not showing?** Discord caches the command list: restart Discord or press Ctrl+R. Server admins can also limit an app's commands under Server Settings → Integrations.
+
+**`!` commands**
+
+| Command | It does |
+|---|---|
+| `!play <song, artist or link>` (`!p`) | Plays it now. `!play` alone resumes. |
+| `!queue <song>`, `!playnext <song>` (`!add`, `!pn`) | Adds it to the queue. |
+| `!album`, `!playlist`, `!artist`, `!podcast`, `!vibe`, `!video <words>` | Says what it is. |
+| `!similar [song]`, `!favorites`, `!hers`, `!plex <song>` | Songs like this one, what you like, what she likes, from Plex. |
+| `!skip [n]` (`!s`, `!next`), `!back` | Skip (to a place in the queue), or the song before. |
+| `!pause`, `!resume`, `!stop` | As said aloud. |
+| `!np`, `!queue [page]` (`!q`), `!who` | What's playing (with buttons), what's next, who asked. |
+| `!volume [5-100]` (`!vol`), `!shuffle`, `!clear`, `!remove <n>`, `!autoplay [on/off]` | The rest of the controls. |
+| `!join`, `!leave` (`!dc`) | Like `/join` and `/leave`. |
+| `!help` | This list. |
+
+They need the bot's **Message Content** intent (Developer Portal → your app → Bot → Privileged Gateway Intents, then `sudo adrian restart`). Without it Discord only shows the bot messages that @mention it, so type `@A.D.R.I.A.N. !play x`. Change the `!` with `sudo adrian config music.prefix "?"`, or turn them off with an empty prefix. Words she doesn't know (`!roll`), and her words with something extra after them (`!clear 50`), are left for other bots. `!help` needs the @mention, since other bots answer it too. If another music bot in the server also uses `!play`, give one of them another prefix.
 
 ## Music quiz
 

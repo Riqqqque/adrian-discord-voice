@@ -47,6 +47,8 @@ export interface TextChatDeps {
   maxPings: number;
   /** Remembers playable links people paste, for "play that link". */
   links?: RecentLinks;
+  /** Someone else answers this one (a typed command such as "!play x"). */
+  handledElsewhere?(m: Message): boolean;
   now?: () => number;
 }
 
@@ -197,6 +199,7 @@ export function registerTextChat(d: TextChatDeps): void {
     }
     if (dm ? !d.dms : !d.enabled) return;
     if (!dm && d.allowedGuilds.length && !d.allowedGuilds.includes(m.guildId ?? '')) return;
+    if (d.handledElsewhere?.(m)) return;
     const mentioned = m.mentions.users.has(me.id);
     const repliedToMe = !mentioned && !!m.reference?.messageId && m.mentions.repliedUser?.id === me.id;
     const direct = dm || mentioned || repliedToMe;

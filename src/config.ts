@@ -385,6 +385,9 @@ export const PocConfigSchema = z.object({
       maxQueue: z.number().int().min(1).max(100).default(25),
       /** When the queue runs out, keep playing similar songs. */
       autoplay: z.boolean().default(true),
+      /** Typed commands start with this ("!play x"); empty turns them off. Without the
+       *  Message Content intent they only work after an @mention of the bot. */
+      prefix: z.string().max(3).regex(/^[^\s\w`]*$/, 'use symbols only, like ! or ?').default('!'),
       /** Artist requests shuffle the artist's top songs (ranked by Deezer's free public API).
        *  Deezer gets the artist's name, and X from a plain "play X", to find out whether it's an artist. */
       topSongs: z.boolean().default(true),
@@ -398,7 +401,7 @@ export const PocConfigSchema = z.object({
         })
         .default({ enabled: true, rounds: 8, clipSeconds: 20, hintSeconds: 12 }),
     })
-    .default({ enabled: true, ffmpeg: 'ffmpeg', plexBackup: true, volume: 0.5, duckLevel: 0.2, maxQueue: 25, autoplay: true, topSongs: true, quiz: { enabled: true, rounds: 8, clipSeconds: 20, hintSeconds: 12 } }),
+    .default({ enabled: true, ffmpeg: 'ffmpeg', plexBackup: true, volume: 0.5, duckLevel: 0.2, maxQueue: 25, autoplay: true, prefix: '!', topSongs: true, quiz: { enabled: true, rounds: 8, clipSeconds: 20, hintSeconds: 12 } }),
   /** Cloud voice for English replies; the local voice stays as fallback. */
   cloudVoice: z
     .object({

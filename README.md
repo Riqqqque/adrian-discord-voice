@@ -31,7 +31,7 @@ This is one module of the A.D.R.I.A.N. household assistant suite. Every module f
 - "Play Travis Scott" shuffles their best-known songs. "Play some music" plays what you like: she learns your taste from what you ask for, and has her own.
 - Autoplay keeps similar songs coming when the queue runs out (YouTube Music radio), without repeats.
 - Music ducks under the voice whenever someone talks to it.
-- Slash commands too: `/play` (with suggestions while you type) and `/music` (now playing with buttons, queue, skip, back, pause, volume, shuffle, remove, autoplay).
+- Typed commands too: `/play` (with suggestions while you type), `/music` (now playing with buttons, queue, skip, back, pause, volume, shuffle, remove, autoplay), and the same with `!` (`!play`, `!skip`, `!np`, `!join`). Asked from another voice channel, she comes to yours.
 - Music quiz: "start a music quiz", "guess the song, 90s hip hop". Short clips, anyone in the call answers, she keeps score.
 
 **Sounds**

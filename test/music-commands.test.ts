@@ -3,7 +3,7 @@ import { PassThrough } from 'node:stream';
 import { Events } from 'discord.js';
 import { describe, expect, it, vi } from 'vitest';
 import type { PlaybackHandle } from '../src/core/interfaces.js';
-import { buttons, MUSIC_COMMANDS, nowCard, playedText, queueCard, registerMusicCommands, safe, suggestions, trackLine } from '../src/app/music-commands.js';
+import { buttons, MUSIC_COMMANDS, nowCard, parseTextCommand, playedText, queueCard, registerMusicCommands, safe, suggestions, textHelp, trackLine } from '../src/app/music-commands.js';
 import type { Seat, VoiceSpot } from '../src/app/commands.js';
 import { MusicPlayer, type MusicOutput, type MusicSource, type Track } from '../src/features/music.js';
 import { MusicTaste } from '../src/features/taste.js';
@@ -172,7 +172,10 @@ function rig(o: { spot?: VoiceSpot; seat?: Seat; owners?: string[]; limited?: bo
     current: () => spot,
     voiceReady: () => o.ready ?? true,
     seat,
+    mayLeave: () => undefined,
     moveTo,
+    leave: async () => undefined,
+    prefix: '!',
     isOwner: (id) => (o.owners ?? []).includes(id),
     allow: () => (o.limited ? "You've asked for a lot in the last hour. Give it a bit." : undefined),
     nameOf: (id) => (id === USER ? 'Sam' : id === OWNER ? 'Rique' : 'Alex'),
@@ -446,5 +449,189 @@ describe('the review fixes', () => {
     await r.send('slash', 'play', { query: 'one' });
     await r.send('button', 'music:pause', { privateCard: true });
     expect(r.out.map((m) => m.content)).toContain('⏸ Sam paused the music.');
+  });
+});
+
+describe('typed commands', () => {
+  const BOT = '100000000000000040';
+  const parse = (s: string, prefix = '!') => parseTextCommand(s, prefix, BOT);
+
+  it('reads plays, with or without an @mention of her first', () => {
+    expect(parse('!play Get Lucky')).toEqual({ kind: 'play', query: 'Get Lucky', type: 'auto', mode: 'now' });
+    expect(parse(`<@${BOT}> !p get lucky`)).toMatchObject({ kind: 'play', query: 'get lucky' });
+    expect(parse(`<@!${BOT}>!PLAY x`)).toMatchObject({ kind: 'play', query: 'x' });
+    expect(parse('!playnext Humble')).toMatchObject({ mode: 'queue', query: 'Humble' });
+    expect(parse('!queue Humble')).toMatchObject({ kind: 'play', mode: 'queue' });
+    expect(parse('!album Graduation')).toMatchObject({ type: 'album', query: 'Graduation' });
+    expect(parse('!plex Thriller')).toMatchObject({ source: 'plex' });
+    expect(parse('!similar')).toMatchObject({ type: 'similar', query: '' });
+    expect(parse('!favorites')).toMatchObject({ type: 'favorites' });
+  });
+
+  it('reads controls and their numbers', () => {
+    expect(parse('!play')).toEqual({ kind: 'music', sub: 'resume' });
+    expect(parse('!queue')).toEqual({ kind: 'music', sub: 'queue' });
+    expect(parse('!q 2')).toEqual({ kind: 'music', sub: 'queue', n: 2 });
+    expect(parse('!skip')).toEqual({ kind: 'music', sub: 'skip' });
+    expect(parse('!s 3')).toEqual({ kind: 'music', sub: 'skip', n: 3 });
+    expect(parse('!vol 30')).toEqual({ kind: 'music', sub: 'volume', n: 30 });
+    expect(parse('!volume')).toEqual({ kind: 'music', sub: 'volume' });
+    expect(parse('!autoplay off')).toEqual({ kind: 'music', sub: 'autoplay', on: false });
+    expect(parse('!autoplay')).toEqual({ kind: 'music', sub: 'autoplay' });
+    expect(parse('!remove 2')).toEqual({ kind: 'music', sub: 'remove', n: 2 });
+    expect(parse('!np')).toEqual({ kind: 'music', sub: 'now' });
+    expect(parse('!join')).toEqual({ kind: 'join' });
+    expect(parse('!dc')).toEqual({ kind: 'leave' });
+    expect(parse(`<@${BOT}> !help`)).toEqual({ kind: 'help' });
+  });
+
+  it("leaves everything else alone: other bots' commands, chat, odd arguments, someone else's mention", () => {
+    // Other bots answer !help too, and her words with more after them aren't hers.
+    for (const s of ['!help', '!leave me alone', '!clear 50', '!stop the count', '!remove x', '!np pls', '!roll d20', 'play Get Lucky', 'hey !play x', '!vol loud', '!skip the intro', '!autoplay maybe', '!', '!constructor', '!toString x', '<@100000000000000099> !play x']) expect(parse(s)).toBeUndefined();
+    expect(parse('!play x', '')).toBeUndefined();
+    expect(parse('?play x', '?')).toMatchObject({ kind: 'play' });
+  });
+
+  it('lists the commands with the prefix in use', () => {
+    expect(textHelp('?')).toContain('`?play <song, artist or link>`');
+  });
+});
+
+/** Typed commands against a fake client. */
+function textRig(o: { spot?: VoiceSpot; seat?: Seat; owners?: string[]; leaveRefused?: string; ready?: boolean; noHistory?: boolean } = {}) {
+  const { p } = player();
+  const client = Object.assign(new EventEmitter(), { user: { id: '100000000000000040' } });
+  let spot = o.spot;
+  const moveTo = vi.fn(async (s: VoiceSpot) => {
+    p.stop();
+    spot = s;
+  });
+  const leave = vi.fn(async () => {
+    p.stop();
+    spot = undefined;
+  });
+  const seat = vi.fn(() => o.seat ?? ({ refused: 'Join a voice channel first, then use !play.' } as Seat));
+  const cmds = registerMusicCommands({
+    client: client as never,
+    log: quietLog as never,
+    player: () => p,
+    current: () => spot,
+    voiceReady: () => o.ready ?? true,
+    seat,
+    mayLeave: () => o.leaveRefused,
+    moveTo,
+    leave,
+    isOwner: (id) => (o.owners ?? []).includes(id),
+    allow: () => undefined,
+    nameOf: (id) => (id === USER ? 'Sam' : id === OWNER ? 'Rique' : 'Alex'),
+    prefix: '!',
+  });
+  const replies: { content?: string; embeds?: unknown[]; components?: unknown[] }[] = [];
+  /** A message from `user`, who is in voice channel `from` (null: not in voice). */
+  const say = async (content: string, user = USER, from: string | null = CALL) => {
+    replies.length = 0;
+    const m = {
+      content,
+      author: { id: user, bot: false },
+      system: false,
+      guildId: GUILD,
+      inGuild: () => true,
+      guild: { voiceStates: { cache: new Map(from ? [[user, { channelId: from }]] : []) } },
+      channel: { sendTyping: async () => undefined },
+      reply: async (r: { content?: string }) => {
+        if (o.noHistory) throw new Error('Missing Permissions');
+        replies.push(r);
+      },
+    };
+    (m.channel as Record<string, unknown>).send = async (r: { content?: string }) => void replies.push({ ...r, plain: true } as never);
+    const mine = cmds.isCommand(m as never);
+    client.emit(Events.MessageCreate, m);
+    if (mine) await vi.waitFor(() => expect(replies.length).toBeGreaterThan(0));
+    await flush();
+    return { mine, reply: replies.at(-1) };
+  };
+  return { p, say, seat, moveTo, leave, spot: () => spot };
+}
+
+describe('typed commands in a server', () => {
+  it('play for someone in her call, with the card', async () => {
+    const r = textRig({ spot: at(CALL) });
+    const { mine, reply } = await r.say('!play one');
+    expect(mine).toBe(true);
+    expect(reply?.content).toContain('▶ Sam started **one**');
+    expect(reply?.embeds).toHaveLength(1);
+    expect(r.p.nowPlaying?.title).toBe('one');
+  });
+
+  it("join the asker's call when she's free", async () => {
+    const r = textRig({ spot: at(CALL), seat: { move: at(ELSEWHERE), channel: {} as never } });
+    await r.say('!play one', FRIEND, ELSEWHERE);
+    expect(r.moveTo).toHaveBeenCalledWith(at(ELSEWHERE));
+    expect(r.spot()).toEqual(at(ELSEWHERE));
+    expect(r.p.nowPlaying?.title).toBe('one');
+  });
+
+  it("go to an owner's call too, not only play into hers", async () => {
+    const r = textRig({ spot: at(CALL), owners: [OWNER], seat: { move: at(ELSEWHERE), channel: {} as never } });
+    await r.say('!play one', OWNER, ELSEWHERE);
+    expect(r.seat).toHaveBeenCalledOnce();
+    expect(r.spot()).toEqual(at(ELSEWHERE));
+  });
+
+  it('play into her call for an owner who is in no call', async () => {
+    const r = textRig({ spot: at(CALL), owners: [OWNER] });
+    await r.say('!play one', OWNER, null);
+    expect(r.seat).not.toHaveBeenCalled();
+    expect(r.p.nowPlaying?.title).toBe('one');
+  });
+
+  it("say why when she can't come", async () => {
+    const r = textRig({ spot: at(CALL), seat: { refused: "I'm in another channel here right now. Try again when that call is over." } });
+    expect((await r.say('!play one', FRIEND, ELSEWHERE)).reply?.content).toContain('another channel');
+    expect(r.p.nowPlaying).toBeUndefined();
+  });
+
+  it('control the music only from her call', async () => {
+    const r = textRig({ spot: at(CALL) });
+    await r.say('!play one');
+    await r.say('!add two');
+    expect((await r.say('!skip', FRIEND, ELSEWHERE)).reply?.content).toBe('Join my voice channel to change the music.');
+    expect((await r.say('!skip')).reply?.content).toContain('⏭ Sam skipped');
+    expect(r.p.nowPlaying?.title).toBe('two');
+    expect((await r.say('!q', FRIEND, null)).reply?.embeds).toHaveLength(1);
+    expect((await r.say('!remove')).reply?.content).toContain('Which one?');
+    expect((await r.say('!pause')).reply?.content).toBe('⏸ Sam paused the music.');
+    expect((await r.say('!play')).reply?.content).toBe('▶ Sam resumed the music.');
+  });
+
+  it('join and leave', async () => {
+    const r = textRig({ seat: { move: at(ELSEWHERE), channel: { name: 'gaming' } as never } });
+    expect((await r.say('!join', USER, ELSEWHERE)).reply?.content).toContain('Joined gaming');
+    expect((await r.say('!leave', USER, ELSEWHERE)).reply?.content).toContain('Left the voice channel');
+    expect(r.leave).toHaveBeenCalledOnce();
+    const busy = textRig({ spot: at(CALL), leaveRefused: "I'm in a call with other people right now. Try again when it's over." });
+    expect((await busy.say('!leave', FRIEND, null)).reply?.content).toContain('other people');
+    expect(busy.leave).not.toHaveBeenCalled();
+  });
+
+  it("answer with a plain message where she can't reply, and never say it failed after it worked", async () => {
+    const r = textRig({ spot: at(CALL), noHistory: true });
+    const { reply } = await r.say('!play one');
+    expect(reply).toMatchObject({ plain: true });
+    expect(reply?.content).toContain('started');
+    expect(r.p.nowPlaying?.title).toBe('one');
+  });
+
+  it('play for an owner in no call while the link is being rebuilt', async () => {
+    const r = textRig({ spot: at(CALL), owners: [OWNER], ready: false });
+    await r.say('!play one', OWNER, null);
+    expect(r.seat).not.toHaveBeenCalled();
+    expect(r.p.nowPlaying?.title).toBe('one');
+  });
+
+  it("don't answer what isn't hers", async () => {
+    const r = textRig({ spot: at(CALL) });
+    expect((await r.say('!roll d20')).mine).toBe(false);
+    expect((await r.say('hello')).mine).toBe(false);
   });
 });

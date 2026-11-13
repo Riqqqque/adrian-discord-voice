@@ -5,6 +5,7 @@
 
 import {
   ApplicationIntegrationType,
+  type Guild,
   type ChatInputCommandInteraction,
   type Client,
   Events,
@@ -34,6 +35,15 @@ export interface CommandDeps {
   allowedGuilds?: readonly string[];
   /** More slash commands to register with these (Discord replaces the whole set at once). */
   extraCommands?: readonly object[];
+  /** Owners besides the app's owner: they may pull her out of a call too. */
+  isOwner?(userId: string): boolean;
+}
+
+/** Who asks, where: a slash command or a message in a server. */
+export interface Asking {
+  guildId: string;
+  guild: Guild;
+  user: { id: string };
 }
 
 /** Where someone's command would take her: refused (and why), already in
@@ -59,7 +69,15 @@ export function humansIn(ch: VoiceBasedChannel | null | undefined, except?: stri
   return ch.members.filter((m) => !m.user.bot && m.id !== except).size;
 }
 
-export function registerVoiceCommands(d: CommandDeps): { ownerId(): string | undefined; seat(i: ChatInputCommandInteraction<'cached'>, verb: string): Seat } {
+export interface VoiceCommands {
+  ownerId(): string | undefined;
+  /** Where a command from `i` would take her (/join's rules). */
+  seat(i: Asking, verb: string): Seat;
+  /** Why `i` can't take her out of voice in this server, if they can't (/leave's rules). */
+  mayLeave(i: Asking): string | undefined;
+}
+
+export function registerVoiceCommands(d: CommandDeps): VoiceCommands {
   const { client, log } = d;
   let ownerId: string | undefined;
 
@@ -91,10 +109,10 @@ export function registerVoiceCommands(d: CommandDeps): { ownerId(): string | und
   /** People in the call she'd be pulled out of, leaving out `userId`. She stays
    *  through a drop, but a spot with no call behind it protects nobody. */
   const peopleAt = (s: VoiceSpot, userId: string) =>
-    userId !== ownerId && ((d.voiceReady?.() ?? true) || seatedIn(s)) ? humansIn(client.channels.cache.get(s.channelId) as VoiceBasedChannel | undefined, userId) : 0;
+    userId !== ownerId && !d.isOwner?.(userId) && ((d.voiceReady?.() ?? true) || seatedIn(s)) ? humansIn(client.channels.cache.get(s.channelId) as VoiceBasedChannel | undefined, userId) : 0;
 
   /** The checks /join makes, for any command that brings her into the caller's call. */
-  function seat(i: ChatInputCommandInteraction<'cached'>, verb: string): Seat {
+  function seat(i: Asking, verb: string): Seat {
     if (d.allowedGuilds?.length && !d.allowedGuilds.includes(i.guildId)) return { refused: "I'm not set up to join calls in this server." };
     const ch = i.guild.voiceStates.cache.get(i.user.id)?.channel;
     if (!ch) return { refused: `Join a voice channel first, then use ${verb}.` };
@@ -129,14 +147,17 @@ export function registerVoiceCommands(d: CommandDeps): { ownerId(): string | und
     await i.editReply(`Joined ${s.channel.name}. Say "Hey Adrian" and ask me anything.`);
   }
 
-  async function leave(i: ChatInputCommandInteraction<'cached'>): Promise<void> {
+  function mayLeave(i: Asking): string | undefined {
     const cur = d.current();
-    if (!cur || cur.guildId !== i.guildId) {
-      await i.reply({ content: "I'm not in a voice channel in this server.", flags: MessageFlags.Ephemeral });
-      return;
-    }
-    if (i.guild.voiceStates.cache.get(i.user.id)?.channel?.id !== cur.channelId && peopleAt(cur, i.user.id) > 0) {
-      await i.reply({ content: "I'm in a call with other people right now. Try again when it's over.", flags: MessageFlags.Ephemeral });
+    if (!cur || cur.guildId !== i.guildId) return "I'm not in a voice channel in this server.";
+    if (i.guild.voiceStates.cache.get(i.user.id)?.channel?.id !== cur.channelId && peopleAt(cur, i.user.id) > 0) return "I'm in a call with other people right now. Try again when it's over.";
+    return undefined;
+  }
+
+  async function leave(i: ChatInputCommandInteraction<'cached'>): Promise<void> {
+    const no = mayLeave(i);
+    if (no) {
+      await i.reply({ content: no, flags: MessageFlags.Ephemeral });
       return;
     }
     log.info('leave requested', { user: i.user.id, guildId: i.guildId });
@@ -145,5 +166,5 @@ export function registerVoiceCommands(d: CommandDeps): { ownerId(): string | und
     await i.editReply('Left the voice channel. Use /join to bring me back.');
   }
 
-  return { ownerId: () => ownerId, seat };
+  return { ownerId: () => ownerId, seat, mayLeave };
 }

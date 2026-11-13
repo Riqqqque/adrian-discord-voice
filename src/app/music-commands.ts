@@ -1,8 +1,11 @@
-// Music slash commands: /play and /music (now, queue, skip, back, pause,
-// resume, stop, volume, shuffle, clear, remove, autoplay, who), plus buttons
-// on the now-playing card. They drive the same player as "Hey Adrian, play ...":
-// the Discord call's. Changing the music takes being in her call (owners may
-// from anywhere); looking at it only takes being in that server.
+// Music commands: /play and /music (now, queue, skip, back, pause, resume,
+// stop, volume, shuffle, clear, remove, autoplay, who), the same typed with a
+// prefix ("!play x", or "@A.D.R.I.A.N. !play x" without the Message Content
+// intent), !join and !leave, and buttons on the now-playing card. They drive
+// the same player as "Hey Adrian, play ...": the Discord call's. Playing from a
+// voice channel she isn't in brings her there (by /join's rules). Changing the
+// music takes being in her call (owners may from anywhere); looking at it only
+// takes being in that server.
 
 import {
   ActionRowBuilder,
@@ -17,6 +20,7 @@ import {
   escapeMarkdown,
   Events,
   InteractionContextType,
+  type Message,
   MessageFlags,
   SlashCommandBuilder,
 } from 'discord.js';
@@ -24,7 +28,7 @@ import type { Logger } from '../core/interfaces.js';
 import { describe as trackName, type MusicPlayer, type RequestKind, type RequestResult, type Track } from '../features/music.js';
 import { parseMediaLink } from '../features/links.js';
 import type { MusicTaste } from '../features/taste.js';
-import type { Seat, VoiceSpot } from './commands.js';
+import type { Asking, Seat, VoiceSpot } from './commands.js';
 
 /** What /play's type option offers; auto lets her work it out like a spoken "play X". */
 export const PLAY_TYPES = [
@@ -104,9 +108,12 @@ export interface MusicCommandDeps {
   player(): MusicPlayer | undefined;
   /** Where she is now. */
   current(): VoiceSpot | undefined;
-  /** /join's checks, for /play from someone she isn't with yet. */
-  seat(i: ChatInputCommandInteraction<'cached'>, verb: string): Seat;
+  /** /join's checks, for a play from someone she isn't with yet. */
+  seat(i: Asking, verb: string): Seat;
+  /** /leave's checks, for !leave. */
+  mayLeave(i: Asking): string | undefined;
   moveTo(spot: VoiceSpot): Promise<void>;
+  leave(): Promise<void>;
   isOwner(userId: string): boolean;
   /** The voice link works right now. */
   voiceReady(): boolean;
@@ -117,12 +124,15 @@ export interface MusicCommandDeps {
   taste?: MusicTaste;
   /** Someone's request started the music (the PC handoff wants to know whose it is). */
   started?(userId: string): void;
+  /** What starts a typed command ("!play x"); empty: typed commands are off. */
+  prefix: string;
+  /** Servers where commands work; empty: any. */
+  allowedGuilds?: readonly string[];
 }
 
 const NO_MUSIC = "Music isn't set up on this bot.";
-const NOT_HERE = "I'm not in a voice call in this server. Use /play from a voice channel and I'll join.";
 const JOIN_ME = 'Join my voice channel to change the music.';
-/** How long a /play may look things up (an album or podcast takes 5-8 s). */
+/** How long a play may look things up (an album or podcast takes 5-8 s). */
 const PLAY_TIMEOUT_MS = 60_000;
 const PAGE = 10;
 
@@ -229,8 +239,168 @@ export function suggestions(typed: string, recent: readonly Track[], taste: Musi
   return out;
 }
 
-export function registerMusicCommands(d: MusicCommandDeps): void {
+// --- typed commands ("!play x") ------------------------------------------------
+
+type Sub = 'now' | 'queue' | 'skip' | 'back' | 'pause' | 'resume' | 'stop' | 'volume' | 'shuffle' | 'clear' | 'remove' | 'autoplay' | 'who';
+
+/** A typed command, as read from a message. */
+export type TextCommand =
+  | { kind: 'play'; query: string; type: PlayType; mode: 'now' | 'queue'; source?: Track['source'] }
+  | { kind: 'music'; sub: Sub; n?: number; on?: boolean }
+  | { kind: 'join' }
+  | { kind: 'leave' }
+  | { kind: 'help' };
+
+/** A whole number from what follows a command, or undefined. */
+const num = (s: string): number | undefined => (/^\d{1,4}$/.test(s) ? Number(s) : undefined);
+const play = (query: string, type: PlayType = 'auto', mode: 'now' | 'queue' = 'now', source?: Track['source']): TextCommand => ({ kind: 'play', query, type, mode, ...(source ? { source } : {}) });
+const music = (sub: Sub, extra: { n?: number | undefined; on?: boolean } = {}): TextCommand => ({ kind: 'music', sub, ...(extra.n === undefined ? {} : { n: extra.n }), ...(extra.on === undefined ? {} : { on: extra.on }) });
+
+/** Each command word and what it does with the rest of the message. */
+const WORDS: Record<string, (rest: string) => TextCommand | undefined> = {};
+const word = (names: string[], f: (rest: string) => TextCommand | undefined) => names.forEach((n) => (WORDS[n] = f));
+/** A command that takes nothing: with more after it ("!leave me alone", a mod
+ *  bot's "!clear 50") it isn't hers. */
+const bare = (c: TextCommand) => (r: string) => (r ? undefined : c);
+/** Words other bots use too ("!help"): only hers after an @mention of her. */
+const NEEDS_MENTION = new Set(['help', 'commands', 'music']);
+// "!play" alone carries on with what's paused, as most music bots do.
+word(['play', 'p'], (r) => (r ? play(r) : music('resume')));
+word(['playnext', 'pn', 'add'], (r) => (r ? play(r, 'auto', 'queue') : undefined));
+// "!queue" shows it, "!queue 2" its second page, "!queue x" adds x.
+word(['queue', 'q'], (r) => (!r ? music('queue') : num(r) !== undefined && num(r)! <= 10 ? music('queue', { n: num(r) }) : play(r, 'auto', 'queue')));
+word(['plex'], (r) => (r ? play(r, 'auto', 'now', 'plex') : undefined));
+for (const t of ['song', 'artist', 'album', 'playlist', 'podcast', 'video'] as const) word([t], (r) => (r ? play(r, t) : undefined));
+word(['vibe', 'mood'], (r) => (r ? play(r, 'vibe') : undefined));
+word(['similar', 'radio', 'more'], (r) => play(r, 'similar'));
+word(['favorites', 'favourites', 'favs', 'mine'], bare(play('', 'favorites')));
+word(['hers'], bare(play('', 'hers')));
+word(['skip', 's', 'next', 'fs'], (r) => (r && num(r) === undefined ? undefined : music('skip', { n: num(r) })));
+word(['back', 'prev', 'previous'], bare(music('back')));
+word(['pause'], bare(music('pause')));
+word(['resume', 'unpause', 'continue'], bare(music('resume')));
+word(['stop'], bare(music('stop')));
+word(['np', 'now', 'nowplaying', 'playing'], bare(music('now')));
+word(['volume', 'vol', 'v'], (r) => (r && num(r) === undefined ? undefined : music('volume', { n: num(r) })));
+word(['shuffle'], bare(music('shuffle')));
+word(['clear'], bare(music('clear')));
+word(['remove', 'rm'], (r) => (r && num(r) === undefined ? undefined : music('remove', { n: num(r) })));
+word(['autoplay'], (r) => {
+  const on = /^(on|yes|true)$/i.test(r) ? true : /^(off|no|false)$/i.test(r) ? false : undefined;
+  return r && on === undefined ? undefined : music('autoplay', { ...(on === undefined ? {} : { on }) });
+});
+word(['who'], bare(music('who')));
+word(['join', 'summon', 'come'], bare({ kind: 'join' }));
+word(['leave', 'dc', 'disconnect'], bare({ kind: 'leave' }));
+word(['help', 'commands', 'music'], bare({ kind: 'help' }));
+
+/** "!play x" or "@A.D.R.I.A.N. !play x": what it asks for, or undefined if it isn't a command of hers. */
+export function parseTextCommand(content: string, prefix: string, botId: string): TextCommand | undefined {
+  if (!prefix) return undefined;
+  let t = content.trim();
+  const at = /^<@!?(\d+)>\s*/.exec(t);
+  const mentioned = at?.[1] === botId;
+  if (mentioned) t = t.slice(at![0].length);
+  if (!t.startsWith(prefix)) return undefined;
+  const m = /^(\S+)\s*([\s\S]*)$/.exec(t.slice(prefix.length));
+  if (!m) return undefined;
+  const w = m[1]!.toLowerCase();
+  if (!Object.hasOwn(WORDS, w) || (NEEDS_MENTION.has(w) && !mentioned)) return undefined;
+  return WORDS[w]!(m[2]!.trim().slice(0, 500));
+}
+
+/** What "!help" lists. */
+export function textHelp(prefix: string): string {
+  const c = (s: string) => `\`${prefix}${s}\``;
+  return [
+    '**Music commands** (`/play` and `/music` do the same):',
+    `${c('play <song, artist or link>')} plays it now; ${c('play')} alone resumes. ${c('queue <song>')} or ${c('playnext <song>')} adds it after what's queued.`,
+    `${c('album')}, ${c('playlist')}, ${c('artist')}, ${c('podcast')}, ${c('vibe')}, ${c('video')} say what it is. ${c('similar')} plays songs like this one, ${c('favorites')} plays what you like, ${c('plex <song>')} looks in Plex.`,
+    `${c('skip [n]')}, ${c('back')}, ${c('pause')}, ${c('resume')}, ${c('stop')}, ${c('np')}, ${c('queue')}, ${c('volume [5-100]')}, ${c('shuffle')}, ${c('clear')}, ${c('remove <n>')}, ${c('autoplay on|off')}, ${c('who')}.`,
+    `${c('join')} brings me to your voice channel, ${c('leave')} takes me out. Playing something from a voice channel I'm not in brings me there too.`,
+  ].join('\n');
+}
+
+// --- answering, the same way for slash commands and typed ones ------------------
+
+type Out = { content?: string; embeds?: EmbedBuilder[]; components?: ActionRowBuilder<ButtonBuilder>[] };
+
+/** Who asked, where, and how to answer them. */
+interface Asker extends Asking {
+  /** Their voice channel in this server, if they're in one. */
+  channelId: string | undefined;
+  /** How a command is written here: "/play" or "!play". */
+  verb(command: string): string;
+  /** Slow work ahead (a lookup, a move): acknowledge it now. */
+  hold(): Promise<void>;
+  /** For everyone in the channel. */
+  say(o: Out): Promise<void>;
+  /** For them alone where that's possible (a slash command), else a reply to them. */
+  only(text: string): Promise<void>;
+  /** A card or list for them (alone where possible). */
+  view(o: Out): Promise<void>;
+}
+
+const quiet = { allowedMentions: { parse: [] as never[], repliedUser: false } };
+const secret = (content: string) => ({ content, flags: MessageFlags.Ephemeral, ...quiet }) as const;
+
+function slashAsker(i: ChatInputCommandInteraction<'cached'>): Asker {
+  let held = false;
+  return {
+    guildId: i.guildId,
+    guild: i.guild,
+    user: i.user,
+    channelId: i.guild.voiceStates.cache.get(i.user.id)?.channelId ?? undefined,
+    verb: (c) => `/${c}`,
+    hold: async () => {
+      if (!i.deferred && !i.replied) await i.deferReply();
+      held = true;
+    },
+    say: async (o) => void (held ? await i.editReply({ content: o.content ?? '', embeds: o.embeds ?? [], components: o.components ?? [], ...quiet }) : await i.reply({ ...o, ...quiet })),
+    only: async (t) => {
+      if (!held) return void (await i.reply(secret(t)));
+      // The deferred reply is public: drop it and answer them alone.
+      await i.deleteReply().catch(() => undefined);
+      await i.followUp(secret(t));
+    },
+    view: async (o) => void (await i.reply({ ...o, flags: MessageFlags.Ephemeral, ...quiet })),
+  };
+}
+
+function textAsker(m: Message<true>, prefix: string, log: Logger): Asker {
+  // A reply needs Read Message History and the message still there: without
+  // them, a plain message in the channel. Never throws, so a done action is
+  // never followed by "that didn't work".
+  const reply = async (o: Out) => {
+    try {
+      await m.reply({ ...o, ...quiet });
+    } catch (e) {
+      try {
+        if (!('send' in m.channel)) throw e;
+        await m.channel.send({ ...o, allowedMentions: { parse: [] } });
+      } catch (e2) {
+        log.warn('music reply failed', { error: (e2 as Error).message });
+      }
+    }
+  };
+  return {
+    guildId: m.guildId,
+    guild: m.guild,
+    user: m.author,
+    channelId: m.guild.voiceStates.cache.get(m.author.id)?.channelId ?? undefined,
+    verb: (c) => `${prefix}${c}`,
+    hold: async () => {
+      if ('sendTyping' in m.channel) await m.channel.sendTyping().catch(() => undefined);
+    },
+    say: reply,
+    only: (t) => reply({ content: t }),
+    view: reply,
+  };
+}
+
+export function registerMusicCommands(d: MusicCommandDeps): { isCommand(m: Message): boolean } {
   const { client, log } = d;
+  const allowedHere = (guildId: string) => !d.allowedGuilds?.length || d.allowedGuilds.includes(guildId);
 
   client.on(Events.InteractionCreate, (i) => {
     // Only music's own: /join, /leave and anything else are someone else's.
@@ -243,8 +413,8 @@ export function registerMusicCommands(d: MusicCommandDeps): void {
       return;
     }
     let run: Promise<void> | undefined;
-    if (i.isChatInputCommand() && i.commandName === 'play') run = play(i);
-    else if (i.isChatInputCommand() && i.commandName === 'music') run = music(i);
+    if (i.isChatInputCommand() && i.commandName === 'play') run = slashPlay(i);
+    else if (i.isChatInputCommand() && i.commandName === 'music') run = slashMusic(i);
     else if (i.isButton() && i.customId.startsWith('music:')) run = button(i);
     run?.catch(async (e: unknown) => {
       log.warn('music command failed', { error: (e as Error).message });
@@ -254,28 +424,36 @@ export function registerMusicCommands(d: MusicCommandDeps): void {
     });
   });
 
-  const quiet = { allowedMentions: { parse: [] as never[] } };
-  const secret = (content: string) => ({ content, flags: MessageFlags.Ephemeral, ...quiet }) as const;
+  /** A typed command in a server message, if this is one. */
+  const typed = (m: Message): TextCommand | undefined =>
+    m.guildId && m.guild && !m.author?.bot && !m.system && client.user && allowedHere(m.guildId) ? parseTextCommand(m.content ?? '', d.prefix, client.user.id) : undefined;
 
-  /** The voice channel this person is in, in this server. */
-  const channelOf = (i: { guild: { voiceStates: { cache: Map<string, { channelId: string | null }> } }; user: { id: string } }) =>
-    i.guild.voiceStates.cache.get(i.user.id)?.channelId ?? undefined;
+  client.on(Events.MessageCreate, (m) => {
+    const c = typed(m);
+    if (!c) return;
+    const a = textAsker(m as Message<true>, d.prefix, log);
+    run(c, a).catch(async (e: unknown) => {
+      log.warn('music command failed', { error: (e as Error).message, via: 'text' });
+      await a.say({ content: "Sorry, that didn't work. Try again in a moment." }).catch(() => undefined);
+    });
+  });
 
   /** Why this person can't change the music right now, if they can't. */
-  function refusal(i: ChatInputCommandInteraction<'cached'> | ButtonInteraction<'cached'>): string | undefined {
+  function refusal(a: { guildId: string; userId: string; channelId: string | undefined; verb(c: string): string }): string | undefined {
     if (!d.player()) return NO_MUSIC;
     const cur = d.current();
-    if (!cur || cur.guildId !== i.guildId) return NOT_HERE;
-    if (!d.isOwner(i.user.id) && channelOf(i) !== cur.channelId) return JOIN_ME;
+    if (!cur || cur.guildId !== a.guildId) return notHere(a);
+    if (!d.isOwner(a.userId) && a.channelId !== cur.channelId) return JOIN_ME;
     return undefined;
   }
+  const notHere = (a: { verb(c: string): string }) => `I'm not in a voice call in this server. Use ${a.verb('play')} from a voice channel and I'll join.`;
 
   /** Looking at the music: anyone in the server she's in. */
-  function viewer(i: ChatInputCommandInteraction<'cached'> | ButtonInteraction<'cached'>): MusicPlayer | string {
+  function viewer(a: { guildId: string; verb(c: string): string }): MusicPlayer | string {
     const p = d.player();
     if (!p) return NO_MUSIC;
     const cur = d.current();
-    if (!cur || cur.guildId !== i.guildId) return NOT_HERE;
+    if (!cur || cur.guildId !== a.guildId) return notHere(a);
     return p;
   }
 
@@ -287,157 +465,192 @@ export function registerMusicCommands(d: MusicCommandDeps): void {
     await i.respond(list).catch(() => undefined);
   }
 
-  async function play(i: ChatInputCommandInteraction<'cached'>): Promise<void> {
-    const p = d.player();
-    if (!p) return void (await i.reply(secret(NO_MUSIC)));
-    const type = (i.options.getString('type') ?? 'auto') as PlayType;
-    const raw = (i.options.getString('query') ?? '').trim();
-    const mode = i.options.getBoolean('queue') ? 'queue' : 'now';
-    const source = (i.options.getString('source') ?? undefined) as Track['source'] | undefined;
-    const pasted = /^https?:\/\//i.test(raw) ? parseMediaLink(raw) : undefined;
-    if (/^https?:\/\//i.test(raw) && !pasted) return void (await i.reply(secret('I can play YouTube, YouTube Music, Spotify, SoundCloud and Bandcamp links.')));
-    if (!raw && !NO_QUERY.includes(type)) return void (await i.reply(secret('What should I play? Type a song, an artist, a mood or a link.')));
-    if ((type === 'favorites' || type === 'hers') && !d.taste) return void (await i.reply(secret("I don't keep track of music taste on this bot.")));
+  const slashPlay = (i: ChatInputCommandInteraction<'cached'>) =>
+    run(
+      play((i.options.getString('query') ?? '').trim(), (i.options.getString('type') ?? 'auto') as PlayType, i.options.getBoolean('queue') ? 'queue' : 'now', (i.options.getString('source') ?? undefined) as Track['source'] | undefined),
+      slashAsker(i),
+    );
 
-    // She plays where she is. Someone who isn't with her brings her over, by /join's rules.
+  const slashMusic = (i: ChatInputCommandInteraction<'cached'>) => {
+    const sub = i.options.getSubcommand() as Sub;
+    const n = i.options.getInteger(sub === 'skip' ? 'to' : sub === 'remove' ? 'position' : sub === 'queue' ? 'page' : 'level') ?? undefined;
+    const on = sub === 'autoplay' ? (i.options.getBoolean('on') ?? undefined) : undefined;
+    return run(music(sub, { n, ...(on === undefined ? {} : { on }) }), slashAsker(i));
+  };
+
+  /** One command, from either place. */
+  async function run(c: TextCommand, a: Asker): Promise<void> {
+    if (c.kind === 'play') return playFor(a, c);
+    if (c.kind === 'join') return joinFor(a);
+    if (c.kind === 'leave') return leaveFor(a);
+    if (c.kind === 'help') return a.say({ content: textHelp(d.prefix || '!') });
+    return musicFor(a, c.sub, c.n, c.on);
+  }
+
+  async function joinFor(a: Asker): Promise<void> {
+    const s = d.seat(a, a.verb('join'));
+    if ('refused' in s) return a.only(s.refused);
+    if ('here' in s) return a.only(`I'm already here. Say "Hey Adrian" to talk to me, or ${a.verb('play')} something.`);
+    await a.hold();
+    log.info('join requested', { user: a.user.id, guildId: a.guildId, channelId: s.channel.id, via: 'text' });
+    await d.moveTo(s.move);
+    await a.say({ content: `Joined ${safe(s.channel.name, 100)}. Say "Hey Adrian" and ask me anything.` });
+  }
+
+  async function leaveFor(a: Asker): Promise<void> {
+    const no = d.mayLeave(a);
+    if (no) return a.only(no);
+    log.info('leave requested', { user: a.user.id, guildId: a.guildId, via: 'text' });
+    await a.hold();
+    await d.leave();
+    await a.say({ content: `Left the voice channel. Use ${a.verb('join')} to bring me back.` });
+  }
+
+  async function playFor(a: Asker, c: Extract<TextCommand, { kind: 'play' }>): Promise<void> {
+    const p = d.player();
+    if (!p) return a.only(NO_MUSIC);
+    const { type, mode, source } = c;
+    const raw = c.query;
+    const pasted = /^https?:\/\//i.test(raw) ? parseMediaLink(raw) : undefined;
+    if (/^https?:\/\//i.test(raw) && !pasted) return a.only('I can play YouTube, YouTube Music, Spotify, SoundCloud and Bandcamp links.');
+    if (!raw && !NO_QUERY.includes(type)) return a.only('What should I play? Give a song, an artist, a mood or a link.');
+    if ((type === 'favorites' || type === 'hers') && !d.taste) return a.only("I don't keep track of music taste on this bot.");
+
+    // She plays in the asker's call: someone she isn't with brings her over, by
+    // /join's rules (she won't leave a call with other people in it, except for
+    // an owner). An owner who isn't in voice plays into her call as it is. A
+    // dropped link is rebuilt the way /join rebuilds it.
     const cur = d.current();
+    const userId = a.user.id;
+    const stay = !!cur && cur.guildId === a.guildId && ((a.channelId === cur.channelId && d.voiceReady()) || (!a.channelId && d.isOwner(userId)));
     let move: VoiceSpot | undefined;
-    // A dropped link is rebuilt the way /join rebuilds it.
-    const withHer = !!cur && cur.guildId === i.guildId && (channelOf(i) === cur.channelId || d.isOwner(i.user.id));
-    if (!withHer || (channelOf(i) === cur?.channelId && !d.voiceReady())) {
-      const s = d.seat(i, '/play');
-      if ('refused' in s) return void (await i.reply(secret(s.refused)));
+    if (!stay) {
+      const s = d.seat(a, a.verb('play'));
+      if ('refused' in s) return a.only(s.refused);
       if ('move' in s) move = s.move;
     }
-    if (p.lent) return void (await i.reply(secret(p.lent.reason)));
-    const limited = d.allow(i.user.id);
-    if (limited) return void (await i.reply(secret(limited)));
+    if (p.lent) return a.only(p.lent.reason);
+    const limited = d.allow(userId);
+    if (limited) return a.only(limited);
 
-    const by = d.nameOf(i.user.id);
+    const by = d.nameOf(userId);
     // The request starts now: a stop or /leave from here on calls it off. A move
     // stops the music first, so with one it starts once the move is under way.
     let asked = p.ask(by);
-    await i.deferReply();
+    await a.hold();
     if (move) {
-      log.info('join requested', { user: i.user.id, guildId: i.guildId, channelId: move.channelId, via: 'play' });
+      log.info('join requested', { user: userId, guildId: a.guildId, channelId: move.channelId, via: 'play' });
       const moving = d.moveTo(move);
       asked = p.ask(by);
       await moving;
     }
-    log.info('music command', { user: i.user.id, command: 'play', type, mode, ...(source ? { source } : {}) });
+    log.info('music command', { user: userId, command: 'play', type, mode, ...(source ? { source } : {}) });
     const signal = AbortSignal.timeout(PLAY_TIMEOUT_MS);
     let r: RequestResult;
     if (pasted) r = await p.request('link', pasted.url, mode, signal, undefined, asked);
     else if (type === 'favorites' || type === 'hers') {
-      const artists = type === 'hers' ? d.taste!.hers() : d.taste!.top(i.user.id);
+      const artists = type === 'hers' ? d.taste!.hers() : d.taste!.top(userId);
+      const artistCmd = a.verb('artist');
       r = artists.length
         ? await p.mix(artists, mode, signal, type === 'hers' ? 'music A.D.R.I.A.N. likes' : `music ${by} likes`, by, asked)
-        : { ok: false, message: type === 'hers' ? "I haven't picked any favorites yet. Try /play type:artist." : "I don't know what you like yet. Play a few artists first, or try /play type:artist." };
+        : { ok: false, message: type === 'hers' ? "I haven't picked any favorites yet. Ask for an artist instead." : `I don't know what you like yet. Play a few artists first${a.verb('x').startsWith('/') ? ', or try /play type:artist' : `, like ${artistCmd} Drake`}.` };
     } else if (type === 'auto') r = await p.playNamed(raw, mode, signal, source, by, asked);
     else r = await p.request(KINDS.includes(type as RequestKind) ? (type as RequestKind) : 'song', raw, mode, signal, source, asked);
 
     if (r.ok) {
       // What they ask to hear is what they like, as when they say it.
       const artist = type === 'artist' ? (r.artist ?? raw) : type === 'auto' ? (r.artist ?? (r.started ?? r.queuedAs?.track)?.artist) : type === 'song' || type === 'album' ? r.started?.artist : undefined;
-      if (artist && !pasted) d.taste?.played(i.user.id, artist);
-      if (r.started) d.started?.(i.user.id);
+      if (artist && !pasted) d.taste?.played(userId, artist);
+      if (r.started) d.started?.(userId);
     }
-    log.info('music command done', { user: i.user.id, ok: r.ok, started: r.ok && !!r.started });
-    // Didn't work: only they see why (the reason may repeat what they typed).
-    if (!r.ok) {
-      await i.deleteReply().catch(() => undefined);
-      await i.followUp(secret(r.message));
-      return;
-    }
+    log.info('music command done', { user: userId, ok: r.ok, started: r.ok && !!r.started });
+    // Didn't work: only they see why where possible (it may repeat what they typed).
+    if (!r.ok) return a.only(r.message);
     // The card when it started; a line when it was queued.
     const card = !!r.started && !!p.nowPlaying;
-    await i.editReply({ content: playedText(r, by), embeds: card ? [nowCard(p)] : [], components: card ? [buttons(p)] : [], ...quiet });
+    await a.say({ content: playedText(r, by), embeds: card ? [nowCard(p)] : [], components: card ? [buttons(p)] : [] });
   }
 
-  async function music(i: ChatInputCommandInteraction<'cached'>): Promise<void> {
-    const sub = i.options.getSubcommand();
-    if (sub === 'now' || sub === 'queue' || sub === 'who' || (sub === 'volume' && i.options.getInteger('level') === null)) {
-      const v = viewer(i);
-      if (typeof v === 'string') return void (await i.reply(secret(v)));
-      if (sub === 'now') return void (await i.reply({ embeds: [nowCard(v)], components: v.nowPlaying ? [buttons(v)] : [], flags: MessageFlags.Ephemeral, ...quiet }));
-      if (sub === 'queue') return void (await i.reply({ embeds: [queueCard(v, i.options.getInteger('page') ?? 1)], flags: MessageFlags.Ephemeral, ...quiet }));
-      if (sub === 'volume') return void (await i.reply(secret(`Music volume is ${pct(v.level)}.`)));
+  async function musicFor(a: Asker, sub: Sub, n?: number, on?: boolean): Promise<void> {
+    if (sub === 'now' || sub === 'queue' || sub === 'who' || (sub === 'volume' && n === undefined)) {
+      const v = viewer(a);
+      if (typeof v === 'string') return a.only(v);
+      if (sub === 'now') return a.view({ embeds: [nowCard(v)], components: v.nowPlaying ? [buttons(v)] : [] });
+      if (sub === 'queue') return a.view({ embeds: [queueCard(v, n ?? 1)] });
+      if (sub === 'volume') return a.only(`Music volume is ${pct(v.level)}.`);
       const t = v.nowPlaying;
-      return void (await i.reply(secret(v.lent ? 'A music quiz has the music.' : !t ? 'Nothing is playing.' : t.by ? `${safe(t.by, 60)} asked for ${trackLine(t)}.` : t.auto ? `Autoplay picked ${trackLine(t)}.` : `Nobody I know of asked for ${trackLine(t)}.`)));
+      return a.only(v.lent ? 'A music quiz has the music.' : !t ? 'Nothing is playing.' : t.by ? `${safe(t.by, 60)} asked for ${trackLine(t)}.` : t.auto ? `Autoplay picked ${trackLine(t)}.` : `Nobody I know of asked for ${trackLine(t)}.`);
     }
-    const no = refusal(i);
-    if (no) return void (await i.reply(secret(no)));
+    const no = refusal({ guildId: a.guildId, userId: a.user.id, channelId: a.channelId, verb: a.verb });
+    if (no) return a.only(no);
     const p = d.player()!;
-    const who = safe(d.nameOf(i.user.id), 60);
-    log.info('music command', { user: i.user.id, command: sub });
+    const who = safe(d.nameOf(a.user.id), 60);
+    log.info('music command', { user: a.user.id, command: sub });
     // A quiz has the music: skip and stop are its own, the volume is the clip's.
     if (p.lent && sub !== 'volume') {
-      if (sub === 'skip') return void (p.lent.skip(), await i.reply({ content: `⏭ ${who} skipped this round.`, ...quiet }));
-      if (sub === 'stop') return void (p.lent.stop(), await i.reply({ content: `⏹ ${who} stopped the quiz.`, ...quiet }));
-      return void (await i.reply(secret(p.lent.reason)));
+      if (sub === 'skip') return (p.lent.skip(), a.say({ content: `⏭ ${who} skipped this round.` }));
+      if (sub === 'stop') return (p.lent.stop(), a.say({ content: `⏹ ${who} stopped the quiz.` }));
+      return a.only(p.lent.reason);
     }
+    const noSong = (at: number) => `There's no song #${at} in the queue (${songs(p.upNext.length)} queued).`;
     switch (sub) {
       case 'skip': {
-        const to = i.options.getInteger('to');
-        if (!p.nowPlaying) return void (await i.reply(secret('Nothing is playing.')));
-        if (to !== null && to > Math.max(1, p.upNext.length)) return void (await i.reply(secret(`There's no song #${to} in the queue (${songs(p.upNext.length)} queued).`)));
-        await i.deferReply();
-        const n = to === null || to === 1 ? await p.skip() : await p.skipTo(to);
-        if (n === 'none') return void (await i.editReply({ content: `There's no song #${to} in the queue (${songs(p.upNext.length)} queued).`, ...quiet }));
-        if (n === false) return void (await i.editReply({ content: 'Nothing is playing.', ...quiet }));
-        if (!n) return void (await i.editReply({ content: p.youtubePaused ? "⏭ Skipped. I can't reach YouTube right now." : `⏭ ${who} skipped. Nothing else is queued.`, ...quiet }));
-        return void (await i.editReply({ content: `⏭ ${who} skipped${to && to > 1 ? ` to #${to}` : ''}.`, embeds: [nowCard(p)], components: [buttons(p)], ...quiet }));
+        if (!p.nowPlaying) return a.only('Nothing is playing.');
+        if (n !== undefined && n > Math.max(1, p.upNext.length)) return a.only(noSong(n));
+        await a.hold();
+        const next = n === undefined || n <= 1 ? await p.skip() : await p.skipTo(n);
+        if (next === 'none') return a.only(noSong(n!));
+        if (next === false) return a.only('Nothing is playing.');
+        if (!next) return a.say({ content: p.youtubePaused ? "⏭ Skipped. I can't reach YouTube right now." : `⏭ ${who} skipped. Nothing else is queued.` });
+        return a.say({ content: `⏭ ${who} skipped${n && n > 1 ? ` to #${n}` : ''}.`, embeds: [nowCard(p)], components: [buttons(p)] });
       }
       case 'back': {
-        if (!p.recent.some((t) => t !== p.nowPlaying)) return void (await i.reply(secret('Nothing played before this one.')));
-        await i.deferReply();
+        if (!p.recent.some((t) => t !== p.nowPlaying)) return a.only('Nothing played before this one.');
+        await a.hold();
         const b = await p.back();
-        if (b === false) return void (await i.editReply({ content: 'Nothing played before this one.', ...quiet }));
-        if (!b) return void (await i.editReply({ content: "I couldn't play that one again.", ...quiet }));
-        return void (await i.editReply({ content: `⏮ ${who} went back.`, embeds: [nowCard(p)], components: [buttons(p)], ...quiet }));
+        if (b === false) return a.only('Nothing played before this one.');
+        if (!b) return a.only("I couldn't play that one again.");
+        return a.say({ content: `⏮ ${who} went back.`, embeds: [nowCard(p)], components: [buttons(p)] });
       }
       case 'pause':
-        return void (await i.reply(p.pause() ? { content: `⏸ ${who} paused the music.`, ...quiet } : secret(p.paused ? "It's already paused." : 'Nothing is playing.')));
+        return p.pause() ? a.say({ content: `⏸ ${who} paused the music.` }) : a.only(p.paused ? "It's already paused." : 'Nothing is playing.');
       case 'resume':
-        return void (await i.reply(p.resume() ? { content: `▶ ${who} resumed the music.`, ...quiet } : secret(p.nowPlaying ? "It's already playing." : 'Nothing is paused.')));
+        return p.resume() ? a.say({ content: `▶ ${who} resumed the music.` }) : a.only(p.nowPlaying ? "It's already playing." : 'Nothing is paused.');
       case 'stop':
-        return void (await i.reply(p.stop() ? { content: `⏹ ${who} stopped the music.`, ...quiet } : secret('Nothing is playing.')));
+        return p.stop() ? a.say({ content: `⏹ ${who} stopped the music.` }) : a.only('Nothing is playing.');
       case 'volume': {
-        const level = i.options.getInteger('level', true);
-        const to = p.setVolume(Math.min(100, Math.max(5, level)) / 100);
-        return void (await i.reply({ content: `🔊 ${who} set the music volume to ${pct(to)}.`, ...quiet }));
+        const to = p.setVolume(Math.min(100, Math.max(5, n!)) / 100);
+        return a.say({ content: `🔊 ${who} set the music volume to ${pct(to)}.` });
       }
-      case 'shuffle': {
-        if (!p.upNext.length) return void (await i.reply(secret('The queue is empty.')));
-        return void (await i.reply({ content: `🔀 ${who} shuffled ${songs(p.shuffle())}.`, ...quiet }));
-      }
-      case 'clear': {
-        if (!p.upNext.length) return void (await i.reply(secret('The queue is already empty.')));
-        return void (await i.reply({ content: `🧹 ${who} cleared ${songs(p.clearQueue())} from the queue.`, ...quiet }));
-      }
+      case 'shuffle':
+        if (!p.upNext.length) return a.only('The queue is empty.');
+        return a.say({ content: `🔀 ${who} shuffled ${songs(p.shuffle())}.` });
+      case 'clear':
+        if (!p.upNext.length) return a.only('The queue is already empty.');
+        return a.say({ content: `🧹 ${who} cleared ${songs(p.clearQueue())} from the queue.` });
       case 'remove': {
-        const at = i.options.getInteger('position', true);
-        const t = p.remove(at);
-        if (!t) return void (await i.reply(secret(`There's no song #${at} in the queue (${songs(p.upNext.length)} queued).`)));
-        return void (await i.reply({ content: `➖ ${who} removed ${trackLine(t)} from the queue.`, ...quiet }));
+        if (n === undefined) return a.only(`Which one? Give its number from ${a.verb('queue')}, like ${a.verb('remove')} 2.`);
+        const t = p.remove(n);
+        if (!t) return a.only(noSong(n));
+        return a.say({ content: `➖ ${who} removed ${trackLine(t)} from the queue.` });
       }
-      case 'autoplay': {
-        p.setAutoplay(i.options.getBoolean('on', true));
-        return void (await i.reply({ content: `🔁 ${who} turned autoplay ${p.autoplay ? 'on' : 'off'}.`, ...quiet }));
-      }
+      case 'autoplay':
+        p.setAutoplay(on ?? !p.autoplay);
+        return a.say({ content: `🔁 ${who} turned autoplay ${p.autoplay ? 'on' : 'off'}.` });
       default:
-        return void (await i.reply(secret('I don’t know that one.')));
+        return a.only('I don’t know that one.');
     }
   }
 
   /** A button on a now-playing card: acts on what plays now, then redraws the card. */
   async function button(i: ButtonInteraction<'cached'>): Promise<void> {
     const action = i.customId.slice('music:'.length);
+    const verb = (c: string) => `/${c}`;
     if (action === 'queue') {
-      const v = viewer(i);
+      const v = viewer({ guildId: i.guildId, verb });
       return void (await i.reply(typeof v === 'string' ? secret(v) : { embeds: [queueCard(v)], flags: MessageFlags.Ephemeral, ...quiet }));
     }
-    const no = refusal(i);
+    const no = refusal({ guildId: i.guildId, userId: i.user.id, channelId: i.guild.voiceStates.cache.get(i.user.id)?.channelId ?? undefined, verb });
     if (no) return void (await i.reply(secret(no)));
     const p = d.player()!;
     log.info('music command', { user: i.user.id, command: action, via: 'button' });
@@ -486,4 +699,6 @@ export function registerMusicCommands(d: MusicCommandDeps): void {
         return void (await i.reply(secret('That button is from an older version. Use /music now for a fresh one.')));
     }
   }
+
+  return { isCommand: (m) => typed(m) !== undefined };
 }
