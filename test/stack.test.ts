@@ -382,7 +382,9 @@ describe('what an answer costs', () => {
     r.steps.push({ parts: [text('SILENT')], hang: true });
     r.heard(r.discordPipe, SAM, 'grab the diamonds');
     await until(() => r.llmBodies.length === 2, 'the follow-up');
-    await sleep(30);
+    // Time for her "SILENT" to land first: a stop before it is a stop of an
+    // answer she might still have given (30 ms wasn't enough on a busy server).
+    await sleep(250);
     r.heard(r.discordPipe, SAM, 'stop');
     await until(() => r.stack.answers().length === 2, 'the stopped follow-up');
     r.heard(r.discordPipe, SAM, 'hey adrian next', 'what about new zealand');
