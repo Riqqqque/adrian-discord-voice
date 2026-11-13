@@ -3,7 +3,7 @@
 // controller's queue and interruption rules and the spend caps. Started by
 // main.ts once the config is complete, and restarted by the admin UI.
 
-import { Client, Events, GatewayIntentBits, Partials, type VoiceBasedChannel } from 'discord.js';
+import { Client, Events, GatewayIntentBits, type Message, Partials, type VoiceBasedChannel } from 'discord.js';
 import { dateFormat } from '../core/time.js';
 import { humansIn, registerVoiceCommands, type VoiceSpot } from './commands.js';
 import { MUSIC_COMMANDS, registerMusicCommands } from './music-commands.js';
@@ -1421,10 +1421,13 @@ export async function startVoiceStack(
     moving = p.catch(() => undefined);
     return p;
   };
+  /** Typed music commands ("!play x"): set up below, after /join's checks. */
+  let musicCommands: { isCommand(m: Message): boolean } | undefined;
   // Text chat (@mentions, replies, DMs): same brain and limits as voice.
   registerTextChat({
     client,
     log,
+    handledElsewhere: (m) => musicCommands?.isCommand(m) ?? false,
     ...(orchestrator
       ? {
           ask: (userId, name, text, place, signal, opts) => {
@@ -1470,15 +1473,19 @@ export async function startVoiceStack(
     historyMessages: config.textChat.historyMessages,
     followUpMs: config.textChat.followUpMinutes * 60_000,
   });
-  const voiceCommands = registerVoiceCommands({ client, log, current: () => spot, voiceReady: () => transport.isReady(), moveTo: (s) => moveTo(s), leave: () => moveTo(undefined), allowedGuilds: config.allowedGuilds, extraCommands: MUSIC_COMMANDS });
-  registerMusicCommands({
+  const voiceCommands = registerVoiceCommands({ client, log, current: () => spot, voiceReady: () => transport.isReady(), moveTo: (s) => moveTo(s), leave: () => moveTo(undefined), allowedGuilds: config.allowedGuilds, extraCommands: MUSIC_COMMANDS, isOwner: (id) => config.owners.includes(id) });
+  musicCommands = registerMusicCommands({
     client,
     log,
     player: () => discordRoom.music,
     current: () => spot,
     voiceReady: () => transport.isReady(),
     seat: (i, verb) => voiceCommands.seat(i, verb),
+    mayLeave: (i) => voiceCommands.mayLeave(i),
     moveTo: (s) => moveTo(s),
+    leave: () => moveTo(undefined),
+    prefix: mc.prefix,
+    allowedGuilds: config.allowedGuilds,
     isOwner: (id) => isOwner(id),
     allow: (id) => {
       const a = ledger.check(id, isOwner(id));
