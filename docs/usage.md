@@ -69,6 +69,29 @@ Everything else goes to the language model.
 - **`/leave`, or `/join` to another channel:** stops the music. Being dragged to another channel keeps it playing.
 - **Lyrics:** it won't sing or read out song lyrics. It just names what's playing.
 
+### Music slash commands
+
+The same music, typed instead of said. They work in any text channel of the server she's in.
+
+| Command | It does |
+|---|---|
+| `/play query:` | Plays it, like saying "play X": a song, or a well-known artist's top songs. Suggests songs played lately and artists you play while you type. Pasting a YouTube, YouTube Music, Spotify, SoundCloud or Bandcamp link plays that. |
+| `/play type:` | Says what it is: song, artist, album, playlist, mood ("chill late night r&b"), similar (to what's playing, or to what you type), podcast, any YouTube audio, your favorites, or hers. |
+| `/play queue:True` | Adds it to the queue instead. `source:Plex library` looks in Plex first. |
+| `/music now` | The now-playing card (only you see it), with Back, Pause/Resume, Skip, Stop and Queue buttons. |
+| `/music queue [page]` | What's coming up, 10 per page, with who asked for each. |
+| `/music skip [to]` | Skips this song, or jumps to a place in the queue. |
+| `/music back`, `pause`, `resume`, `stop` | As said aloud. Stop also clears the queue. |
+| `/music volume [level]` | Sets the music level (5-100), or shows it. |
+| `/music shuffle`, `clear`, `remove position:` | Changes the queue. Clear leaves the current song playing. |
+| `/music autoplay on:` | Similar songs after the queue runs out, or not. |
+| `/music who` | Who asked for this song. |
+
+- **Who can use them:** the same people as by voice. Changing the music takes being in her call (owners can from anywhere). Looking at it (`now`, `queue`, `volume` without a level, `who`) works for anyone in the server.
+- **Not in a call yet:** `/play` from a voice channel brings her there first, by `/join`'s rules: she won't leave a call that has other people in it.
+- **What everyone sees:** a started song posts the card with its buttons in the channel, and changes say who made them ("Sam skipped"). Refusals and lists only show to you.
+- **Limits:** `/play` counts toward the hourly limit like a spoken request. During a music quiz, skip and stop go to the quiz and the rest waits for it.
+
 ## Music quiz
 
 "Start a music quiz", "let's play guess the song", "music quiz, 5 rounds of 90s hip hop", "guess the song with songs we've played", "a Drake music quiz".

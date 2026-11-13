@@ -32,7 +32,13 @@ export interface CommandDeps {
   leave(): Promise<void>;
   /** Servers where /join works; empty: any server the bot is in. */
   allowedGuilds?: readonly string[];
+  /** More slash commands to register with these (Discord replaces the whole set at once). */
+  extraCommands?: readonly object[];
 }
+
+/** Where someone's command would take her: refused (and why), already in
+ *  their call, or a move to it. */
+export type Seat = { refused: string } | { here: VoiceBasedChannel } | { move: VoiceSpot; channel: VoiceBasedChannel };
 
 export const COMMANDS = [
   new SlashCommandBuilder()
@@ -53,16 +59,16 @@ export function humansIn(ch: VoiceBasedChannel | null | undefined, except?: stri
   return ch.members.filter((m) => !m.user.bot && m.id !== except).size;
 }
 
-export function registerVoiceCommands(d: CommandDeps): { ownerId(): string | undefined } {
+export function registerVoiceCommands(d: CommandDeps): { ownerId(): string | undefined; seat(i: ChatInputCommandInteraction<'cached'>, verb: string): Seat } {
   const { client, log } = d;
   let ownerId: string | undefined;
 
   client.once(Events.ClientReady, async (c) => {
     try {
-      await c.application.commands.set(COMMANDS);
+      await c.application.commands.set([...COMMANDS, ...(d.extraCommands ?? [])] as typeof COMMANDS);
       const app = await c.application.fetch();
       ownerId = app.owner && 'ownerId' in app.owner ? (app.owner.ownerId ?? undefined) : app.owner?.id;
-      log.info('slash commands ready', { commands: COMMANDS.map((x) => x.name), guilds: c.guilds.cache.size });
+      log.info('slash commands ready', { commands: [...COMMANDS, ...((d.extraCommands ?? []) as { name?: string }[])].map((x) => x.name), guilds: c.guilds.cache.size });
     } catch (e) {
       log.error('slash command registration failed', { error: (e as Error).message });
     }
@@ -87,39 +93,40 @@ export function registerVoiceCommands(d: CommandDeps): { ownerId(): string | und
   const peopleAt = (s: VoiceSpot, userId: string) =>
     userId !== ownerId && ((d.voiceReady?.() ?? true) || seatedIn(s)) ? humansIn(client.channels.cache.get(s.channelId) as VoiceBasedChannel | undefined, userId) : 0;
 
-  async function join(i: ChatInputCommandInteraction<'cached'>): Promise<void> {
-    if (d.allowedGuilds?.length && !d.allowedGuilds.includes(i.guildId)) {
-      await i.reply({ content: "I'm not set up to join calls in this server.", flags: MessageFlags.Ephemeral });
-      return;
-    }
+  /** The checks /join makes, for any command that brings her into the caller's call. */
+  function seat(i: ChatInputCommandInteraction<'cached'>, verb: string): Seat {
+    if (d.allowedGuilds?.length && !d.allowedGuilds.includes(i.guildId)) return { refused: "I'm not set up to join calls in this server." };
     const ch = i.guild.voiceStates.cache.get(i.user.id)?.channel;
-    if (!ch) {
-      await i.reply({ content: 'Join a voice channel first, then use /join.', flags: MessageFlags.Ephemeral });
-      return;
-    }
+    if (!ch) return { refused: `Join a voice channel first, then use ${verb}.` };
     const me = i.guild.members.me;
     const perms = me ? ch.permissionsFor(me) : null;
     const need = [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.Connect, PermissionFlagsBits.Speak];
-    if (!perms || !perms.has(need)) {
-      await i.reply({ content: `I don't have permission to connect and speak in ${ch.name}.`, flags: MessageFlags.Ephemeral });
-      return;
-    }
+    if (!perms || !perms.has(need)) return { refused: `I don't have permission to connect and speak in ${ch.name}.` };
     const cur = d.current();
     const here = cur?.guildId === i.guildId && cur.channelId === ch.id;
-    if (here && (d.voiceReady?.() ?? true)) {
-      await i.reply({ content: `I'm already here. Say "Hey Adrian" to talk to me.`, flags: MessageFlags.Ephemeral });
-      return;
-    }
+    if (here && (d.voiceReady?.() ?? true)) return { here: ch };
     // Asked from the call she's lost: moveTo rebuilds it.
     if (cur && !here && peopleAt(cur, i.user.id) > 0) {
       const where = cur.guildId === i.guildId ? 'another channel here' : 'a call in another server';
-      await i.reply({ content: `I'm in ${where} right now. Try again when that call is over.`, flags: MessageFlags.Ephemeral });
+      return { refused: `I'm in ${where} right now. Try again when that call is over.` };
+    }
+    return { move: { guildId: i.guildId, channelId: ch.id }, channel: ch };
+  }
+
+  async function join(i: ChatInputCommandInteraction<'cached'>): Promise<void> {
+    const s = seat(i, '/join');
+    if ('refused' in s) {
+      await i.reply({ content: s.refused, flags: MessageFlags.Ephemeral });
+      return;
+    }
+    if ('here' in s) {
+      await i.reply({ content: `I'm already here. Say "Hey Adrian" to talk to me.`, flags: MessageFlags.Ephemeral });
       return;
     }
     await i.deferReply();
-    log.info('join requested', { user: i.user.id, guildId: i.guildId, channelId: ch.id });
-    await d.moveTo({ guildId: i.guildId, channelId: ch.id });
-    await i.editReply(`Joined ${ch.name}. Say "Hey Adrian" and ask me anything.`);
+    log.info('join requested', { user: i.user.id, guildId: i.guildId, channelId: s.channel.id });
+    await d.moveTo(s.move);
+    await i.editReply(`Joined ${s.channel.name}. Say "Hey Adrian" and ask me anything.`);
   }
 
   async function leave(i: ChatInputCommandInteraction<'cached'>): Promise<void> {
@@ -138,5 +145,5 @@ export function registerVoiceCommands(d: CommandDeps): { ownerId(): string | und
     await i.editReply('Left the voice channel. Use /join to bring me back.');
   }
 
-  return { ownerId: () => ownerId };
+  return { ownerId: () => ownerId, seat };
 }

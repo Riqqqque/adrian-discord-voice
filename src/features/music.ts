@@ -1167,8 +1167,7 @@ export class MusicPlayer {
 
   /** A bare "play X" (no model to say what X is): a well-known artist's name
    *  shuffles their top songs, anything else is one song. */
-  async playNamed(query: string, mode: 'now' | 'queue', signal: AbortSignal, prefer?: Track['source'], by?: string): Promise<RequestResult> {
-    const asked = this.ask(by);
+  async playNamed(query: string, mode: 'now' | 'queue', signal: AbortSignal, prefer?: Track['source'], by?: string, asked = this.ask(by)): Promise<RequestResult> {
     const no = this.refused();
     if (no) return no;
     const name = query
@@ -1228,8 +1227,7 @@ export class MusicPlayer {
   }
 
   /** Several artists' top songs mixed and shuffled ("music I like"). */
-  async mix(artists: string[], mode: 'now' | 'queue', signal: AbortSignal, label: string, by?: string): Promise<RequestResult> {
-    const asked = this.ask(by);
+  async mix(artists: string[], mode: 'now' | 'queue', signal: AbortSignal, label: string, by?: string, asked = this.ask(by)): Promise<RequestResult> {
     const no = this.refused();
     if (no) return no;
     const names = artists.map((a) => a.trim()).filter(Boolean).slice(0, 8);
@@ -1635,6 +1633,29 @@ export class MusicPlayer {
     this.queue = [];
     this.stopCurrent();
     return had;
+  }
+
+  /** The music level, 0.05-1. */
+  get level(): number {
+    return this.volume;
+  }
+
+  /** Take the song at `position` (1 = next) out of the queue; undefined if there's none there. */
+  remove(position: number): Track | undefined {
+    if (!Number.isInteger(position) || position < 1 || position > this.queue.length) return undefined;
+    const [t] = this.queue.splice(position - 1, 1);
+    if (position === 1) this.prepareNext();
+    return t;
+  }
+
+  /** Skip ahead to the song at `position` (1 = next): the ones before it are
+   *  dropped. Like skip(); 'none' if the queue has nothing there. */
+  async skipTo(position: number, signal?: AbortSignal): Promise<Track | false | undefined | 'none'> {
+    if (this.lentTo) return this.skip(signal);
+    if (!this.current) return false;
+    if (!Number.isInteger(position) || position < 1 || position > this.queue.length) return 'none';
+    this.queue.splice(0, position - 1);
+    return this.skip(signal);
   }
 
   /** Set the level (0.05-1); returns it. */
