@@ -6,6 +6,7 @@
 import { Client, Events, GatewayIntentBits, Partials, type VoiceBasedChannel } from 'discord.js';
 import { dateFormat } from '../core/time.js';
 import { humansIn, registerVoiceCommands, type VoiceSpot } from './commands.js';
+import { MUSIC_COMMANDS, registerMusicCommands } from './music-commands.js';
 import prism from 'prism-media';
 import { FallbackLlm } from '../brain/fallback.js';
 import { ConversationOrchestrator, type OrchestratorOptions, type Usage } from '../brain/orchestrator.js';
@@ -1469,7 +1470,26 @@ export async function startVoiceStack(
     historyMessages: config.textChat.historyMessages,
     followUpMs: config.textChat.followUpMinutes * 60_000,
   });
-  const voiceCommands = registerVoiceCommands({ client, log, current: () => spot, voiceReady: () => transport.isReady(), moveTo: (s) => moveTo(s), leave: () => moveTo(undefined), allowedGuilds: config.allowedGuilds });
+  const voiceCommands = registerVoiceCommands({ client, log, current: () => spot, voiceReady: () => transport.isReady(), moveTo: (s) => moveTo(s), leave: () => moveTo(undefined), allowedGuilds: config.allowedGuilds, extraCommands: MUSIC_COMMANDS });
+  registerMusicCommands({
+    client,
+    log,
+    player: () => discordRoom.music,
+    current: () => spot,
+    voiceReady: () => transport.isReady(),
+    seat: (i, verb) => voiceCommands.seat(i, verb),
+    moveTo: (s) => moveTo(s),
+    isOwner: (id) => isOwner(id),
+    allow: (id) => {
+      const a = ledger.check(id, isOwner(id));
+      if (!a.ok && a.reason === 'user-rate') return "You've asked for a lot in the last hour. Give it a bit.";
+      ledger.noteRequest(id);
+      return undefined;
+    },
+    nameOf: (id) => config.nicknames[id] ?? nameOf(id),
+    taste,
+    started: (id) => musicStarts.started(discordRoom.key, id),
+  });
   // Outside the home channel, leave after 10 minutes with nobody else there.
   let emptySince: number | undefined;
   /** Since when music (or a quiz) has played to an empty call. */

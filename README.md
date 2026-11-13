@@ -31,6 +31,7 @@ This is one module of the A.D.R.I.A.N. household assistant suite. Every module f
 - "Play Travis Scott" shuffles their best-known songs. "Play some music" plays what you like: she learns your taste from what you ask for, and has her own.
 - Autoplay keeps similar songs coming when the queue runs out (YouTube Music radio), without repeats.
 - Music ducks under the voice whenever someone talks to it.
+- Slash commands too: `/play` (with suggestions while you type) and `/music` (now playing with buttons, queue, skip, back, pause, volume, shuffle, remove, autoplay).
 - Music quiz: "start a music quiz", "guess the song, 90s hip hop". Short clips, anyone in the call answers, she keeps score.
 
 **Sounds**
@@ -66,7 +67,7 @@ This is one module of the A.D.R.I.A.N. household assistant suite. Every module f
 - An `adrian` command for everything else: status, logs, update, rollback, backup, doctor.
 - Spend caps: per-person hourly limit, daily and monthly dollar caps. It stops calling the paid model at the cap.
 - Owners (by Discord ID) can stop anyone and skip the line.
-- `/join` and `/leave` slash commands bring it to whatever voice channel you're in.
+- `/join` and `/leave` slash commands bring it to whatever voice channel you're in, and `/play` brings it along when you ask for music.
 
 ## Requirements
 
