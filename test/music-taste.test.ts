@@ -169,7 +169,8 @@ describe('music taste', () => {
   });
 
   it('counts a song for its artist, not everyone credited', () => {
-    const t = new MusicTaste(undefined);
+    // A fixed clock: a millisecond between the plays would rank the newer one first.
+    const t = new MusicTaste(undefined, () => 1_000);
     t.played('u', 'Emmanuel Cortes, Emmanuel Cortes Ruiz');
     t.played('u', 'Tyler, The Creator');
     expect(t.top('u')).toEqual(['Emmanuel Cortes', 'Tyler, The Creator']);
