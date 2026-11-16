@@ -234,8 +234,27 @@ function oneEdit(a: string, b: string): boolean {
   return a.length > b.length ? a.slice(i + 1) === b.slice(i) : a.slice(i) === b.slice(i + 1);
 }
 
+/** A rough sound of a word, for names speech recognition spells its own way:
+ *  "emmy" and "emi", "goona" and "gunna", "oozy" and "uzi", "dojo" and "doja"
+ *  all sound the same. Its first letter (any vowel the same), then the
+ *  consonants, with soft c as s, z as s, and doubles once. */
+export function soundOf(w: string): string {
+  const s = w
+    .replace(/ph/g, 'f')
+    .replace(/ck/g, 'k')
+    .replace(/c(?=[eiy])/g, 's')
+    .replace(/[cq]/g, 'k')
+    .replace(/x/g, 'ks')
+    .replace(/z/g, 's');
+  const first = /^[aeiouy]/.test(s) ? 'a' : s[0]!;
+  return (first + s.slice(1).replace(/[aeiouyhw]/g, '')).replace(/(.)\1+/g, '$1');
+}
+
 const sameWord = (q: string, w: string) =>
-  q === w || (Math.min(q.length, w.length) >= 4 && (q.startsWith(w) || w.startsWith(q) || oneEdit(q, w)));
+  q === w ||
+  (Math.min(q.length, w.length) >= 4 && (q.startsWith(w) || w.startsWith(q) || oneEdit(q, w))) ||
+  // Both real words (not "me", not a number) that sound alike.
+  (Math.min(q.length, w.length) >= 3 && /^\p{L}+$/u.test(q) && /^\p{L}+$/u.test(w) && soundOf(q) === soundOf(w));
 
 /** How much of what was asked for a result's title, artist and channel cover:
  *  0 (none of the words) to 1 (all of them). */
@@ -246,8 +265,30 @@ export function matchScore(query: string, text: string): number {
   return asked.filter((q) => have.some((w) => sameWord(q, w))).length / asked.length;
 }
 
-/** A song result covering less than this of the words gets checked against regular YouTube videos. */
-const WEAK_MATCH = 0.5;
+/** A song result covering less than this of the words gets checked against
+ *  regular YouTube videos (and the web, when there's a search key): words left
+ *  over are often the version ("tiny desk", "open mic") or a misheard name. */
+const LOOK_FURTHER = 0.75;
+/** The least of the words another result must cover to replace the song... */
+const MATCH_ENOUGH = 0.5;
+/** ...and how much more of them than the song. */
+const MATCH_MARGIN = 0.15;
+
+/** The request in the spelling a result uses, word for word where they sound
+ *  or look alike: "emmy blues loba" with "Emi Blue - LOBA" is "emi blue loba". */
+export function respell(query: string, text: string): string {
+  const have = matchWords(text);
+  return matchWords(query)
+    .map((q) => (have.includes(q) ? q : (have.find((w) => sameWord(q, w)) ?? q)))
+    .join(' ');
+}
+
+/** How long the web search may take: the YouTube search beside it takes about 2 s. */
+const WEB_TIMEOUT_MS = 3_000;
+const round2 = (n: number) => Math.round(n * 100) / 100;
+
+/** YouTube videos a web search found for the words, best first. */
+export type FindVideos = (query: string, signal: AbortSignal) => Promise<{ id: string; title: string }[]>;
 
 /** A list of tracks (album, playlist, radio, podcast show). */
 export interface Collection {
@@ -264,9 +305,11 @@ export class YoutubeSource implements MusicSource {
   /** Lookups under way, so a track is only looked up once at a time. */
   private readonly looking = new WeakMap<Track, Promise<void>>();
 
-  /** `searchApi`: search YouTube Music directly (see YTM_API); without it, yt-dlp does. */
+  /** `searchApi`: search YouTube Music directly (see YTM_API); without it, yt-dlp does.
+   *  `findVideos`: a web search for YouTube videos, asked only when the song
+   *  catalog's answer barely matches the words (a misheard or rare name). */
   constructor(
-    private readonly o: { ytdlp: string; node?: string; timeoutMs?: number; searchApi?: string; now?: () => number },
+    private readonly o: { ytdlp: string; node?: string; timeoutMs?: number; searchApi?: string; findVideos?: FindVideos; now?: () => number },
     run: Runner = runProgram,
   ) {
     // Everything that starts yt-dlp comes through here, so a bot check stops it all.
@@ -347,6 +390,9 @@ export class YoutubeSource implements MusicSource {
     let t: Track | undefined;
     try {
       t = await this.resolve(hit.id, sig);
+      // A video found by its title instead of the song: if it turns out to be
+      // longer than a song (a full show, an hour of loops), the song it beat.
+      if (hit.fallback && (!t || (t.durationS ?? 0) > MAX_SONG_S)) t = await this.resolve(hit.fallback, sig);
     } catch (e) {
       // Found, but YouTube won't play that one (age-restricted, removed, blocked
       // here): another upload of the same song usually plays. Anything else (a
@@ -359,19 +405,23 @@ export class YoutubeSource implements MusicSource {
   }
 
   /** The video a song request means, without looking up its stream. */
-  async songId(query: string, signal: AbortSignal): Promise<{ id: string; via: string } | undefined> {
+  async songId(query: string, signal: AbortSignal): Promise<{ id: string; via: string; fallback?: string } | undefined> {
     if (this.paused) throw new YoutubePaused();
     const long = NOT_A_SONG.test(query);
     let via = 'direct';
     const song = long ? undefined : await this.searchSongs(query, signal);
     let id = song?.id;
-    // The song catalog has studio tracks only. A request it barely matches (a
-    // live session or a performance video, typed by its exact YouTube title,
-    // came back as another artist's song of the same name) gets a regular
-    // YouTube search too, and the video whose title and channel match best.
-    if (song && matchScore(query, song.text) < WEAK_MATCH) {
-      const better = await this.closerVideo(query, matchScore(query, song.text), signal);
-      if (better) return { id: better, via: 'ytsearch-match' };
+    // The song catalog has studio tracks only, and spells names its own way. A
+    // request it barely matches (a performance video typed by its exact YouTube
+    // title came back as another artist's song of the same name; a rare name
+    // misheard by speech recognition found someone else) also gets a regular
+    // YouTube search and a web search, and the result that matches best.
+    if (song) {
+      const songScore = matchScore(query, song.text);
+      if (songScore < LOOK_FURTHER) {
+        const better = await this.closerMatch(query, songScore, signal);
+        if (better) return { ...better, fallback: song.id };
+      }
     }
     if (!id && !long) {
       via = 'ytdlp';
@@ -386,26 +436,57 @@ export class YoutubeSource implements MusicSource {
     return id ? { id, via } : undefined;
   }
 
-  /** Of YouTube's top five videos for the words, the one whose title and channel
-   *  match them best, if it matches clearly better than `than` (the song's score).
-   *  Anything that goes wrong here keeps the song. */
-  private async closerVideo(query: string, than: number, signal: AbortSignal): Promise<string | undefined> {
-    let out: string;
+  /** YouTube's top five videos for some words that fit a song (not live, not
+   *  over 15 min). A failed search finds nothing. */
+  private async videosFor(words: string, via: string, signal: AbortSignal): Promise<{ id: string; text: string; via: string }[]> {
     try {
-      out = await this.run(this.o.ytdlp, [...this.base(), '--flat-playlist', '--print', '%(id)s\t%(duration)s\t%(live_status)s\t%(title)s\t%(channel)s', `ytsearch5:${query}`], signal);
+      const out = await this.run(this.o.ytdlp, [...this.base(), '--flat-playlist', '--print', '%(id)s\t%(duration)s\t%(live_status)s\t%(title)s\t%(channel)s', `ytsearch5:${words}`], signal);
+      return out
+        .split('\n')
+        .filter((line) => pickVideo(line, false))
+        .map((line) => {
+          const [id = '', , , title = '', channel = ''] = line.trim().split('\t');
+          return { id, text: `${title} ${channel}`, via };
+        });
     } catch (e) {
       if (signal.aborted || e instanceof YoutubePaused) throw e;
       this.log?.warn('video match search failed', { error: (e as Error).message.slice(0, 120) });
-      return undefined;
+      return [];
     }
-    let best: { id: string; score: number } | undefined;
-    for (const line of out.split('\n')) {
-      const [vid, , , title = '', channel = ''] = line.trim().split('\t');
-      if (!vid || !pickVideo(line, false)) continue;
-      const score = matchScore(query, `${title} ${channel}`);
-      if (!best || score > best.score) best = { id: vid, score };
+  }
+
+  /** Of YouTube's top five videos and the web's YouTube results for the words,
+   *  the one whose title (and channel) match them best, if it covers clearly
+   *  more of them than the song did (`than`). When the web read a misheard name
+   *  right ("emmy blues" → Emi Blue) but its video isn't the one asked for,
+   *  YouTube is searched once more with that spelling. A search that fails just
+   *  adds nothing, so the song stays. */
+  private async closerMatch(query: string, than: number, signal: AbortSignal): Promise<{ id: string; via: string } | undefined> {
+    const videos = this.videosFor(query, 'ytsearch-match', signal);
+    const web = (this.o.findVideos?.(query, AbortSignal.any([signal, AbortSignal.timeout(WEB_TIMEOUT_MS)])) ?? Promise.resolve([])).then(
+      (found) => found.filter((v) => VIDEO_ID.test(v.id)).map((v) => ({ id: v.id, text: v.title, via: 'web-match' })),
+      (e: Error) => {
+        if (signal.aborted) throw e;
+        this.log?.warn('web match search failed', { error: e.message.slice(0, 120) });
+        return [];
+      },
+    );
+    let best: { id: string; via: string; score: number; text: string } | undefined;
+    const weigh = (found: { id: string; text: string; via: string }[]) => {
+      for (const c of found) {
+        const score = matchScore(query, c.text);
+        if (!best || score > best.score) best = { ...c, score };
+      }
+    };
+    weigh([...(await videos), ...(await web)]);
+    if (best?.via === 'web-match' && best.score < 1) {
+      const words = respell(query, best.text);
+      if (words !== matchWords(query).join(' ')) weigh(await this.videosFor(words, 'respelled-match', signal));
     }
-    return best && best.score >= WEAK_MATCH && best.score > than ? best.id : undefined;
+    const pick = best as { id: string; via: string; score: number } | undefined;
+    if (!pick || pick.score < MATCH_ENOUGH || pick.score < than + MATCH_MARGIN) return undefined;
+    this.log?.info('music matched', { via: pick.via, score: round2(pick.score), songScore: round2(than) });
+    return { id: pick.id, via: pick.via };
   }
 
   /** The first of YouTube's own results for the words that isn't `failed` and

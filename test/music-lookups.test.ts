@@ -5,8 +5,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough, Readable } from 'node:stream';
 import { describe, expect, it, vi } from 'vitest';
+import { webYoutubeVideos, youtubeVideoId } from '../src/brain/tools.js';
 import type { PlaybackHandle, ToolContext } from '../src/core/interfaces.js';
-import { deezerTopTracks, inputArgs, matchScore, MusicPlayer, type MusicOutput, type MusicSource, musicTools, runProgram, type Runner, type TopTracks, type Track, YoutubeSource } from '../src/features/music.js';
+import { deezerTopTracks, type FindVideos, inputArgs, matchScore, MusicPlayer, respell, soundOf, type MusicOutput, type MusicSource, musicTools, runProgram, type Runner, type TopTracks, type Track, YoutubeSource } from '../src/features/music.js';
 
 const sig = () => AbortSignal.timeout(4000);
 const tick = () => new Promise((r) => setTimeout(r, 0));
@@ -70,6 +71,7 @@ function plexSource(has: (q: string) => boolean = () => true) {
 
 interface RigOptions {
   run?: Runner;
+  findVideos?: FindVideos;
   gate?: (url: string) => Promise<unknown> | undefined;
   topTracks?: TopTracks;
   plex?: MusicSource;
@@ -109,7 +111,7 @@ function rig(o: RigOptions = {}) {
     musicPaused: false,
   };
   const yt = new YoutubeSource(
-    { ytdlp: 'yt-dlp', ...(o.now ? { now: o.now } : {}), ...(o.searchApi ? { searchApi: o.searchApi } : {}) },
+    { ytdlp: 'yt-dlp', ...(o.now ? { now: o.now } : {}), ...(o.searchApi ? { searchApi: o.searchApi } : {}), ...(o.findVideos ? { findVideos: o.findVideos } : {}) },
     o.run ?? fakeYtdlp(calls, o.gate),
   );
   const killed: number[] = [];
@@ -897,7 +899,7 @@ describe('direct YouTube Music search', () => {
   it('says how it found it', async () => {
     const s = await api(json(results(song(id('shakira'), '3:09', 'Loba', 'Shakira'))));
     const r = rig({ searchApi: s.url, run: videos([], [`${id('radar')}\t174\tNA\tEmi Blue LOBA Performance\tOn The Radar Radio`]) });
-    expect(await r.yt.songId(TYPED, sig())).toEqual({ id: id('radar'), via: 'ytsearch-match' });
+    expect(await r.yt.songId(TYPED, sig())).toEqual({ id: id('radar'), via: 'ytsearch-match', fallback: id('shakira') });
     await s.close();
   });
 
@@ -920,6 +922,103 @@ describe('direct YouTube Music search', () => {
     const r = rig({ searchApi: s.url, run: videos([], lines) });
     expect(await r.yt.find(TYPED, sig())).toMatchObject({ id: id('shakira') });
     await s.close();
+  });
+
+  const MISHEARD = 'Emmy blues on the radar performance, Loba';
+  const lovah = () => song(id('lovah'), '3:20', 'Champion Lovah (LIVE "On The Radar" Performance)', 'On The Radar, Imani Ray');
+  const fromWeb = (found: { id: string; title: string }[], asked: string[] = []): FindVideos => async (q) => (asked.push(q), found);
+
+  it('finds a misheard name through the web when YouTube takes it literally', async () => {
+    const s = await api(json(results(lovah())));
+    const asked: string[] = [];
+    const calls: string[] = [];
+    const r = rig({
+      searchApi: s.url,
+      run: videos(calls, [`${id('psyco')}\t203\tNA\tPSYCODELIA SESSIONS | EMI BLUE – “Diciembre”\tPsycodelia Music`]),
+      findVideos: fromWeb([{ id: id('visual'), title: 'Emi Blue - LOBA (Visualizer Oficial)' }, { id: id('radar'), title: 'Emi Blue "LOBA" | On The Radar Performance' }], asked),
+    });
+    expect(await r.yt.songId(MISHEARD, sig())).toEqual({ id: id('radar'), via: 'web-match', fallback: id('lovah') });
+    await s.close();
+    expect(asked).toEqual([MISHEARD]);
+    expect(r.logged('music matched')[0]).toMatchObject({ via: 'web-match', score: 1, songScore: 0.4 });
+  });
+
+  it('never asks the web when the song matches', async () => {
+    const s = await api(json(results(song(id('hit'), '3:45', 'Blinding Lights', 'The Weeknd'))));
+    const asked: string[] = [];
+    const r = rig({ searchApi: s.url, run: videos([], []), findVideos: fromWeb([], asked) });
+    await r.yt.find('the weekend blinding lights', sig());
+    await s.close();
+    expect(asked).toEqual([]);
+  });
+
+  it('keeps the song when the web fails or is slow, and the videos match no better', async () => {
+    const s = await api(json(results(lovah())));
+    const r = rig({
+      searchApi: s.url,
+      run: videos([], []),
+      findVideos: async () => {
+        throw new Error('web search answered 432');
+      },
+    });
+    expect(await r.yt.songId(MISHEARD, sig())).toMatchObject({ id: id('lovah'), via: 'direct' });
+    await s.close();
+    expect(r.logged('web match search failed')).toHaveLength(1);
+  });
+
+  it('needs the other result to match clearly better than the song', async () => {
+    const s = await api(json(results(lovah())));
+    const r = rig({ searchApi: s.url, run: videos([], []), findVideos: fromWeb([{ id: id('close'), title: 'Emi Blue Diciembre On The Radar' }]) });
+    // 0.4 for the song, 0.6 for this one: clearly better. The same 0.4 again is not.
+    expect((await r.yt.songId(MISHEARD, sig()))?.id).toBe(id('close'));
+    const r2 = rig({ searchApi: s.url, run: videos([], []), findVideos: fromWeb([{ id: id('near'), title: 'On The Radar Performance Live' }]) });
+    expect((await r2.yt.songId(MISHEARD, sig()))?.id).toBe(id('lovah'));
+    await s.close();
+  });
+
+  it('searches YouTube again in the spelling the web found, for the version asked for', async () => {
+    const s = await api(json(results(lovah())));
+    const calls: string[] = [];
+    const usual = fakeYtdlp(calls);
+    const run: Runner = async (cmd, args, signal, enough) => {
+      const url = args.at(-1)!;
+      if (!url.startsWith('ytsearch5:')) return usual(cmd, args, signal, enough);
+      calls.push(url);
+      return url === 'ytsearch5:emi blue radar performance loba' ? `${id('radar')}\t174\tNA\tEmi Blue LOBA Performance\tOn The Radar Radio and Emi Blue\n` : '\n';
+    };
+    const r = rig({ searchApi: s.url, run, findVideos: fromWeb([{ id: id('visual'), title: 'Emi Blue - LOBA (Visualizer Oficial)' }]) });
+    expect(await r.yt.songId(MISHEARD, sig())).toEqual({ id: id('radar'), via: 'respelled-match', fallback: id('lovah') });
+    await s.close();
+    expect(calls).toEqual([`ytsearch5:${MISHEARD}`, 'ytsearch5:emi blue radar performance loba']);
+  });
+
+  it('takes the web result when the second search finds nothing better', async () => {
+    const s = await api(json(results(lovah())));
+    const r = rig({ searchApi: s.url, run: videos([], []), findVideos: fromWeb([{ id: id('visual'), title: 'Emi Blue - LOBA (Visualizer Oficial)' }]) });
+    expect(await r.yt.songId(MISHEARD, sig())).toMatchObject({ id: id('visual'), via: 'web-match' });
+    await s.close();
+  });
+
+  it('looks further when the words left over are the version asked for', async () => {
+    const s = await api(json(results(song(id('studio'), '3:30', 'Free Mind', 'Tems'))));
+    const r = rig({ searchApi: s.url, run: videos([], [`${id('desk')}\t900\tNA\tTems: Tiny Desk Concert\tNPR Music`, `${id('free')}\t250\tNA\tTems - Free Mind (Tiny Desk)\tNPR Music`]) });
+    expect(await r.yt.songId('tems free mind tiny desk', sig())).toMatchObject({ id: id('free'), via: 'ytsearch-match' });
+    await s.close();
+  });
+
+  it('plays the song it beat when the matched video is longer than a song', async () => {
+    const s = await api(json(results(lovah())));
+    const calls: string[] = [];
+    const usual = videos(calls, []);
+    const run: Runner = async (cmd, args, signal, enough) => {
+      const url = args.at(-1)!;
+      if (url.endsWith(`v=${id('radar')}`)) return (calls.push(url), `Emi Blue LOBA full show\tOn The Radar\t5400\thttps://stream/radar\n`);
+      return usual(cmd, args, signal, enough);
+    };
+    const r = rig({ searchApi: s.url, run, findVideos: fromWeb([{ id: id('radar'), title: 'Emi Blue "LOBA" | On The Radar Performance' }]) });
+    expect(await r.yt.find(MISHEARD, sig())).toMatchObject({ id: id('lovah') });
+    await s.close();
+    expect(calls.filter((u) => u.includes('watch?v='))).toEqual([`https://www.youtube.com/watch?v=${id('radar')}`, `https://www.youtube.com/watch?v=${id('lovah')}`]);
   });
 
   it('still stops for a bot check during the video search', async () => {
@@ -1731,7 +1830,10 @@ describe('how well a result matches the words', () => {
     ['Emi Blue "LOBA" | On The Radar Performance', 'Loba Shakira She Wolf 3:09', 0.2],
     ['Emi Blue "LOBA" | On The Radar Performance', 'Emi Blue LOBA Performance On The Radar Radio and Emi Blue', 1],
     ['blinding lights the weekend', 'Blinding Lights The Weeknd After Hours', 1],
-    ['Emmy blues on the radar performance, Loba', 'Emi Blue LOBA Performance On The Radar Radio', 0.8],
+    ['Emmy blues on the radar performance, Loba', 'Emi Blue LOBA Performance On The Radar Radio', 1],
+    ['Emmy blues on the radar performance, Loba', 'Champion Lovah (LIVE "On The Radar" Performance) On The Radar, Imani Ray', 0.4],
+    ['goona fuku mean', 'fukumean Gunna a Gift & a Curse', 2 / 3],
+    ['dojo cat paint the town red', 'Paint The Town Red Doja Cat Scarlet', 1],
     ['Beyoncé halo', 'Halo Beyonce I Am... Sasha Fierce', 1],
     ['Get Lucky official audio', 'Get Lucky Daft Punk', 1],
     ['x', 'anything at all', 1],
@@ -1739,8 +1841,86 @@ describe('how well a result matches the words', () => {
     expect(matchScore(query, text)).toBeCloseTo(score);
   });
 
-  it('needs four letters before a near word counts', () => {
-    expect(matchScore('lob', 'Loba')).toBe(0);
+  it('needs four letters before a near spelling counts, three for a sound-alike', () => {
     expect(matchScore('blue', 'Blues')).toBe(1);
+    expect(matchScore('me', 'my')).toBe(0);
+    expect(matchScore('21', '12')).toBe(0);
+  });
+
+  it.each([
+    ['emmy', 'emi'],
+    ['goona', 'gunna'],
+    ['oozy', 'uzi'],
+    ['dojo', 'doja'],
+    ['spies', 'spice'],
+    ['yet', 'yeat'],
+    ['weekend', 'weeknd'],
+  ])('hears %s and %s as the same', (a, b) => {
+    expect(soundOf(a)).toBe(soundOf(b));
+  });
+
+  it.each([
+    ['drake', 'drago'],
+    ['blue', 'black'],
+    ['loba', 'love'],
+  ])('keeps %s and %s apart', (a, b) => {
+    expect(soundOf(a)).not.toBe(soundOf(b));
+  });
+});
+
+describe('putting a request in the spelling of a result', () => {
+  it.each([
+    ['Emmy blues on the radar performance, Loba', 'Emi Blue - LOBA (Visualizer Oficial)', 'emi blue radar performance loba'],
+    ['goona fuku mean', 'Gunna - fukumean', 'gunna fukumean mean'],
+    ['blinding lights', 'Something else', 'blinding lights'],
+  ])('%s with %s', (query, text, want) => {
+    expect(respell(query, text)).toBe(want);
+  });
+});
+
+describe('YouTube videos from a web search', () => {
+  it.each([
+    ['https://www.youtube.com/watch?v=FWOlpMNO9TM', 'FWOlpMNO9TM'],
+    ['https://music.youtube.com/watch?v=FWOlpMNO9TM&list=x', 'FWOlpMNO9TM'],
+    ['https://youtu.be/FWOlpMNO9TM', 'FWOlpMNO9TM'],
+    ['https://m.youtube.com/watch?v=FWOlpMNO9TM', 'FWOlpMNO9TM'],
+    ['https://www.youtube.com/channel/UCabc', undefined],
+    ['https://www.youtube.com/watch?v=short', undefined],
+    ['https://notyoutube.com/watch?v=FWOlpMNO9TM', undefined],
+    ['https://youtube.com.evil.example/watch?v=FWOlpMNO9TM', undefined],
+    ['not a url', undefined],
+  ])('reads %s', (url, want) => {
+    expect(youtubeVideoId(url)).toBe(want);
+  });
+
+  it('asks for YouTube results only, and keeps each video once with its plain title', async () => {
+    const bodies: Record<string, unknown>[] = [];
+    const f = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_u, init) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return new Response(
+        JSON.stringify({
+          results: [
+            { url: 'https://www.youtube.com/@onthradar', title: 'On The Radar - YouTube' },
+            { url: 'https://www.youtube.com/watch?v=FWOlpMNO9TM', title: 'Emi Blue "LOBA" | On The Radar Performance - YouTube' },
+            { url: 'https://youtu.be/FWOlpMNO9TM', title: 'again' },
+            { url: 'https://www.youtube.com/watch?v=kArmog0Llu0', title: 'Emi Blue - LOBA (Visualizer Oficial)' },
+            { url: 42, title: null },
+          ],
+        }),
+      );
+    });
+    const found = await webYoutubeVideos('key', 'emmy blues loba', sig());
+    f.mockRestore();
+    expect(found).toEqual([
+      { id: 'FWOlpMNO9TM', title: 'Emi Blue "LOBA" | On The Radar Performance' },
+      { id: 'kArmog0Llu0', title: 'Emi Blue - LOBA (Visualizer Oficial)' },
+    ]);
+    expect(bodies[0]).toMatchObject({ query: 'emmy blues loba', include_domains: ['youtube.com', 'music.youtube.com'], max_results: 5 });
+  });
+
+  it('throws on an error answer, so the lookup can log it', async () => {
+    const f = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('nope', { status: 432 }));
+    await expect(webYoutubeVideos('key', 'x', sig())).rejects.toThrow(/432/);
+    f.mockRestore();
   });
 });
