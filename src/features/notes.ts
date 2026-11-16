@@ -94,6 +94,36 @@ export class UserNotes {
     return `Remembered: ${t}`;
   }
 
+  /** Rewrite a note that went out of date ("plays Valorant" → "used to play
+   *  Valorant"). It keeps its kind, so a note they asked for is never pushed
+   *  out as a guess; it stays private, since what she picked up may come from
+   *  anywhere. False when the note is gone. */
+  replace(userId: UserId, old: string, text: string): boolean {
+    const list = this.data[userId];
+    const i = list?.findIndex((n) => n.text.toLowerCase() === old.toLowerCase()) ?? -1;
+    const t = text.trim().replace(/\s+/g, ' ').slice(0, MAX_CHARS);
+    if (!list || i < 0 || !t) return false;
+    const was = list[i]!;
+    if (was.text === t) return false;
+    // Already a note with that wording: the old one just goes.
+    if (list.some((n, j) => j !== i && n.text.toLowerCase() === t.toLowerCase())) list.splice(i, 1);
+    else list[i] = { text: t, at: this.now(), source: was.source ?? 'told' };
+    this.save();
+    return true;
+  }
+
+  /** Remove a note she picked up herself that's no longer true. A note they
+   *  asked for only goes when they say so. */
+  dropLearned(userId: UserId, text: string): boolean {
+    const list = this.data[userId];
+    const i = list?.findIndex((n) => n.source === 'learned' && n.text.toLowerCase() === text.toLowerCase()) ?? -1;
+    if (!list || i < 0) return false;
+    list.splice(i, 1);
+    if (!list.length) delete this.data[userId];
+    this.save();
+    return true;
+  }
+
   /** Remove notes containing `what` (case-insensitive), or "all". */
   remove(userId: UserId, what: string): string[] {
     const list = this.data[userId] ?? [];

@@ -68,6 +68,7 @@ sudo adrian restart                        # most settings apply on restart
 | `brain.search.apiKeySecret` | `"TAVILY_API_KEY"` | Web search (optional) |
 | `brain.search.maxResults` | `4` | Results per search |
 | `brain.fallback.{provider,baseUrl,model,effort,apiKeySecret,extraBody}` | | Used when the main model fails before answering (outage, rate limit) |
+| `brain.background.{provider,baseUrl,model,effort,apiKeySecret,extraBody,priceInPerM,priceOutPerM}` | (unset) | Model for background jobs (automatic memory), for example a local Ollama (`baseUrl` defaults to `http://127.0.0.1:11434/v1`, prices to 0). When it's down, the main model does the job |
 
 Example, Claude main with a free Groq fallback (the wizard writes this for you):
 
@@ -245,6 +246,49 @@ To let others use it, add their Discord user IDs or role IDs (owners can always 
 "helix": { "url": "http://192.168.1.50:3100", "allow": { "start": ["123456789012345678"], "whitelist": ["223456789012345678"] } }
 ```
 
+## Weather, calendars, news and the morning briefing
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `weather.place` | (unset) | Where the household is, for the weather: a town (`"Springfield, Illinois"` picks the right Springfield). Only this goes to Open-Meteo (free, no key) |
+| `weather.latitude`, `weather.longitude` | (unset) | Coordinates instead of a place (set both) |
+| `weather.units` | `"fahrenheit"` | Or `"celsius"` |
+| `news.feeds` | NPR top stories | Up to 5 https RSS or Atom feeds for headlines (titles only); `[]` turns headlines off |
+| `calendar.calendars` | `[]` | Read-only calendars, each `{ "name": "personal", "urlSecret": "CALENDAR_ICS_URL" }` |
+| `calendar.people` | `[]` | Discord user IDs who may hear the calendars; empty means the owners |
+| `briefing.enabled` | `false` | The morning briefing on an owner's first join of the morning ("brief me" works either way) |
+| `briefing.fromHour`, `briefing.untilHour` | `5`, `12` | Hours (in `timezone`) when a join counts as the morning one |
+| `briefing.headlines` | `2` | Headlines in the briefing (0 for none) |
+
+A calendar is read from its private iCal address: in Google Calendar, open Settings, pick the calendar, and copy "Secret address in iCal format". Anyone with that address can read the calendar, so it goes in the secrets file: `sudo adrian secret set CALENDAR_ICS_URL`, then `sudo adrian config calendar.calendars '[{"name":"personal"}]'`. A second calendar needs its own secret name (`WORK_CALENDAR_URL`). Nothing can add or change events. Repeating events, moved and cancelled ones, and time zones are handled; files are read again after 5 minutes.
+
+The briefing is said without a model call: the weather, what's left on the calendar today, reminders due today, and the headlines. With other people in the call it says only how many events and reminders there are.
+
+## Home control (MCP, Home Assistant)
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `mcp.servers` | `[]` | MCP servers (streamable HTTP) whose tools she may use |
+| `mcp.servers[].name` | | Short name; her tools are called `<name>_<tool>` |
+| `mcp.servers[].url` | | Home Assistant: `http://<host>:8123/api/mcp/assist` (device control only) |
+| `mcp.servers[].tokenSecret` | `"HOME_ASSISTANT_TOKEN"` | Name of the token in `secrets.env` |
+| `mcp.servers[].allow` | `[]` | The tool names she may use; nothing else is offered |
+| `mcp.servers[].confirm` | `[]` | Tools that always need the person's yes first |
+| `mcp.servers[].confirmWords` | lock, unlock, door, garage, gate, alarm, oven, stove, security... | A call naming one of these words needs a yes too (Home Assistant locks and unlocks with the same turn on/off tools as lights) |
+| `mcp.servers[].people` | `[]` | Who may use them; empty means the owners |
+| `mcp.servers[].timeoutMs` | `8000` | Longest wait for an answer |
+
+Home Assistant: add the "Model Context Protocol Server" integration and use its device-control URL, `/api/mcp/assist`: it reaches only the entities exposed to voice assistants (Settings, Voice assistants, Expose), and works with a non-admin user. The main `/api/mcp` URL can include the "Home Assistant" tool set, which reads everything and can run any action, and needs an admin token; don't use it here. Make a user for her, create a long-lived access token on that user's profile page, then:
+
+```bash
+sudo adrian secret set HOME_ASSISTANT_TOKEN
+sudo adrian config mcp.servers '[{"name":"home","url":"http://127.0.0.1:8123/api/mcp/assist","allow":["HassTurnOn","HassTurnOff","HassLightSet","GetLiveContext"]}]'
+```
+
+The yes check reads the names in each call. A call for a whole area ("turn off the porch") names no device, so it can't tell a lock is in it: keep locks, garage doors and alarms out of the exposed entities unless you want her able to work them, and use `confirm` for any tool that should always ask.
+
+If the server doesn't answer at start, she tries again every 5 minutes and adds the tools once it does. The log line `home control ready` lists them, and `notOffered` lists allowed names the server doesn't have.
+
 ## Heads-ups and the weekly recap
 
 | Setting | Default | Meaning |
@@ -295,6 +339,8 @@ These are hand edits to `config.json` (see the top of this page).
 | `PLEX_TOKEN`, `SONARR_API_KEY`, `RADARR_API_KEY` | Media (read-only) |
 | `STEAM_API_KEY` | Steam friends (prices and wishlists work without it) |
 | `HELIX_TOKEN` | Minecraft server control through Helix (see [Minecraft server control](#minecraft-server-control-helix)) |
+| `CALENDAR_ICS_URL` | A calendar's private iCal address (see [Weather, calendars, news and the morning briefing](#weather-calendars-news-and-the-morning-briefing)) |
+| `HOME_ASSISTANT_TOKEN` | Home Assistant long-lived access token (see [Home control](#home-control-mcp-home-assistant)) |
 
 Set with `sudo adrian secret set NAME` (hidden prompt) or the admin page. Values are never shown again.
 

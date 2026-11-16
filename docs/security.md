@@ -12,6 +12,8 @@ A.D.R.I.A.N. listens to a voice channel anyone in your server can join, holds AP
 - Each setting may only reference keys meant for its own purpose. A language-model endpoint can't be pointed at `DISCORD_TOKEN` or `PLEX_TOKEN`, from the admin page, the CLI or a hand-edited config.
 - The admin page can't send a stored key anywhere new, so a hijacked admin session can't collect one. Provider tests use a stored key only with a built-in provider's own address; a custom endpoint gets only a key pasted for that test. A custom endpoint that uses a stored key can only be saved from the admin page if the config already pairs that address with that key. Otherwise set it with `sudo adrian config`.
 - Plex, Sonarr, Radarr and Tavily keys travel in request headers only, never in URLs.
+- A calendar's private iCal address counts as a key: it lives in `secrets.env`, is fetched over https only, with redirects refused, and goes nowhere else. The Home Assistant token goes only to its own server's address, also with redirects refused.
+- The weather service (Open-Meteo) gets only the place set in the config, never one from a request. Headlines come only from the configured feeds.
 
 **Your server**
 - The service runs as the `adrian` system user under systemd sandboxing:

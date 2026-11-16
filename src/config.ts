@@ -11,7 +11,7 @@ const snowflake = z.string().regex(/^\d{17,20}$/, 'must be a Discord ID (17-20 d
 /** Keys with one fixed job. A setting may only name a key meant for its own
  *  purpose, so an endpoint changed in the config (or the admin UI) can never
  *  be handed the bot token or another service's key. */
-export const SECRET_PURPOSE: Readonly<Record<string, 'discord' | 'search' | 'voice' | 'media' | 'steam' | 'helix'>> = {
+export const SECRET_PURPOSE: Readonly<Record<string, 'discord' | 'search' | 'voice' | 'media' | 'steam' | 'helix' | 'llm' | 'calendar' | 'mcp'>> = {
   DISCORD_TOKEN: 'discord',
   TAVILY_API_KEY: 'search',
   SPEECHIFY_API_KEY: 'voice',
@@ -21,13 +21,21 @@ export const SECRET_PURPOSE: Readonly<Record<string, 'discord' | 'search' | 'voi
   STEAM_API_KEY: 'steam',
   /** Helix server API token: starts, stops and restarts game servers. */
   HELIX_TOKEN: 'helix',
+  LLM_API_KEY: 'llm',
+  GROQ_API_KEY: 'llm',
+  ANTHROPIC_API_KEY: 'llm',
+  GEMINI_API_KEY: 'llm',
+  /** A calendar's private iCal address: whoever holds it can read the calendar. */
+  CALENDAR_ICS_URL: 'calendar',
+  /** Home Assistant long-lived access token: controls the house. */
+  HOME_ASSISTANT_TOKEN: 'mcp',
 };
 const SECRET_NAME = /^[A-Z][A-Z0-9_]{1,63}$/;
 /** A secret name for one purpose: llm keys may be empty (local servers). */
-export function keyName(purpose: 'llm' | 'search' | 'voice') {
+export function keyName(purpose: 'llm' | 'search' | 'voice' | 'calendar' | 'mcp') {
   return z.string().refine(
     (n) => (n === '' ? purpose === 'llm' : SECRET_NAME.test(n) && (SECRET_PURPOSE[n] === undefined || SECRET_PURPOSE[n] === purpose)),
-    `not a key for ${purpose === 'llm' ? 'a language model' : purpose}`,
+    `not a key for ${purpose === 'llm' ? 'a language model' : purpose === 'mcp' ? 'home control' : purpose}`,
   );
 }
 
@@ -113,6 +121,21 @@ export const PocConfigSchema = z.object({
       priceOutPerM: z.number().min(0).default(0),
       search: z
         .object({ apiKeySecret: keyName('search').default('TAVILY_API_KEY'), maxResults: z.number().int().min(1).max(8).default(4) })
+        .optional(),
+      /** Background jobs (automatic memory) on another model, such as a local
+       *  one (Ollama, llama.cpp): free when it's up; the main model answers
+       *  when it's down. Prices are per 1M tokens (0 for local). */
+      background: z
+        .object({
+          provider: z.enum(['openai', 'anthropic']).default('openai'),
+          baseUrl: z.url().default('http://127.0.0.1:11434/v1'),
+          model: z.string().min(1),
+          effort: z.enum(['low', 'medium', 'high']).default('low'),
+          apiKeySecret: keyName('llm').default(''),
+          extraBody: z.record(z.string(), z.unknown()).optional(),
+          priceInPerM: z.number().min(0).default(0),
+          priceOutPerM: z.number().min(0).default(0),
+        })
         .optional(),
       /** Used when the primary fails before answering (rate limit, outage). */
       fallback: z
@@ -329,6 +352,70 @@ export const PocConfigSchema = z.object({
       minHours: z.number().min(0.5).max(720).default(6),
     })
     .default({ enabled: false, people: [], awayHours: 4, minHours: 6 }),
+  /** Weather where the household is (Open-Meteo, no key): a place name
+   *  ("Denver, Colorado") or coordinates. Only this is sent. */
+  weather: z
+    .object({
+      place: z.string().min(2).max(100).optional(),
+      latitude: z.number().min(-90).max(90).optional(),
+      longitude: z.number().min(-180).max(180).optional(),
+      units: z.enum(['fahrenheit', 'celsius']).default('fahrenheit'),
+    })
+    .refine((w) => (w.latitude === undefined) === (w.longitude === undefined), 'set both latitude and longitude, or neither')
+    .default({ units: 'fahrenheit' }),
+  /** News feeds (RSS or Atom, https) for headlines; empty: no headlines tool. */
+  news: z
+    .object({ feeds: z.array(z.url().refine((u) => u.startsWith('https://'), 'must be an https:// address')).max(5).default(['https://feeds.npr.org/1001/rss.xml']) })
+    .default({ feeds: ['https://feeds.npr.org/1001/rss.xml'] }),
+  /** Read-only calendars: each one's private iCal address is a secret
+   *  (CALENDAR_ICS_URL for the first). Only `people` (empty: the owners) can
+   *  ask about them. */
+  calendar: z
+    .object({
+      calendars: z
+        .array(z.object({ name: z.string().regex(/^[\p{L}\p{N} _-]{1,30}$/u, 'a short name'), urlSecret: keyName('calendar').default('CALENDAR_ICS_URL') }))
+        .max(5)
+        .default([]),
+      people: z.array(snowflake).max(10).default([]),
+    })
+    .default({ calendars: [], people: [] }),
+  /** The morning briefing (weather, the rest of today's calendar and
+   *  reminders, headlines) on an owner's first join of the morning. Off by
+   *  default; "brief me" works either way. */
+  briefing: z
+    .object({
+      enabled: z.boolean().default(false),
+      /** Household hours (in `timezone`) when a join counts as the morning one. */
+      fromHour: z.number().int().min(0).max(23).default(5),
+      untilHour: z.number().int().min(1).max(24).default(12),
+      headlines: z.number().int().min(0).max(5).default(2),
+    })
+    .refine((b) => b.untilHour > b.fromHour, 'untilHour must be after fromHour')
+    .default({ enabled: false, fromHour: 5, untilHour: 12, headlines: 2 }),
+  /** MCP servers whose tools she may use, such as Home Assistant's
+   *  (http://<host>:8123/api/mcp/assist, token HOME_ASSISTANT_TOKEN). Only the
+   *  tool names in `allow` are offered; only `people` (empty: the owners) can
+   *  use them; tools in `confirm`, and any call naming a `confirmWords` word,
+   *  need the person's yes first. */
+  mcp: z
+    .object({
+      servers: z
+        .array(
+          z.object({
+            name: z.string().regex(/^[a-z][a-z0-9_]{0,15}$/, 'lowercase letters, digits and _, up to 16'),
+            url: z.url(),
+            tokenSecret: keyName('mcp').default('HOME_ASSISTANT_TOKEN'),
+            allow: z.array(z.string().min(1).max(64)).max(50).default([]),
+            confirm: z.array(z.string().min(1).max(64)).max(50).default([]),
+            confirmWords: z.array(z.string().min(2).max(30)).max(50).default(['lock', 'locks', 'unlock', 'door', 'doors', 'garage', 'gate', 'alarm', 'valve', 'oven', 'stove', 'security']),
+            people: z.array(snowflake).max(10).default([]),
+            timeoutMs: z.number().int().min(1000).max(30_000).default(8000),
+          }),
+        )
+        .max(5)
+        .default([]),
+    })
+    .default({ servers: [] }),
   /** The weekly recap in a text channel: on once a channel is set, unless enabled is false. */
   recap: z
     .object({

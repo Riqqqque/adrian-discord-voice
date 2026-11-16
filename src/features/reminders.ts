@@ -5,6 +5,7 @@
 import { readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import type { Tool, ToolContext, UserId } from '../core/interfaces.js';
+import { dateFormat } from '../core/time.js';
 import { writeJsonFile } from '../web/secrets-file.js';
 
 export interface Reminder {
@@ -33,7 +34,8 @@ const WEEK_MS = 7 * 24 * 3_600_000;
 /** Offset of `tz` from UTC at instant `ms`, in ms. */
 function tzOffset(ms: number, tz: string): number {
   const p = Object.fromEntries(
-    new Intl.DateTimeFormat('en-US', { timeZone: tz, hourCycle: 'h23', year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', second: 'numeric' })
+    // Built once per zone: calendars convert thousands of times.
+    dateFormat('en-US', { timeZone: tz, hourCycle: 'h23', year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', second: 'numeric' })
       .formatToParts(ms)
       .map((x) => [x.type, x.value]),
   ) as Record<string, string>;
