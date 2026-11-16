@@ -195,6 +195,9 @@ export interface Tool {
    *  looking something up. An answer that did that ends the conversation:
    *  she stops listening for follow-ups, unless she asked a question. */
   acts?: boolean | ((args: Record<string, unknown>) => boolean);
+  /** Words that make this tool worth offering (brain/tool-router.ts); a
+   *  request without them leaves it out. Unset: the router decides. */
+  route?: RegExp;
 }
 
 export interface SecretsStore {

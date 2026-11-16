@@ -140,7 +140,7 @@ They need the bot's **Message Content** intent (Developer Portal â†’ your app â†
   - When one goes off, it's announced in the call if you're in it and can hear it. If not, one you set at your PC goes off there, with a DM as well. Otherwise you get a DM (or, muted in the call, it's still announced there).
 - **Notes:**
   - "Remember that I'm allergic to peanuts", "forget my birthday". Up to 30 notes per person.
-  - It also notes useful facts on its own every few answers (`autoMemory`).
+  - It also notes useful facts on its own every few answers (`autoMemory`), and keeps them true: "I quit Valorant" rewrites "plays Valorant" instead of keeping both, and a plan that was called off goes. Notes you asked it to remember are only reworded, never dropped by themselves.
   - Your notes are only ever used when **you** talk to it. It never tells anyone else what's in them.
   - In a server, where others can hear or read the answer, it only uses notes you told it in that server, or the ones your own words ask about. In a DM or at your PC it uses them all. What it picked up by itself, and notes saved before this rule, count as private.
   - "Forget" says how many notes went, not which ones.
@@ -201,6 +201,19 @@ With `headsUp.enabled` on (it's off by default), owners who join her call after 
 - A game server is mentioned only if it went down since you last heard about it.
 - She doesn't listen on after a heads-up, so what you say next to the others stays yours. "Adrian, stop telling me that" turns them off for you, for good; "turn my heads-ups back on" undoes it.
 - Not while a music quiz runs either.
+
+## Weather, calendar, news and the morning briefing
+
+- "What's the weather?", "will it rain tomorrow?", "what's the week look like?" use the household's place (`weather.place`).
+- "What's in the news?" reads the top headlines. For a particular story she still searches the web.
+- "What's on my calendar today?", "am I free Friday?" (owners only, read-only).
+- "Good morning" or "brief me": the weather, what's left on your calendar today, reminders due today and a couple of headlines.
+- With `briefing.enabled`, an owner hears the briefing on their first join of the morning (5 AM to noon by default), even with heads-ups off. With other people in the call, she only says how many events and reminders you have. "Stop the morning briefing" turns it off for you.
+
+## Home control
+
+- With a Home Assistant MCP server set up (`mcp.servers`), owners can say "turn off the kitchen lights" or "is the garage door open?".
+- Only the tools in the server's `allow` list exist for her. Anything naming a lock, door, garage, alarm or the like asks "Okay to ...?" first, and only your own yes on your next turn does it.
 
 ## Weekly recap
 

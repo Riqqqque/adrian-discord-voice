@@ -8,6 +8,7 @@
 import { readFileSync } from 'node:fs';
 import type { Tool, UserId } from '../core/interfaces.js';
 import { writeJsonFile } from '../web/secrets-file.js';
+import { dayKey } from './calendar.js';
 import { digestLine, gatherNews, hasSources, sinceWords, type News, type Sources } from './digest.js';
 
 const HOUR = 3_600_000;
@@ -39,6 +40,10 @@ interface Person {
   named?: boolean;
   /** Game servers up (true) or down when they were last told or checked. */
   known?: Record<string, boolean>;
+  /** The household day of their last morning briefing (YYYY-MM-DD). */
+  briefed?: string;
+  /** They asked for no morning briefing. */
+  briefOff?: boolean;
 }
 
 export interface HeadsUpSettings {
@@ -62,6 +67,15 @@ export interface HeadsUpDeps {
   /** Say it in the call; resolves true once heard. */
   say: (id: UserId, line: string) => Promise<boolean>;
   log?: { info(m: string, f?: object): void; warn(m: string, f?: object): void };
+  /** The morning briefing (features/briefing.ts): on the first join of the
+   *  morning it comes before the heads-up, whether or not one is due. */
+  morning?: {
+    fromHour: number;
+    untilHour: number;
+    line: (id: UserId, alone: boolean) => Promise<string | undefined>;
+  };
+  /** Nobody else is in the call with them: private details may be said. */
+  alone?: (id: UserId) => boolean;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
 }
@@ -151,7 +165,17 @@ export class HeadsUp {
     this.members(new Set(), true);
   }
 
+  /** Is a morning briefing due for this join? */
+  private morningDue(id: UserId, before: Person | undefined): boolean {
+    const m = this.d.morning;
+    if (!m || !this.tracked(id) || before?.briefOff || this.pending.has(id)) return false;
+    const now = this.now();
+    const hour = Number(new Intl.DateTimeFormat('en-US', { timeZone: this.d.timezone, hour: 'numeric', hourCycle: 'h23' }).format(now));
+    return hour >= m.fromHour && hour < m.untilHour && before?.briefed !== dayKey(now, this.d.timezone);
+  }
+
   private joined(id: UserId, before: Person | undefined): void {
+    const morning = this.morningDue(id, before);
     const gate = headsUpGate({
       enabled: this.settings.enabled,
       tracked: this.tracked(id),
@@ -161,30 +185,35 @@ export class HeadsUp {
       minHours: this.settings.minHours,
       pending: this.pending.has(id),
     });
-    if (gate !== 'ok') {
-      if (gate !== 'off' && gate !== 'not tracked') this.d.log?.info('heads-up skipped', { user: id, reason: gate });
+    const digest = gate === 'ok' && hasSources(this.d.sources);
+    if (!digest && !morning) {
+      if (gate !== 'ok' && gate !== 'off' && gate !== 'not tracked') this.d.log?.info('heads-up skipped', { user: id, reason: gate });
       return;
     }
-    if (!hasSources(this.d.sources)) return;
     this.pending.add(id);
-    void this.tell(id, before!).finally(() => this.pending.delete(id));
+    void this.tell(id, before ?? { seen: this.now() - DEFAULT_SINCE_MS }, { digest, morning }).finally(() => this.pending.delete(id));
   }
 
   /** Exposed for tests: the whole heads-up for one join. */
-  async tell(id: UserId, before: Person): Promise<string> {
+  async tell(id: UserId, before: Person, what: { digest: boolean; morning: boolean } = { digest: true, morning: false }): Promise<string> {
     const since = Math.max(before.seen, before.told ?? 0);
-    const news = gatherNews(this.d.sources, since, this.now(), NEWS_TIMEOUT_MS);
+    const news = what.digest ? gatherNews(this.d.sources, since, this.now(), NEWS_TIMEOUT_MS) : undefined;
+    const alone = () => this.d.alone?.(id) ?? false;
+    let wasAlone = alone();
+    const brief = what.morning && this.d.morning ? this.d.morning.line(id, wasAlone).catch(() => undefined) : Promise.resolve(undefined);
     await this.sleep(SETTLE_MS);
     const n = await news;
+    let morning = await brief;
     const p = this.people[id];
-    const down = wentDown(n, before.known);
+    const down = n ? wentDown(n, before.known) : [];
     // Servers seen up are learned now; one seen down only once they have heard it, or it would never be said.
-    if (p) p.known = { ...before.known, ...Object.fromEntries(Object.entries(n.servers).filter(([, up]) => up)) };
+    if (p && n) p.known = { ...before.known, ...Object.fromEntries(Object.entries(n.servers).filter(([, up]) => up)) };
     this.saveSoon();
     const name = this.d.name?.(id);
-    const line = digestLine(n, down, { since: sinceWords(since, this.now(), this.d.timezone), ...(name ? { lead: name } : {}) });
+    // The briefing already greets them by name.
+    const digest = n ? digestLine(n, down, { since: sinceWords(since, this.now(), this.d.timezone), ...(name && !morning ? { lead: name } : {}) }) : undefined;
     const skip = (reason: string) => (this.d.log?.info('heads-up skipped', { user: id, reason }), reason);
-    if (!line) return skip(n.failed.length ? 'sources down' : 'nothing new');
+    if (!digest && !morning) return skip(what.morning ? 'nothing to brief' : n?.failed.length ? 'sources down' : 'nothing new');
     const end = this.now() + QUIET_WAIT_MS;
     for (;;) {
       if (!this.present.has(id) || !this.d.audible(id)) return skip('left or deafened');
@@ -193,17 +222,28 @@ export class HeadsUp {
       await this.sleep(POLL_MS);
     }
     // Opted out or told elsewhere while it waited.
-    if (this.people[id]?.off) return skip('opted out');
+    const off = !!this.people[id]?.off;
+    if (this.people[id]?.briefOff) morning = undefined;
+    // Someone else came in while it waited: their details stay private.
+    if (morning && wasAlone && !alone()) {
+      wasAlone = false;
+      morning = await this.d.morning!.line(id, false).catch(() => undefined);
+    }
+    const said = off ? undefined : digest;
+    const line = [morning, said].filter(Boolean).join(' ');
+    if (!line) return skip(off ? 'opted out' : 'nothing left to say');
     const heard = await this.d.say(id, line);
     if (!heard) return skip('not heard');
     const q = this.people[id];
-    if (q) {
+    if (q && said && n) {
       q.told = this.now();
       q.known = { ...q.known, ...n.servers };
     }
+    if (q && morning) q.briefed = dayKey(this.now(), this.d.timezone);
     this.recent.set(id, { line, at: this.now() });
     this.saveSoon();
-    this.d.log?.info('heads-up', { user: id, episodes: n.episodes, movies: n.movies.length, serversDown: down.length });
+    if (morning) this.d.log?.info('morning briefing', { user: id, private: wasAlone, words: morning.split(/\s+/).length });
+    if (said && n) this.d.log?.info('heads-up', { user: id, episodes: n.episodes, movies: n.movies.length, serversDown: down.length });
     return 'told';
   }
 
@@ -211,7 +251,7 @@ export class HeadsUp {
   context(id: UserId, speaker: string): string[] {
     const r = this.recent.get(id);
     if (!r || this.now() - r.at > RECENT_MS) return [];
-    return [`When ${speaker} joined the call you gave them a heads-up: "${r.line}" If they say to stop telling them that, call digest_prefs with heads_up false.`];
+    return [`When ${speaker} joined the call you gave them a heads-up: "${r.line}" If they say to stop telling them that, call digest_prefs with heads_up false (morning_briefing false for the morning weather, calendar and news part).`];
   }
 
   /** Did this person agree to be named in the weekly recap? */
@@ -286,8 +326,8 @@ export class HeadsUp {
         spec: {
           name: 'digest_prefs',
           description:
-            'The asking person\'s own choices: heads_up false stops the short "since yesterday: ..." line when they join the call ("stop telling me that"), true turns it back on. name_in_recap true lets the weekly recap name them in its question count, false keeps them out.',
-          parameters: { type: 'object', properties: { heads_up: { type: 'boolean' }, name_in_recap: { type: 'boolean' } }, additionalProperties: false },
+            'The asking person\'s own choices: heads_up false stops the short "since yesterday: ..." line when they join the call ("stop telling me that"), true turns it back on. morning_briefing false stops the morning weather, calendar and news briefing on their first join of the day, true turns it back on. name_in_recap true lets the weekly recap name them in its question count, false keeps them out.',
+          parameters: { type: 'object', properties: { heads_up: { type: 'boolean' }, morning_briefing: { type: 'boolean' }, name_in_recap: { type: 'boolean' } }, additionalProperties: false },
         },
         acts: true,
         run: async (a, _s, ctx) => {
@@ -299,13 +339,20 @@ export class HeadsUp {
             this.recent.delete(ctx.userId);
             said.push(a.heads_up ? (this.tracked(ctx.userId) && this.settings.enabled ? "Okay, I'll catch you up when you join." : 'Okay. Heads-ups are only for owners here, or are switched off.') : "Okay, I won't tell you that when you join anymore.");
           }
+          if (typeof a.morning_briefing === 'boolean') {
+            const p = this.pref(ctx.userId);
+            if (a.morning_briefing) delete p.briefOff;
+            else p.briefOff = true;
+            this.recent.delete(ctx.userId);
+            said.push(a.morning_briefing ? (this.tracked(ctx.userId) && this.d.morning ? "Okay, I'll brief you on your first join in the morning." : 'Okay. Morning briefings are only for owners here, or are switched off.') : 'Okay, no more morning briefings.');
+          }
           if (typeof a.name_in_recap === 'boolean') {
             const p = this.pref(ctx.userId);
             if (a.name_in_recap) p.named = true;
             else delete p.named;
             said.push(a.name_in_recap ? "Okay, the weekly recap can name you." : "Okay, I'll leave your name out of the recap.");
           }
-          if (!said.length) return 'Ask whether they want heads-ups on joining, or to be named in the weekly recap.';
+          if (!said.length) return 'Ask whether they want heads-ups on joining, or the morning briefing, or to be named in the weekly recap.';
           this.flush();
           return said.join(' ');
         },

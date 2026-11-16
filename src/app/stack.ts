@@ -26,6 +26,11 @@ import { PartyGames } from '../features/games.js';
 import { AutoMemory } from '../features/automemory.js';
 import { gameServerTool, pingMinecraft } from '../features/gameservers.js';
 import { HeadsUp } from '../features/headsup.js';
+import { Briefing } from '../features/briefing.js';
+import { Calendars } from '../features/calendar.js';
+import { Headlines } from '../features/headlines.js';
+import { connectMcp, type McpServer } from '../features/mcp.js';
+import { Weather } from '../features/weather.js';
 import { HelixClient } from '../features/helix.js';
 import { ServerControl } from '../features/servercontrol.js';
 import { mediaTools } from '../features/media.js';
@@ -424,6 +429,31 @@ export async function startVoiceStack(
     // A quiz clip isn't "now playing", but the music is lent to it.
     return talking.size === 0 && now - lastTalkAt > 4_000 && !music?.nowPlaying && !music?.lent && !controller.busy && controller.queued === 0;
   };
+  // --- weather, calendars, headlines, the morning briefing ----------------
+  const weather = new Weather(config.weather, config.timezone);
+  const headlines = new Headlines(config.news.feeds);
+  const calSources = config.calendar.calendars.flatMap((c) => {
+    const url = secrets.get(c.urlSecret);
+    if (!url) log.warn('calendar address missing; that calendar stays off', { calendar: c.name, secret: c.urlSecret });
+    return url ? [{ name: c.name, url }] : [];
+  });
+  const calendars = calSources.length ? new Calendars(calSources, config.timezone) : undefined;
+  /** Whose calendar it is: they alone may hear it. */
+  const calendarFor = (id: UserId) => (config.calendar.people.length ? config.calendar.people.includes(id) : isOwner(id));
+  /** Nobody else is in her call with this person. */
+  const aloneInCall = (id: UserId) => {
+    const here = humansHere();
+    return here.size === 1 && here.has(id);
+  };
+  const briefing = new Briefing({
+    weather,
+    calendars,
+    headlines,
+    reminders: (id) => reminders.forUser(id),
+    calendarFor,
+    timezone: config.timezone,
+    headlineCount: config.briefing.headlines,
+  });
   const headsUp = new HeadsUp(stateDir ? join(stateDir, 'heads-up.json') : undefined, config.headsUp, {
     sources: digestSources,
     timezone: config.timezone,
@@ -438,6 +468,16 @@ export async function startVoiceStack(
       if (heard && spot) room.add(spot.channelId, 'bot', `You (heads-up for ${nameOf(id)})`, line);
       return heard;
     },
+    ...(config.briefing.enabled && briefing.usable
+      ? {
+          morning: {
+            fromHour: config.briefing.fromHour,
+            untilHour: config.briefing.untilHour,
+            line: (id: UserId, alone: boolean) => briefing.line(id, { name: config.nicknames[id] ?? nameOf(id), private: alone }),
+          },
+        }
+      : {}),
+    alone: aloneInCall,
     log,
   });
   /** People in her call (not bots). Right after she joins or moves, nobody there is arriving. */
@@ -510,6 +550,8 @@ export async function startVoiceStack(
   let orchestrator: ConversationOrchestrator | undefined;
   let dmOrchestrator: ConversationOrchestrator | undefined;
   let autoMemory: AutoMemory | undefined;
+  /** MCP servers (home control), stopped with the stack. */
+  let mcpLink: { stop: () => void } | undefined;
   /** People whose clipboard or screen was read lately: the transcript log
    *  keeps only the length of her answers to them for the rest of that
    *  conversation (until 10 minutes pass without one). */
@@ -624,6 +666,23 @@ export async function startVoiceStack(
       if (config.steam.enabled)
         tools.push(...steamTools(new Steam({ ...config.steam, apiKey: secrets.get(STEAM_KEY), nameOf: (id) => nameOf(id), timezone: config.timezone })));
       tools.push(...headsUp.tools((id) => (userLang.get(id) ?? 'en') === 'en'), ...recap.tools());
+      if (weather.usable) tools.push(weather.tool());
+      if (headlines.usable) tools.push(headlines.tool());
+      if (calendars) tools.push(calendars.tool(calendarFor));
+      // Asked for, details are fine where nobody else hears: a DM, their PC, or a call with only them in it.
+      if (briefing.usable)
+        tools.push(briefing.tool((id) => (userLang.get(id) ?? 'en') === 'en', (ctx) => !ctx.guildId || !!ctx.channelId?.startsWith('sat:') || (!!spot && ctx.channelId === spot.channelId && aloneInCall(ctx.userId))));
+      // Home control through MCP servers: their tools join this list once each server answers.
+      const homeServers: McpServer[] = config.mcp.servers.flatMap((m) => {
+        const token = secrets.get(m.tokenSecret);
+        if (!token) {
+          log.warn('home control token missing; that server stays off', { server: m.name, secret: m.tokenSecret });
+          return [];
+        }
+        const people = m.people;
+        return [{ ...m, token, people: (id: UserId) => (people.length ? people.includes(id) : isOwner(id)) }];
+      });
+      if (homeServers.length) mcpLink = connectMcp(homeServers, tools, log);
       // Claude through its own SDK, anything else through the OpenAI-compatible adapter.
       const makeLlm = (p: { provider: 'openai' | 'anthropic'; baseUrl: string; model: string; effort: 'low' | 'medium' | 'high'; extraBody?: Record<string, unknown> | undefined }, key?: string): LlmProvider =>
         p.provider === 'anthropic'
@@ -646,9 +705,22 @@ export async function startVoiceStack(
         );
       }
       if (config.autoMemory) {
-        autoMemory = new AutoMemory(llm, notes, sessions, log, (inTok, outTok) =>
-          ledger.addCost((inTok * brain.priceInPerM + outTok * brain.priceOutPerM) / 1e6),
+        // A background model (a local one, say) learns; the main one steps in when it's down.
+        const bg = brain.background;
+        const bgKey = bg?.apiKeySecret ? secrets.get(bg.apiKeySecret) : undefined;
+        if (bg?.apiKeySecret && !bgKey) log.warn('background model has no key; memory uses the main model', { secret: bg.apiKeySecret });
+        const bgLlm = bg && (!bg.apiKeySecret || bgKey) ? makeLlm(bg, bgKey) : undefined;
+        autoMemory = new AutoMemory(
+          bgLlm ?? llm,
+          notes,
+          sessions,
+          log,
+          (inTok, outTok, model) =>
+            ledger.addCost(bgLlm && bg && model === bgLlm.model && model !== llm.model ? (inTok * bg.priceInPerM + outTok * bg.priceOutPerM) / 1e6 : (inTok * brain.priceInPerM + outTok * brain.priceOutPerM) / 1e6),
+          4,
+          bgLlm ? llm : undefined,
         );
+        if (bgLlm) log.info('memory model', { model: bgLlm.model });
       }
       quizzes.useJudge(modelJudge(llm, (inTok, outTok) => ledger.addCost((inTok * brain.priceInPerM + outTok * brain.priceOutPerM) / 1e6)));
       const brainOptions: OrchestratorOptions = {
@@ -1690,6 +1762,7 @@ export async function startVoiceStack(
       quiet.stop();
       recap.stop();
       control?.stop();
+      mcpLink?.stop();
       headsUp.left();
       headsUp.flush();
       music?.stop();

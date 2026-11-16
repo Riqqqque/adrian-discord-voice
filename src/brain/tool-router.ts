@@ -52,5 +52,5 @@ export function routeTools(all: Tool[], text: string, hints: RouteHints = {}): T
   const grouped = new Set(GROUPS.flatMap((g) => g.tools));
   const want = new Set(all.map((t) => t.spec.name).filter((n) => !grouped.has(n))); // get_time, web_search
   for (const g of GROUPS) if (g.words.test(text) || g.when?.(hints)) for (const n of g.tools) want.add(n);
-  return all.filter((t) => want.has(t.spec.name));
+  return all.filter((t) => (t.route ? t.route.test(text) : want.has(t.spec.name)));
 }
