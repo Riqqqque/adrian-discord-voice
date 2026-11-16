@@ -43,6 +43,39 @@ export async function topResultUrl(apiKey: string, query: string, signal: AbortS
   return j.results?.map((r) => r.url).find((u): u is string => typeof u === 'string' && /^https?:\/\//i.test(u));
 }
 
+/** YouTube videos the web finds for some words, best first (`{ id, title }`).
+ *  A search engine reads past misspelled names ("emmy blues loba") that
+ *  YouTube's own search takes literally. */
+export async function webYoutubeVideos(apiKey: string, query: string, signal: AbortSignal): Promise<{ id: string; title: string }[]> {
+  const res = await fetch('https://api.tavily.com/search', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
+    body: JSON.stringify({ query: query.slice(0, 200), search_depth: 'basic', max_results: 5, include_answer: false, include_domains: ['youtube.com', 'music.youtube.com'] }),
+    signal,
+  });
+  if (!res.ok) throw new Error(`web search answered ${res.status}`);
+  const j = (await res.json()) as { results?: { url?: unknown; title?: unknown }[] } | null;
+  const out: { id: string; title: string }[] = [];
+  for (const r of j?.results ?? []) {
+    if (typeof r?.url !== 'string' || typeof r.title !== 'string') continue;
+    const id = youtubeVideoId(r.url);
+    if (id && !out.some((o) => o.id === id)) out.push({ id, title: r.title.replace(/\s+-\s+YouTube( Music)?$/i, '') });
+  }
+  return out;
+}
+
+/** The video id in a youtube.com/watch, music.youtube.com/watch or youtu.be address. */
+export function youtubeVideoId(url: string): string | undefined {
+  try {
+    const u = new URL(url);
+    const host = u.hostname.replace(/^(www|m)\./, '');
+    const id = host === 'youtu.be' ? u.pathname.slice(1) : (host === 'youtube.com' || host === 'music.youtube.com') && u.pathname === '/watch' ? u.searchParams.get('v') : undefined;
+    return id && /^[\w-]{11}$/.test(id) ? id : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function tavilySearchTool(apiKey: string, maxResults = 4): Tool {
   return {
     slow: true,

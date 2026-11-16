@@ -13,7 +13,7 @@ import { ConversationOrchestrator, type OrchestratorOptions, type Usage } from '
 import { OpenAiCompatibleLlm } from '../brain/openai-compatible.js';
 import { AnthropicLlm } from '../brain/anthropic.js';
 import { SessionMemory } from '../brain/sessions.js';
-import { cachedTool, tavilySearchTool, timeTool, topResultUrl } from '../brain/tools.js';
+import { cachedTool, tavilySearchTool, timeTool, topResultUrl, webYoutubeVideos } from '../brain/tools.js';
 import type { PocConfig } from '../config.js';
 import { ConversationController, DEFAULT_CONTROLLER_OPTIONS } from '../conversation/controller.js';
 import type { LlmProvider, Logger, Tool, UserId, VoiceTransport } from '../core/interfaces.js';
@@ -203,7 +203,17 @@ export async function startVoiceStack(
   // --- music --------------------------------------------------------------
   const ytdlp = mc.ytdlp ?? join(langModels, MODEL_LAYOUT.ytdlp);
   const musicSources: MusicSource[] = [];
-  if (mc.enabled && existsSync(ytdlp)) musicSources.push(new YoutubeSource({ ytdlp, node: process.execPath, searchApi: YTM_API }));
+  // The web search key, when there is one, also helps find songs whose names were misheard.
+  const musicWebKey = config.brain?.search ? secrets.get(config.brain.search.apiKeySecret) : undefined;
+  if (mc.enabled && existsSync(ytdlp))
+    musicSources.push(
+      new YoutubeSource({
+        ytdlp,
+        node: process.execPath,
+        searchApi: YTM_API,
+        ...(musicWebKey ? { findVideos: (q: string, signal: AbortSignal) => webYoutubeVideos(musicWebKey, q, signal) } : {}),
+      }),
+    );
   const plexForMusic = secrets.get('PLEX_TOKEN');
   if (mc.enabled && mc.plexBackup && plexForMusic) musicSources.push(new PlexMusicSource({ url: config.media.plexUrl, token: plexForMusic }));
   const ffmpegOk = mc.enabled && spawnSync(mc.ffmpeg, ['-version'], { stdio: 'ignore' }).status === 0;
