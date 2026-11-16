@@ -192,7 +192,7 @@ interface YtmSearch {
 /** What yt-dlp would take: the first of the top three rows with an id. If that
  *  one is too long or can't be read, it's left to yt-dlp: the next row down may
  *  be a cover or another artist, so it's never taken instead. */
-function pickSong(res: YtmSearch): string | undefined {
+function pickSong(res: YtmSearch): { id: string; text: string } | undefined {
   const sections = res.contents?.tabbedSearchResultsRenderer?.tabs?.[0]?.tabRenderer?.content?.sectionListRenderer?.contents ?? [];
   for (const { musicResponsiveListItemRenderer: it } of sections.flatMap((s) => s.musicShelfRenderer?.contents ?? []).slice(0, 3)) {
     const id = it?.playlistItemData?.videoId ?? it?.overlay?.musicItemThumbnailOverlayRenderer?.content?.musicPlayButtonRenderer?.playNavigationEndpoint?.watchEndpoint?.videoId;
@@ -200,10 +200,54 @@ function pickSong(res: YtmSearch): string | undefined {
     const runs = it?.flexColumns?.[1]?.musicResponsiveListItemFlexColumnRenderer?.text?.runs ?? [];
     const dur = runs.map((r) => r.text ?? '').filter((t) => /^\d+:\d\d(:\d\d)?$/.test(t)).at(-1);
     const seconds = dur?.split(':').reduce((a, b) => a * 60 + Number(b), 0);
-    return VIDEO_ID.test(id) && seconds && seconds <= MAX_SONG_S ? id : undefined;
+    if (!VIDEO_ID.test(id) || !seconds || seconds > MAX_SONG_S) return undefined;
+    // Title, artists and album: what the request's words are checked against.
+    const text = (it?.flexColumns ?? [])
+      .slice(0, 2)
+      .flatMap((c) => c?.musicResponsiveListItemFlexColumnRenderer?.text?.runs ?? [])
+      .map((r) => (typeof r?.text === 'string' ? r.text : ''))
+      .join(' ');
+    return { id, text };
   }
   return undefined;
 }
+
+/** Words that say nothing about which song: left out of the match. */
+const FILLER_WORDS = new Set('the a an and of on in at to by ft feat featuring with song music official audio video lyrics lyric hd hq new'.split(' '));
+
+/** The words of a title or a request, lowercase and without accents or punctuation. */
+export function matchWords(s: string): string[] {
+  return s
+    .normalize('NFKD')
+    .replace(/[̀-ͯ]/g, '')
+    .toLowerCase()
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter((w) => w.length > 1 && !FILLER_WORDS.has(w));
+}
+
+/** One edit apart (a letter added, dropped or changed): "weekend" and "weeknd". */
+function oneEdit(a: string, b: string): boolean {
+  if (Math.abs(a.length - b.length) > 1) return false;
+  let i = 0;
+  while (i < a.length && a[i] === b[i]) i++;
+  if (a.length === b.length) return a.slice(i + 1) === b.slice(i + 1);
+  return a.length > b.length ? a.slice(i + 1) === b.slice(i) : a.slice(i) === b.slice(i + 1);
+}
+
+const sameWord = (q: string, w: string) =>
+  q === w || (Math.min(q.length, w.length) >= 4 && (q.startsWith(w) || w.startsWith(q) || oneEdit(q, w)));
+
+/** How much of what was asked for a result's title, artist and channel cover:
+ *  0 (none of the words) to 1 (all of them). */
+export function matchScore(query: string, text: string): number {
+  const asked = [...new Set(matchWords(query))];
+  if (!asked.length) return 1;
+  const have = matchWords(text);
+  return asked.filter((q) => have.some((w) => sameWord(q, w))).length / asked.length;
+}
+
+/** A song result covering less than this of the words gets checked against regular YouTube videos. */
+const WEAK_MATCH = 0.5;
 
 /** A list of tracks (album, playlist, radio, podcast show). */
 export interface Collection {
@@ -268,7 +312,7 @@ export class YoutubeSource implements MusicSource {
 
   /** A song's id from YouTube Music's search, one request instead of starting
    *  yt-dlp. The API isn't documented: anything odd leaves it to yt-dlp. */
-  private async searchSongs(query: string, sig: AbortSignal): Promise<string | undefined> {
+  private async searchSongs(query: string, sig: AbortSignal): Promise<{ id: string; text: string } | undefined> {
     if (!this.o.searchApi) return undefined;
     try {
       const r = await fetch(`${this.o.searchApi}/youtubei/v1/search?prettyPrint=false`, {
@@ -319,7 +363,16 @@ export class YoutubeSource implements MusicSource {
     if (this.paused) throw new YoutubePaused();
     const long = NOT_A_SONG.test(query);
     let via = 'direct';
-    let id = long ? undefined : await this.searchSongs(query, signal);
+    const song = long ? undefined : await this.searchSongs(query, signal);
+    let id = song?.id;
+    // The song catalog has studio tracks only. A request it barely matches (a
+    // live session or a performance video, typed by its exact YouTube title,
+    // came back as another artist's song of the same name) gets a regular
+    // YouTube search too, and the video whose title and channel match best.
+    if (song && matchScore(query, song.text) < WEAK_MATCH) {
+      const better = await this.closerVideo(query, matchScore(query, song.text), signal);
+      if (better) return { id: better, via: 'ytsearch-match' };
+    }
     if (!id && !long) {
       via = 'ytdlp';
       id = await this.firstId(ytm(query, 'songs'), signal);
@@ -331,6 +384,28 @@ export class YoutubeSource implements MusicSource {
       id = pickVideo(out, long);
     }
     return id ? { id, via } : undefined;
+  }
+
+  /** Of YouTube's top five videos for the words, the one whose title and channel
+   *  match them best, if it matches clearly better than `than` (the song's score).
+   *  Anything that goes wrong here keeps the song. */
+  private async closerVideo(query: string, than: number, signal: AbortSignal): Promise<string | undefined> {
+    let out: string;
+    try {
+      out = await this.run(this.o.ytdlp, [...this.base(), '--flat-playlist', '--print', '%(id)s\t%(duration)s\t%(live_status)s\t%(title)s\t%(channel)s', `ytsearch5:${query}`], signal);
+    } catch (e) {
+      if (signal.aborted || e instanceof YoutubePaused) throw e;
+      this.log?.warn('video match search failed', { error: (e as Error).message.slice(0, 120) });
+      return undefined;
+    }
+    let best: { id: string; score: number } | undefined;
+    for (const line of out.split('\n')) {
+      const [vid, , , title = '', channel = ''] = line.trim().split('\t');
+      if (!vid || !pickVideo(line, false)) continue;
+      const score = matchScore(query, `${title} ${channel}`);
+      if (!best || score > best.score) best = { id: vid, score };
+    }
+    return best && best.score >= WEAK_MATCH && best.score > than ? best.id : undefined;
   }
 
   /** The first of YouTube's own results for the words that isn't `failed` and
