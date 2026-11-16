@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { PassThrough, Readable } from 'node:stream';
 import { describe, expect, it, vi } from 'vitest';
 import type { PlaybackHandle, ToolContext } from '../src/core/interfaces.js';
-import { deezerTopTracks, inputArgs, MusicPlayer, type MusicOutput, type MusicSource, musicTools, runProgram, type Runner, type TopTracks, type Track, YoutubeSource } from '../src/features/music.js';
+import { deezerTopTracks, inputArgs, matchScore, MusicPlayer, type MusicOutput, type MusicSource, musicTools, runProgram, type Runner, type TopTracks, type Track, YoutubeSource } from '../src/features/music.js';
 
 const sig = () => AbortSignal.timeout(4000);
 const tick = () => new Promise((r) => setTimeout(r, 0));
@@ -707,12 +707,12 @@ describe('Deezer beside the search', () => {
 });
 
 describe('direct YouTube Music search', () => {
-  const song = (videoId: string, dur?: string) => ({
+  const song = (videoId: string, dur?: string, title = 'Get Lucky', artist = 'Daft Punk') => ({
     musicResponsiveListItemRenderer: {
       playlistItemData: { videoId },
       flexColumns: [
-        { musicResponsiveListItemFlexColumnRenderer: { text: { runs: [{ text: 'A title' }] } } },
-        { musicResponsiveListItemFlexColumnRenderer: { text: { runs: [{ text: 'Artist' }, { text: ' • ' }, { text: 'Album' }, ...(dur ? [{ text: ' • ' }, { text: dur }] : [])] } } },
+        { musicResponsiveListItemFlexColumnRenderer: { text: { runs: [{ text: title }] } } },
+        { musicResponsiveListItemFlexColumnRenderer: { text: { runs: [{ text: artist }, { text: ' • ' }, { text: 'Album' }, ...(dur ? [{ text: ' • ' }, { text: dur }] : [])] } } },
       ],
     },
   });
@@ -866,6 +866,67 @@ describe('direct YouTube Music search', () => {
     await r.yt.find('x', sig());
     expect(f).not.toHaveBeenCalled();
     f.mockRestore();
+  });
+
+  /** yt-dlp answering a video search with these lines (id, seconds, live, title, channel); the rest as usual. */
+  function videos(calls: string[], lines: string[] | Error): Runner {
+    const usual = fakeYtdlp(calls);
+    return async (cmd, args, signal, enough) => {
+      const url = args.at(-1)!;
+      if (!url.startsWith('ytsearch5:')) return usual(cmd, args, signal, enough);
+      calls.push(url);
+      if (lines instanceof Error) throw lines;
+      return lines.join('\n') + '\n';
+    };
+  }
+  const TYPED = 'Emi Blue "LOBA" | On The Radar Performance';
+
+  it('plays the video a typed YouTube title names, not a catalog song that only shares a word', async () => {
+    const s = await api(json(results(song(id('shakira'), '3:09', 'Loba', 'Shakira'))));
+    const calls: string[] = [];
+    const run = videos(calls, [
+      `${id('official')}\t230\tNA\tShakira - Loba (Official HD Video)\tShakira`,
+      `${id('radar')}\t174\tNA\tEmi Blue LOBA Performance\tOn The Radar Radio and Emi Blue`,
+    ]);
+    const r = rig({ searchApi: s.url, run });
+    expect(await r.yt.find(TYPED, sig())).toMatchObject({ id: id('radar') });
+    await s.close();
+    expect(calls).toEqual([`ytsearch5:${TYPED}`, `https://www.youtube.com/watch?v=${id('radar')}`]);
+  });
+
+  it('says how it found it', async () => {
+    const s = await api(json(results(song(id('shakira'), '3:09', 'Loba', 'Shakira'))));
+    const r = rig({ searchApi: s.url, run: videos([], [`${id('radar')}\t174\tNA\tEmi Blue LOBA Performance\tOn The Radar Radio`]) });
+    expect(await r.yt.songId(TYPED, sig())).toEqual({ id: id('radar'), via: 'ytsearch-match' });
+    await s.close();
+  });
+
+  it('keeps a song that matches the words, without searching videos', async () => {
+    const s = await api(json(results(song(id('hit'), '3:45', 'Blinding Lights', 'The Weeknd'))));
+    const calls: string[] = [];
+    const r = rig({ searchApi: s.url, run: videos(calls, []) });
+    expect(await r.yt.find('blinding lights the weekend', sig())).toMatchObject({ id: id('hit') });
+    await s.close();
+    expect(calls).toEqual([`https://www.youtube.com/watch?v=${id('hit')}`]);
+  });
+
+  it.each([
+    ['no video matches better', [`${id('other')}\t200\tNA\tSomething Else\tSomeone`]],
+    ['the only close video is too long', [`${id('long')}\t3600\tNA\tEmi Blue LOBA Performance\tOn The Radar Radio`]],
+    ['the only close video is live', [`${id('live')}\t0\tis_live\tEmi Blue LOBA Performance\tOn The Radar Radio`]],
+    ['the video search fails', new Error('HTTP Error 500')],
+  ] as [string, string[] | Error][])('keeps the song when %s', async (_n, lines) => {
+    const s = await api(json(results(song(id('shakira'), '3:09', 'Loba', 'Shakira'))));
+    const r = rig({ searchApi: s.url, run: videos([], lines) });
+    expect(await r.yt.find(TYPED, sig())).toMatchObject({ id: id('shakira') });
+    await s.close();
+  });
+
+  it('still stops for a bot check during the video search', async () => {
+    const s = await api(json(results(song(id('shakira'), '3:09', 'Loba', 'Shakira'))));
+    const r = rig({ searchApi: s.url, run: videos([], new Error(BOT)) });
+    await expect(r.yt.find(TYPED, sig())).rejects.toThrow(/paused/i);
+    await s.close();
   });
 
   it('stops when the request is called off', async () => {
@@ -1662,5 +1723,24 @@ describe('a PC opening a YouTube video', () => {
   it('video() still resolves it', async () => {
     const r = rig();
     expect(await r.yt.video('some video', sig())).toMatchObject({ id: id('vid'), ref: `https://stream/${id('vid')}` });
+  });
+});
+
+describe('how well a result matches the words', () => {
+  it.each([
+    ['Emi Blue "LOBA" | On The Radar Performance', 'Loba Shakira She Wolf 3:09', 0.2],
+    ['Emi Blue "LOBA" | On The Radar Performance', 'Emi Blue LOBA Performance On The Radar Radio and Emi Blue', 1],
+    ['blinding lights the weekend', 'Blinding Lights The Weeknd After Hours', 1],
+    ['Emmy blues on the radar performance, Loba', 'Emi Blue LOBA Performance On The Radar Radio', 0.8],
+    ['Beyoncé halo', 'Halo Beyonce I Am... Sasha Fierce', 1],
+    ['Get Lucky official audio', 'Get Lucky Daft Punk', 1],
+    ['x', 'anything at all', 1],
+  ])('%s vs %s', (query, text, score) => {
+    expect(matchScore(query, text)).toBeCloseTo(score);
+  });
+
+  it('needs four letters before a near word counts', () => {
+    expect(matchScore('lob', 'Loba')).toBe(0);
+    expect(matchScore('blue', 'Blues')).toBe(1);
   });
 });
