@@ -130,6 +130,9 @@ export interface MixerOptions {
 export class Mixer {
   private speech: Channel[] = [];
   private music: Channel | undefined;
+  /** Alarms ringing (several people's can at once): under her voice while she talks, over the music. */
+  private alarms: Channel[] = [];
+  private alarmGain = 1;
   private out: PassThrough | undefined;
   private playback: PlaybackHandle | undefined;
   private timer: unknown;
@@ -167,6 +170,21 @@ export class Mixer {
     this.speech.push(ch);
     this.wake();
     return { done: ch.done, stop: () => (ch.drop(), this.wake()) };
+  }
+
+  // --- alarms ---------------------------------------------------------------
+
+  /** Ring an alarm (raw 48 kHz stereo s16le), mixed with any others ringing.
+   *  Her voice plays over it with the alarm turned down, and music stays down. */
+  playAlarm(stream: NodeJS.ReadableStream, volume: number): PlaybackHandle {
+    const ch = new Channel(stream, volume, () => this.wake());
+    this.alarms.push(ch);
+    this.wake();
+    return { done: ch.done, stop: () => (ch.drop(), this.wake()) };
+  }
+
+  get alarmRinging(): boolean {
+    return this.alarms.some((a) => !a.drained);
   }
 
   // --- music -----------------------------------------------------------------
@@ -237,6 +255,8 @@ export class Mixer {
   stopAll(): void {
     for (const s of this.speech) s.drop();
     this.speech = [];
+    for (const a of this.alarms) a.drop();
+    this.alarms = [];
     this.music?.drop();
     this.music = undefined;
     this.halt();
@@ -254,7 +274,7 @@ export class Mixer {
    *  dropout, as would a stall on the short lead. So a small one gets a moment
    *  to collect the rest, then the lead is made up with silence ahead of it. */
   private placeAudio(): boolean {
-    const waiting = [...this.speech, ...(this.music && !this.paused ? [this.music] : [])].filter((c) => c.buffered > 0);
+    const waiting = [...this.speech, ...this.alarms, ...(this.music && !this.paused ? [this.music] : [])].filter((c) => c.buffered > 0);
     if (!waiting.length) return false;
     if (waiting.some((c) => c.buffered >= FRAME_BYTES * LEAD_FRAMES || c.ended || c.started)) {
       this.audioAt = this.written;
@@ -267,14 +287,14 @@ export class Mixer {
   }
 
   private wake(): void {
-    if (this.timer || !(this.speech.length || (this.music && !this.paused))) return;
+    if (this.timer || !(this.speech.length || this.alarms.length || (this.music && !this.paused))) return;
     this.out = new PassThrough({ highWaterMark: FRAME_BYTES * LEAD_FRAMES });
     this.playback = this.o.start(this.out);
     const pb = this.playback;
     void pb.done.then(() => {
       if (this.playback !== pb) return;
       this.halt(); // the player stopped on its own (an error)
-      if (this.speech.length || (this.music && !this.paused)) setTimeout(() => this.wake(), 200);
+      if (this.speech.length || this.alarms.length || (this.music && !this.paused)) setTimeout(() => this.wake(), 200);
     });
     this.startAt = this.now();
     this.written = 0;
@@ -336,15 +356,21 @@ export class Mixer {
       m.finish('finished');
       this.music = undefined;
     }
+    for (const a of this.alarms) if (a.drained) a.finish('finished');
+    this.alarms = this.alarms.filter((a) => !a.drained);
+    const aFrames = audio ? this.alarms.map((a) => ({ f: a.take(), v: a.volume })).filter((x) => !!x.f) : [];
+    const aFrame = aFrames.length > 0;
+
     const mFrame = !audio || this.paused ? undefined : this.music?.take();
     if (this.music && !this.paused && !mFrame && this.music.started && !this.music.ended) this.stats.musicGaps++;
 
-    this.setVoice(!!sFrame || this.speaking);
-    const ducked = this.holds > 0 || this.speaking || this.now() < this.duckedUntil;
+    // A ringing alarm counts as her sound: a PC turns it down while you talk, so "stop" is heard.
+    this.setVoice(!!sFrame || this.speaking || this.alarms.length > 0);
+    const ducked = this.holds > 0 || this.speaking || this.alarms.length > 0 || this.now() < this.duckedUntil;
     const target = ducked ? (this.o.duckLevel ?? 0.2) : 1;
 
-    if (!sFrame && !mFrame) {
-      if (!this.speech.length && (!this.music || this.paused)) {
+    if (!sFrame && !mFrame && !aFrame) {
+      if (!this.speech.length && !this.alarms.length && (!this.music || this.paused)) {
         this.halt();
         return;
       }
@@ -355,13 +381,18 @@ export class Mixer {
     const frame = Buffer.alloc(FRAME_BYTES);
     const sv = sp?.volume ?? 0;
     const mv = this.music?.volume ?? 0;
+    const aTarget = sFrame ? 0.25 : 1;
     const n = FRAME_BYTES / 2;
     const step = (target - this.gain) / (n / 2); // ramp over one frame
+    const aStep = (aTarget - this.alarmGain) / (n / 2);
     for (let i = 0; i < n; i++) {
       if (i % 2 === 0 && Math.abs(target - this.gain) > Math.abs(step)) this.gain += step;
       else if (i % 2 === 0) this.gain = target;
+      if (i % 2 === 0 && Math.abs(aTarget - this.alarmGain) > Math.abs(aStep)) this.alarmGain += aStep;
+      else if (i % 2 === 0) this.alarmGain = aTarget;
       let v = 0;
       if (sFrame) v += sFrame.readInt16LE(i * 2) * sv;
+      for (const a of aFrames) v += a.f!.readInt16LE(i * 2) * a.v * this.alarmGain;
       if (mFrame) v += mFrame.readInt16LE(i * 2) * mv * this.gain;
       frame.writeInt16LE(Math.max(-32768, Math.min(32767, Math.round(v))), i * 2);
     }

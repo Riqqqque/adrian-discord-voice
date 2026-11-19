@@ -63,7 +63,8 @@ Typical time from the end of your sentence to its first word: 1.5 to 2.5 seconds
 - `admin.json`: the admin account (argon2id hash).
 - `usage.json`: spend per day.
 - `voice-usage.json`: cloud voice characters per month.
-- `reminders.json`, `notes.json`: timers and reminders, per-person notes.
+- `reminders.json`, `notes.json`: reminders, per-person notes.
+- `alarms.json`: alarms and timers (what's ringing included, so a restart picks the ring up again), each person's alarm settings, and their saved sounds, whose audio is in `alarm-sounds/` (24 kHz mono PCM, 30 seconds at most). A file that can't be read is moved aside as `alarms.json.unreadable-<time>`, never written over.
 - `models/`: speech models and yt-dlp (root-owned, read-only to the service).
 
 Conversation history and room talk are kept in memory only. They're gone after a restart.

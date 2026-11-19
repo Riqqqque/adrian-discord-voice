@@ -16,8 +16,8 @@ export interface RouteHints {
 
 const GROUPS: { tools: string[]; words: RegExp; when?: (h: RouteHints) => boolean }[] = [
   {
-    tools: ['set_timer', 'set_reminder', 'list_timers', 'cancel_timer'],
-    words: /\b(timers?|remind(er|ers|me)?|alarms?|wake me|in \d+ ?(sec|second|min|minute|hour)s?|minutes?|hours?|countdown|tomorrow at|tonight at|at \d|o'?clock|how long|time left)\b/i,
+    tools: ['set_timer', 'set_reminder', 'list_timers', 'cancel_timer', 'set_alarm', 'edit_alarm', 'alarm_control', 'alarm_options'],
+    words: /\b(timers?|remind(er|ers|me)?|alarms?|wake (me|up)|get (me )?up|snooze|ring(ing|tone)?s?|sounds?|in \d+ ?(sec|second|min|minute|hour)s?|minutes?|hours?|countdown|tomorrow at|tonight at|at \d|o'?clock|how long|time left|[ap]\.? ?m\b|morning|weekdays?|weekends?|daily)\b/i,
     when: (h) => !!h.hasTimers,
   },
   {

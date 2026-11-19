@@ -133,10 +133,45 @@ They need the bot's **Message Content** intent (Developer Portal â†’ your app â†
 
 "Make an airhorn sound", "do a drum roll", "cat meow", "sad trombone", "what does a wolf sound like?": it finds a short sound effect on YouTube and plays it once, up to 15 seconds, on top of any music (the music ducks). "Stop" cuts it off. For simple vocal sounds it may just say them. Needs the same setup as music (yt-dlp and ffmpeg).
 
-## Timers, reminders, memory
+## Alarms and timers
 
-- **Timers and reminders:**
-  - "Set a timer for 10 minutes", "remind me at 6 to take the pizza out", "what timers do I have", "cancel my timer". Up to 20 per person, and they survive restarts.
+Alarms and timers ring with a sound until you stop them, the way an alarm clock does.
+
+- **Setting them:**
+  - "Wake me up at 7", "set an alarm for 6:30 on weekdays", "alarm at 9 tomorrow, label it dentist", "set a timer for 10 minutes", "pizza timer, twelve minutes".
+  - She always says the day and AM or PM back ("Alarm set for 7 AM tomorrow, Thursday."), so a misheard time gets noticed.
+  - Up to 30 per person, a year ahead at most. Timers go up to 7 days.
+- **Where it rings:**
+  - In her call if you're in it and can hear (muted is fine; deafened isn't). Otherwise at your PC if the PC app is running, else a DM with **Stop** and **Snooze** buttons.
+  - It follows you: if you join the call or open the PC app while it rings, it moves there.
+  - Music goes down while it rings. When she talks over it (the time, or an answer), the alarm turns down for her.
+- **Turning it off:** say "stop", "turn it off" or "I'm up". "Snooze", "five more minutes" or "snooze for 10 minutes" snoozes it. You don't need her name.
+  - Only you can stop your alarm by voice. An owner can stop anyone's, but only with her name ("Adrian, stop the alarm").
+  - Only whole sentences count: "stop by the store later" or a song called *Stop* does nothing to it, and neither do music commands or "stop listening".
+  - "Wait, I'm not up" or "turn it back on" within 3 minutes of a stop puts it back, snoozed.
+  - Also from the Stop and Snooze buttons in the PC app's window and tray, the DM buttons, or `/alarm stop`.
+- **Nobody answers:** an alarm rings for 10 minutes, snoozes itself, and rings again, 3 times in all. After that you get a DM saying you missed it. A timer rings for 5 minutes, then sends the DM.
+- **Restarts and updates:** alarms are saved to disk. A restart while one rings picks the ring up again, and updates wait while an alarm rings or is due within 5 minutes. One that came due while she was offline rings when she's back if it's still within its ring time; otherwise you get a DM.
+- **Changing them:** "change my 6:30 alarm to 6:45", "skip tomorrow's alarm", "skip Friday's alarm", "turn off my gym alarm" (it stays saved until you turn it back on), "add 5 minutes to the pizza timer", "what alarms do I have".
+  - If more than one alarm fits what you said, she asks which. Deleting a repeating alarm, or several at once, asks first.
+- **Sounds:** "What alarm sounds do you have?" lists them, and "let me hear the marimba one" plays a few seconds.
+  - Built in, with nothing to download: classic, chime, bells, marimba, gentle, birds, pulse, digital and buzzer. They're all about the same loudness.
+  - **voice:** soft chimes with her saying the time and what it's for.
+  - **Music:** "wake me up to Drake at 9" plays music instead. If the music can't start, the classic tone rings.
+  - **Your own:** "save an airhorn as an alarm sound" finds a short clip on YouTube and keeps it on the server, so it can't go missing when the alarm is due. Up to 10, 30 seconds each.
+- **Settings, per person:** "use birds for my alarms", "make snooze 15 minutes", "ring for 5 minutes", "fade in over a minute" (alarms start soft and rise to full; timers start at full), "alarm volume 70", "don't say the time while it rings", "my time zone is New York".
+  - **How it turns off:** "stop" (the default), "firm" (only "I'm up" turns it off; stop just snoozes), or "math" (she asks a sum, and only the right answer turns it off).
+  - `/alarm settings` shows and changes the same things.
+- **The PC app** (0.17.0 and newer):
+  - The window comes up with Stop and Snooze while an alarm rings, but not over a full-screen game. The tray menu has the same two items.
+  - If the speakers are muted or under 30%, they're turned up while it rings and put back after.
+  - It keeps a copy of the next two days' alarms. If the server can't be reached when one is due, the PC rings it itself (classic beeps) and tells the server how it was answered once it's back.
+- **What can still miss it:** a PC that's asleep or off, the PC app not running, and not being in her call. Then it's only the DM on your phone.
+
+## Reminders, memory
+
+- **Reminders:**
+  - "Remind me at 6 to take the pizza out", "remind me in an hour to call mom". They're said once, not rung. Up to 20 per person, and they survive restarts.
   - When one goes off, it's announced in the call if you're in it and can hear it. If not, one you set at your PC goes off there, with a DM as well. Otherwise you get a DM (or, muted in the call, it's still announced there).
 - **Notes:**
   - "Remember that I'm allergic to peanuts", "forget my birthday". Up to 30 notes per person.
@@ -318,5 +353,6 @@ With the PC app connected: "send that link to my PC" (the newest link or video y
 |---|---|
 | `/join` | Joins the voice channel you're in. It won't leave a call that still has people in it unless an owner asks. When it isn't in its home channel, it leaves after 10 minutes alone. |
 | `/leave` | Leaves voice. Use `/join` to bring it back. From outside a call that has people in it, only the app's owner can. |
+| `/alarm` | Alarms and timers by text, in servers and in DMs: `set`, `timer`, `list`, `stop`, `snooze`, `delete`, `off` (or back on), `skip` (the next time only), `sounds` and `settings`. Replies are visible only to you. |
 
 After a restart or update, it goes back to its home channel. To limit which servers `/join` works in, set `allowedGuilds` by editing the config file (see [configuration.md](configuration.md)).
