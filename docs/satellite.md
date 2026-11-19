@@ -52,6 +52,8 @@ Text frames are JSON objects with a `type`. Binary frames are audio.
 | `stop` | | Stop talking (button or hotkey). |
 | `action_result` | `id`, `ok`, `result`, optional `image` | Outcome of an `action`. `result` is text for the model (the server keeps at most 9000 characters). `image` (`pc_screen` only): `{ mime, data }`, `mime` `image/jpeg` or `image/png`, `data` base64 of at most 1.5 MB. See [Pictures](#pictures). |
 | `ping` | | Keep-alive; answered with `pong`. |
+| `alarm_action` | `action` (`stop`/`snooze`), optional `minutes` | The window's or tray's Stop / Snooze on an alarm the server is ringing (apps from 0.17.0). |
+| `alarm_done` | `id`, `base`, `action` (`stop`/`snooze`), `at` | Sent after a `welcome`: an alarm this PC rang by itself while the service couldn't be reached, and how it was answered there. The service applies it only if `base` is still that alarm's current occurrence. |
 | `activity` | `gaming: bool`, `game` (optional, at most 60 characters) | A game is being played on this PC now, or no longer is (see [Quiet while gaming](#quiet-while-gaming)). Sent when it changes and after every `welcome` while playing. Apps before 0.15.6 never send it: the service treats every connection as not playing until it says otherwise. |
 
 ### Service → satellite
@@ -66,6 +68,7 @@ Text frames are JSON objects with a `type`. Binary frames are audio.
 | *(binary)* | PCM s16le mono 48 kHz | Her voice, music and sounds, in real time. |
 | `audio_stop` | | Drop any audio still buffered (she was interrupted). |
 | `action` | `id`, `name`, `args` | Do a PC action and answer with `action_result`. |
+| `alarms` | `ringing` (`id`, `kind`, `label`, `base`), `list` (`id`, `kind`, `label`, `at`, `base`, `sound`), `snoozeMin`, `ringMin`, `now` | The owner's alarms: sent right after `welcome` and on every change. `ringing` is what the service is ringing now (its sound comes as ordinary audio); the app shows Stop / Snooze for it. `list` is what's due in the next 48 hours: if the link is down when one is due (20 seconds' grace), the app rings it itself until it's answered or its ring time ends. Apps before 0.17.0 ignore it. |
 | `pong` | | |
 
 Pairing: `sudo adrian satellite add NAME OWNER_DISCORD_ID` on the server prints

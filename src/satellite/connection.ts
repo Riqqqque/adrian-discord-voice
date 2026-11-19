@@ -51,6 +51,10 @@ export interface SatelliteEvents extends VoiceTransportEvents {
   stop: () => void;
   /** Playing a game started or stopped (apps from 0.15.6; older ones never send it). */
   activity: (a: Activity) => void;
+  /** The window's Stop / Snooze buttons on a ringing alarm (apps from 0.17.0). */
+  alarmAction: (a: { action: 'stop' | 'snooze'; minutes?: number }) => void;
+  /** The PC rang an alarm by itself while the link was down, and it was answered there. */
+  alarmDone: (a: { id: string; base: number; action: 'stop' | 'snooze'; at: number; minutes?: number }) => void;
   closed: () => void;
 }
 
@@ -152,6 +156,18 @@ export class SatelliteConnection extends EventEmitter implements VoiceTransport 
       case 'activity': {
         const a = parseActivity(m);
         if (a) this.emit('activity', a);
+        break;
+      }
+      case 'alarm_action': {
+        if (m.action !== 'stop' && m.action !== 'snooze') break;
+        const minutes = typeof m.minutes === 'number' && Number.isFinite(m.minutes) ? m.minutes : undefined;
+        this.emit('alarmAction', { action: m.action, ...(minutes !== undefined ? { minutes } : {}) });
+        break;
+      }
+      case 'alarm_done': {
+        const ok = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+        if (typeof m.id !== 'string' || m.id.length > 40 || !ok(m.base) || !ok(m.at) || (m.action !== 'stop' && m.action !== 'snooze')) break;
+        this.emit('alarmDone', { id: m.id, base: m.base, at: m.at, action: m.action, ...(ok(m.minutes) ? { minutes: m.minutes } : {}) });
         break;
       }
     }

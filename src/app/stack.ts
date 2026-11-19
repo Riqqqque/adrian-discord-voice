@@ -3,7 +3,7 @@
 // controller's queue and interruption rules and the spend caps. Started by
 // main.ts once the config is complete, and restarted by the admin UI.
 
-import { Client, Events, GatewayIntentBits, type Message, Partials, type VoiceBasedChannel } from 'discord.js';
+import { ActionRowBuilder, ButtonBuilder, ButtonStyle, Client, Events, GatewayIntentBits, type Message, Partials, type VoiceBasedChannel } from 'discord.js';
 import { dateFormat } from '../core/time.js';
 import { humansIn, registerVoiceCommands, type VoiceSpot } from './commands.js';
 import { MUSIC_COMMANDS, registerMusicCommands } from './music-commands.js';
@@ -38,6 +38,11 @@ import { Recap, weekdayIndex } from '../features/recap.js';
 import { Steam, STEAM_KEY, steamTools } from '../features/steam.js';
 import { UserNotes } from '../features/notes.js';
 import { dueMessage, reminderRoute, Reminders } from '../features/reminders.js';
+import { AlarmClock, ringWord } from '../features/alarms.js';
+import { ALARM_RULE, alarmTools } from '../features/alarm-tools.js';
+import { patternFromPcm } from '../features/alarm-tones.js';
+import { previewIn, ringIn, type RingerDeps } from './alarm-ring.js';
+import { ALARM_COMMANDS, alarmButtons, alarmState, registerAlarmCommands, saveClip } from './alarm-commands.js';
 import { join } from 'node:path';
 import { type ClosedBy, endsDangling, type HeardEvent, ListeningPipeline, type TurnOptions } from '../listen/pipeline.js';
 import { EnglishWords, LANGS, looksSpanish, type ReplyLang, replyLang, stripWakeLead } from '../speech/language.js';
@@ -47,7 +52,7 @@ import { SmartTurn } from '../speech/smart-turn.js';
 import { groqTranscribe, sttPrompt } from '../speech/cloud-stt.js';
 import { MODEL_LAYOUT } from '../web/checks.js';
 import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { KokoroTts } from '../speech/kokoro.js';
 import { CharBudget, SpeechifyTts } from '../speech/speechify.js';
@@ -397,6 +402,117 @@ export async function startVoiceStack(
     // Any way through counts: at a PC the DM is the record, so a dropped announcement isn't retried.
     if (!(await dm) && !(await heard)) throw new Error('reminder not delivered');
   });
+  // --- alarms and timers that ring (features/alarms.ts) --------------------
+  const soundsDir = stateDir ? join(stateDir, 'alarm-sounds') : undefined;
+  const clipCache = new Map<string, Float32Array>();
+  const ringer: RingerDeps = {
+    soundOf: (a) => alarms.soundOf(a),
+    clip: (userId, name) => {
+      const s = alarms.savedSound(userId, name);
+      if (!s || !soundsDir) return undefined;
+      const hit = clipCache.get(s.file);
+      if (hit) return hit;
+      try {
+        const b = readFileSync(join(soundsDir, s.file));
+        const p = patternFromPcm(new Int16Array(b.buffer, b.byteOffset, Math.floor(b.length / 2)), 24_000);
+        clipCache.set(s.file, p);
+        return p;
+      } catch {
+        return undefined;
+      }
+    },
+    speak: (rm, text, signal) => {
+      const r = rm as Room;
+      r.ui?.transcript('her', text);
+      return r.speaker.speak(fixed(text), r.speech, signal);
+    },
+    name: (id) => nameOf(id),
+    log: (event, fields) => log.info(event, fields),
+    level: Math.min(1, config.playbackVolume),
+  };
+  /** Where an alarm can ring for them: her call if they can hear it there (muted
+   *  there, their PC first, where she can hear them say stop), else their PC. */
+  const alarmPlace = (userId: UserId): string | undefined => {
+    const vs = inHerChannel(userId);
+    const pc = pcFor({ userId });
+    if (transport.isReady() && vs && !vs.deaf && !(vs.mute && pc)) return 'discord';
+    return pc ? `sat:${pc.device.id}` : undefined;
+  };
+  const alarms: AlarmClock = new AlarmClock(stateDir ? join(stateDir, 'alarms.json') : undefined, config.timezone, {
+    placeFor: alarmPlace,
+    // Ringing in her call while they're muted there: they hear it, but she can't hear their stop.
+    needsButtons: (userId) => alarmPlace(userId) === 'discord' && !!inHerChannel(userId)?.mute,
+    ring: (place, plan) => {
+      const rm = place === 'discord' ? discordRoom : satRooms.get(place);
+      if (!rm) return undefined;
+      const h = ringIn(rm, plan, ringer, !rm.ui);
+      // A PC that reconnects is a new room under the same name: this sound is gone with the old one.
+      return { stop: () => h.stop(), alive: () => h.alive() && (place === 'discord' || satRooms.get(place) === rm) };
+    },
+    dm: (userId, text, b) =>
+      client.users.send(userId, { content: text, ...(b ? { components: [alarmButtons(userId)] } : {}), allowedMentions: { parse: [] } }).then(
+        () => true,
+        (e: Error) => (log.warn('alarm DM failed', { user: userId, error: e.message }), false),
+      ),
+    changed: (userId) => pushAlarms(userId),
+    log: (event, fields) => log.info(event, fields),
+  });
+  /** Each of their PCs gets the list (to ring by itself if the server is gone) and what's ringing. */
+  const pushAlarms = (userId: UserId) => {
+    for (const c of satServer?.connections() ?? []) if (c.owner === userId) c.send(alarmState(alarms, userId));
+  };
+  // And again every hour, so a PC that stays connected for days still has the days ahead.
+  const alarmRefresh = setInterval(() => {
+    for (const c of satServer?.connections() ?? []) c.send(alarmState(alarms, c.owner));
+  }, 3_600_000);
+  alarmRefresh.unref();
+  /** Words just used on an alarm: the same words from another room (the PC mic hears the call too) are swallowed. */
+  const alarmWordsAt = new Map<UserId, number>();
+  /** Say what happened to an alarm, in the room the words came from. */
+  const alarmReply = (rm: Room, text: string) => {
+    rm.ui?.transcript('her', text);
+    void rm.speaker.speak(fixed(text), rm.speech, AbortSignal.timeout(20_000)).catch(() => undefined);
+  };
+  /** Words from someone while an alarm of theirs rings (no wake word needed), or
+   *  an owner naming her while anyone's rings here. True: they were for the alarm. */
+  const alarmHeard = (rm: Room, userId: UserId, said: string, woke: boolean): boolean => {
+    let target = userId;
+    if (!alarms.ringingFor(userId).length && woke && isOwner(userId)) {
+      const here = alarms.ringing().find((r) => r.place === rm.key);
+      if (here) target = here.userId;
+    }
+    // The answer is said where it was ringing: that's where they're listening.
+    const place = alarms.ringing().find((x) => x.userId === target)?.place;
+    const r = alarms.heard(target, said);
+    if (!r) {
+      // The other room's copy of words already used.
+      return (alarmWordsAt.get(userId) ?? 0) > performance.now() && (classify(said)?.kind === 'stop' || !!ringWord(said));
+    }
+    alarmWordsAt.set(userId, performance.now() + 3_000);
+    log.info('alarm words', { user: userId, for: target, room: rm.key, said: r.say.slice(0, 60) });
+    alarmReply((place === 'discord' ? discordRoom : place && satRooms.get(place)) || rm, r.say);
+    return true;
+  };
+  /** "Save an airhorn as my alarm sound": found on YouTube, kept on disk, so it can't be missing at ring time. */
+  const saveAlarmClip = (userId: UserId, query: string, name: string, signal: AbortSignal) =>
+    saveClip({ find: (q, sig) => ytForSounds!.soundEffect(q, sig), decode: ffmpegDecoder(mc.ffmpeg), dir: soundsDir!, clock: alarms, userId, query, name, signal, log });
+  /** The alarm tools: for the model, and for /alarm, which works without a model too. */
+  const alarmToolList = alarmTools({
+    clock: alarms,
+    reminders,
+    english: (id) => (userLang.get(id) ?? 'en') === 'en',
+    reach: (id) => (alarmPlace(id) === 'discord' ? 'call' : alarmPlace(id) ? 'pc' : 'none'),
+    preview: async (ctx, sound) => {
+      const rm = roomFor(ctx);
+      const here = rm.ui ? rm.ui.owner === ctx.userId : !!inHerChannel(ctx.userId) && transport.isReady();
+      if (!here) return false;
+      if (sound.startsWith('music:')) return true; // that's just the music
+      previewIn(rm, sound, ringer, ctx.userId, alarms.prefs(ctx.userId).volume);
+      return true;
+    },
+    ...(ytForSounds && soundsDir && ffmpegOk ? { saveClip: (ctx, query, name, signal) => saveAlarmClip(ctx.userId, query, name, signal) } : {}),
+    musicOk: !!music,
+  });
   const notes = new UserNotes(stateDir ? join(stateDir, 'notes.json') : undefined);
   const taste = new MusicTaste(stateDir ? join(stateDir, 'music-taste.json') : undefined, Date.now, (id) => isOwner(id));
   /** Playable links pasted in chat, for "play that link" (memory only). */
@@ -568,7 +684,11 @@ export async function startVoiceStack(
       const tools: Tool[] = [timeTool(config.timezone)];
       const searchKey = brain.search ? secrets.get(brain.search.apiKeySecret) : undefined;
       if (searchKey) tools.push(tavilySearchTool(searchKey, brain.search?.maxResults));
-      tools.push(...reminders.tools((id) => (userLang.get(id) ?? 'en') === 'en'), ...notes.tools((id) => (userLang.get(id) ?? 'en') === 'en'), ...games.tools());
+      const inEnglish = (id: UserId) => (userLang.get(id) ?? 'en') === 'en';
+      // Timers ring now (alarms.ts); reminders keep their own set tool.
+      tools.push(...reminders.tools(inEnglish).filter((t) => t.spec.name === 'set_reminder'));
+      tools.push(...alarmToolList);
+      tools.push(...notes.tools(inEnglish), ...games.tools());
       if (music) tools.push(...musicTools((ctx) => roomFor(ctx).music, taste, (id) => (userLang.get(id) ?? 'en') === 'en').map((t) => inRoomOnly(notingStarts(t, musicStarts, (ctx) => roomFor(ctx).key))), ...taste.tools(), inRoomOnly(quizzes.tool((ctx) => quizRoom(roomFor(ctx)))));
       if (sounds) tools.push(inRoomOnly(soundTool(sounds)));
       if (satEnabled)
@@ -748,7 +868,7 @@ export async function startVoiceStack(
           ...(satEnabled ? toldLine(ctx.speaker, quiet.told(ctx.userId)) : []),
         ],
         selectTools: (text, ctx, all) =>
-          routeTools(all, text, { gameRunning: games.context(ctx).length > 0, hasTimers: reminders.forUser(ctx.userId).length > 0, musicPlaying: !!roomFor(ctx).music?.nowPlaying }),
+          routeTools(all, text, { gameRunning: games.context(ctx).length > 0, hasTimers: reminders.forUser(ctx.userId).length > 0 || alarms.forUser(ctx.userId).length > 0, musicPlaying: !!roomFor(ctx).music?.nowPlaying }),
         ...(creator ? { creator: { name: creator, spoken: config.identity.creatorSpoken ?? creator, heardAs: config.identity.creatorHeardAs } } : {}),
         // Claude caches the tools and the stable prompt; that needs the same tools every call.
         stablePrefix: brain.provider === 'anthropic',
@@ -758,6 +878,7 @@ export async function startVoiceStack(
         stableLines: [
           ...genderLines(config.botGender),
           ...(sounds ? [SOUND_RULE] : []),
+          ALARM_RULE,
           ...(config.mature === 'age-restricted' ? [] : matureContext(config.mature, false)),
           ...(music ? musicRules() : []),
           ...(satEnabled ? [PC_RULE] : []),
@@ -1372,6 +1493,11 @@ export async function startVoiceStack(
     // Asking whether push-to-talk is on also uses it up, whatever was said.
     const ptt = direct?.() ?? false;
     if (!e.woke && ptt) e = { ...e, woke: true, command: e.text };
+    // An alarm of theirs ringing: stop / snooze / "I'm up" are for it, in any room, before anything else.
+    // Not from a PC while they're in her call: its mic also hears the call through the speakers,
+    // and everything it hears counts as its owner. Their call hears them anyway.
+    const pcHearsCall = !!rm.ui && !ptt && inHerCall(e.userId);
+    if (!pcHearsCall && alarmHeard(rm, e.userId, e.woke ? e.command || e.text : e.text, e.woke)) return;
     const first = classify(e.woke ? e.command : e.text);
     const stop = first?.kind === 'stop';
     if (stop) noteStop(rm, e.userId);
@@ -1503,6 +1629,20 @@ export async function startVoiceStack(
     moving = p.catch(() => undefined);
     return p;
   };
+  registerAlarmCommands({
+    client,
+    log,
+    clock: alarms,
+    tools: alarmToolList,
+    name: (id) => nameOf(id),
+    isOwner: (id) => isOwner(id),
+    // Stopped from a phone while it rang at the PC or in the call: say so there.
+    said: (id, text) => {
+      const place = alarmPlace(id);
+      const rm = place === 'discord' ? discordRoom : place ? satRooms.get(place) : undefined;
+      if (rm) alarmReply(rm, text);
+    },
+  });
   /** Typed music commands ("!play x"): set up below, after /join's checks. */
   let musicCommands: { isCommand(m: Message): boolean } | undefined;
   // Text chat (@mentions, replies, DMs): same brain and limits as voice.
@@ -1555,7 +1695,7 @@ export async function startVoiceStack(
     historyMessages: config.textChat.historyMessages,
     followUpMs: config.textChat.followUpMinutes * 60_000,
   });
-  const voiceCommands = registerVoiceCommands({ client, log, current: () => spot, voiceReady: () => transport.isReady(), moveTo: (s) => moveTo(s), leave: () => moveTo(undefined), allowedGuilds: config.allowedGuilds, extraCommands: MUSIC_COMMANDS, isOwner: (id) => config.owners.includes(id) });
+  const voiceCommands = registerVoiceCommands({ client, log, current: () => spot, voiceReady: () => transport.isReady(), moveTo: (s) => moveTo(s), leave: () => moveTo(undefined), allowedGuilds: config.allowedGuilds, extraCommands: [...MUSIC_COMMANDS, ...ALARM_COMMANDS], isOwner: (id) => config.owners.includes(id) });
   musicCommands = registerMusicCommands({
     client,
     log,
@@ -1628,6 +1768,7 @@ export async function startVoiceStack(
     }
     // After the join, so one that came due while offline can be said in the call.
     if (!closing) reminders.start();
+    if (!closing) alarms.start();
     if (!closing) recap.start();
     // Server jobs watched before a restart: told now that she can talk.
     if (!closing) control?.resume();
@@ -1639,6 +1780,7 @@ export async function startVoiceStack(
     await client.login(token);
   } catch (e) {
     clearInterval(idleTimer);
+    clearInterval(alarmRefresh);
     throw e;
   }
 
@@ -1714,6 +1856,17 @@ export async function startVoiceStack(
           rm.sound.stop();
           callOff(conn.owner, ctl);
         });
+        // Alarms: the PC keeps a copy to ring by itself, and has Stop / Snooze buttons while one rings.
+        conn.send(alarmState(alarms, conn.owner));
+        conn.on('alarmAction', (a) => {
+          const r = alarms.control(conn.owner, a.action, a.minutes);
+          if (r.done) alarmReply(rm, r.say);
+        });
+        // The PC rang one itself while the link was down, and it was answered there.
+        conn.on('alarmDone', (a) => {
+          const applied = alarms.answeredElsewhere(conn.owner, a);
+          log.info('alarm answered on the PC', { user: conn.owner, id: a.id, action: a.action, applied });
+        });
         // In a game (PC apps from 0.15.6 say so): her name for every turn here, reminders kept for after.
         quiet.connected(conn);
         conn.on('activity', (a) => {
@@ -1750,7 +1903,8 @@ export async function startVoiceStack(
     busy: () => {
       const ch = spot ? (client.channels.cache.get(spot.channelId) as VoiceBasedChannel | undefined) : undefined;
       const people = ch?.members.filter((m) => !m.user.bot).size ?? 0;
-      return people > 0 || !!music?.nowPlaying || [...satRooms.values()].some((r) => !!r.music?.nowPlaying);
+      // An update must not restart her during an alarm, or just before one.
+      return people > 0 || !!music?.nowPlaying || [...satRooms.values()].some((r) => !!r.music?.nowPlaying) || alarms.busySoon();
     },
     botTag: () => client.user?.tag,
     answers: () => answers,
@@ -1759,6 +1913,8 @@ export async function startVoiceStack(
       clearInterval(idleTimer);
       controller.cancelAll();
       reminders.stop();
+      alarms.stop();
+      clearInterval(alarmRefresh);
       quiet.stop();
       recap.stop();
       control?.stop();
