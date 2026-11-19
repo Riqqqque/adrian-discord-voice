@@ -7,6 +7,8 @@ import { ConversationOrchestrator } from '../dist/brain/orchestrator.js';
 import { SessionMemory } from '../dist/brain/sessions.js';
 import { loadConfig, readSecrets } from '../dist/config.js';
 import * as music from '../dist/features/music.js';
+import { alarmKit } from './alarm-kit.mjs';
+import { ALARM_RULE } from '../dist/features/alarm-tools.js';
 import { MusicTaste } from '../dist/features/taste.js';
 
 const c = loadConfig(process.argv[2]);
@@ -46,11 +48,11 @@ for (const [text, want, args] of CASES) {
     },
   });
   const spy = (t) => ({ ...t, run: (a, sig, ctx) => (calls.push({ name: t.spec.name, args: a }), t.run(a, sig, ctx)) });
-  const tools = [...music.musicTools(stub, taste), ...taste.tools()].map(spy);
+  const tools = [...[...music.musicTools(stub, taste), ...taste.tools()].map(spy), ...alarmKit(c.timezone, (name, args) => calls.push({ name, args })).tools];
   const o = new ConversationOrchestrator(llm, new SessionMemory(16, 3_600_000), tools, {
     spokenName: 'Adrian', writtenName: 'A.D.R.I.A.N.', timezone: c.timezone, firstEventTimeoutMs: 12000, maxTokens: 500, maxToolRounds: 3,
     stablePrefix: true,
-    stableLines: music.musicRules(),
+    stableLines: [...music.musicRules(), ALARM_RULE],
     context: () => [music.musicState(stub), ...taste.context('u', 'Sam')],
   });
   let said = '';

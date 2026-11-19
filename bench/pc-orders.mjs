@@ -14,6 +14,7 @@ import { GAME_NIGHT_RULE, gameNightTool } from '../dist/features/gamenight.js';
 import { Steam, steamTools } from '../dist/features/steam.js';
 import { gameServerTool } from '../dist/features/gameservers.js';
 import { discordTools } from '../dist/features/discordinfo.js';
+import { alarmKit } from './alarm-kit.mjs';
 
 const c = loadConfig(process.argv[2]);
 const s = readSecrets(c.secretsFile);
@@ -72,11 +73,12 @@ const handoffAnswer = (x) => (x.action === 'music_to_pc' ? 'Moved "Nights by Fra
 const tell = tellCallTool({ nameOf: () => 'Morgan', inHerCall: () => false, call: () => undefined, isMember: async () => true, announce: async () => true, post: async () => 'general', limiter: { take: () => undefined, release() {} }, maxChars: 200 });
 const night = gameNightTool({ guild: () => undefined, allowedGuilds: [], presences: false, signups: {}, lastText: () => undefined, voiceChannel: () => undefined, cooldownMs: 1, maxMentions: 10, perUserPerHour: 4 });
 const nightAnswer = (x) => (x.action === 'ping' ? 'Pinged 4 people in #general for Valorant.' : x.action === 'join' ? 'Signed them up for game-night pings, every game.' : x.action === 'leave' ? 'No more game-night pings for them.' : 'In voice: Sam (in voice Lounge); Kim (in voice Lounge, muted). (Presence still off; you already told them, so leave it out.)');
-const tools = [...music.musicTools(stub), ...pcTools({ pcFor: () => pc, findVideo: async () => 'jfKfPfyJRdk' }), recorded(handoff, handoffAnswer), recorded(tell, 'Said it in the call.'), recorded(night, nightAnswer)];
+const alarms = alarmKit(c.timezone, (name, args) => calls.push({ name, args }));
+const tools = [...alarms.tools, ...music.musicTools(stub), ...pcTools({ pcFor: () => pc, findVideo: async () => 'jfKfPfyJRdk' }), recorded(handoff, handoffAnswer), recorded(tell, 'Said it in the call.'), recorded(night, nightAnswer)];
 const o = new ConversationOrchestrator(llm, new SessionMemory(16, 3_600_000), tools, {
   spokenName: 'Adrian', writtenName: 'A.D.R.I.A.N.', timezone: c.timezone, firstEventTimeoutMs: 12000, maxTokens: 500, maxToolRounds: 3,
   stablePrefix: true,
-  stableLines: [...music.musicRules(), PC_RULE, HANDOFF_RULE, GAME_NIGHT_RULE],
+  stableLines: [...music.musicRules(), PC_RULE, HANDOFF_RULE, GAME_NIGHT_RULE, alarms.rule],
   context: (x) => ['Reply in English.', music.musicState(stub), `${x.speaker} is talking to you through their PC (A.D.R.I.A.N. satellite), not in the Discord call. Music and sounds play on that PC.`],
 });
 

@@ -250,7 +250,7 @@ export function alarmTools(d: AlarmToolDeps): Tool[] {
     spec: {
       name: 'edit_alarm',
       description:
-        'Change one of their alarms or timers. which: its time ("7:00"), label, or "next". Only give what changes: time ("HH:MM"), repeat ("daily", "weekdays", "once", day names), label, sound, play (music instead), on (false turns it off without deleting, true back on), skip_next (true skips only the next time it rings; false un-skips), skip_date ("YYYY-MM-DD": it stays quiet that one day, e.g. tomorrow), snooze_minutes, add_minutes (timers).',
+        'Change one of their alarms or timers. which: its time ("7:00"), label, or "next". Only give what changes: time ("HH:MM"), date ("YYYY-MM-DD", to move a one-off to another day), repeat ("daily", "weekdays", "once", day names), label, sound, play (music instead), on (false turns it off without deleting, true back on), skip_next (true skips only the next time it rings; false un-skips), skip_date ("YYYY-MM-DD": it stays quiet that one day, e.g. tomorrow), snooze_minutes, add_minutes (timers).',
       parameters: {
         type: 'object',
         properties: {
@@ -260,6 +260,7 @@ export function alarmTools(d: AlarmToolDeps): Tool[] {
           label: { type: 'string' },
           sound: { type: 'string' },
           play: { type: 'string' },
+          date: { type: 'string' },
           on: { type: 'boolean' },
           skip_next: { type: 'boolean' },
           skip_date: { type: 'string' },
@@ -297,8 +298,14 @@ export function alarmTools(d: AlarmToolDeps): Tool[] {
           if (p === null) return `Didn't understand the repeat "${str(a.repeat)}".`;
           days = p;
         }
-        if (time !== hit.time || days !== hit.days) {
-          const at = nextAt(time!, days, hit.tz, t);
+        // A one-off keeps its day ("make it 9:30" for tomorrow's), unless a new date is given.
+        const date = str(a.date);
+        if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) return 'The date must be YYYY-MM-DD.';
+        if (time !== hit.time || days !== hit.days || date) {
+          const keep = !days?.length ? date || localDate(hit.base, hit.tz) : undefined;
+          let at = nextAt(time!, days, hit.tz, t, keep);
+          if (at === undefined && keep && !date) at = nextAt(time!, days, hit.tz, t);
+          if (at === undefined && date) return 'That time has already passed.';
           if (at === undefined) return 'Could not work out when that is.';
           if (time) hit.time = time;
           if (days) hit.days = days;

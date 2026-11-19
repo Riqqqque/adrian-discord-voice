@@ -334,6 +334,24 @@ describe('review fixes', () => {
     expect(new Date(a.at).toISOString()).toBe('2026-11-18T21:00:00.000Z');
   });
 
+  it("moving a one-off's time keeps its day, and a date moves it", async () => {
+    const r = rig(); // Wed 1 PM
+    await r.call('set_alarm', { time: '09:00', date: '2026-11-19' });
+    expect((await r.call('edit_alarm', { which: '9', time: '09:30' })).raw).toContain('set for 9:30 AM tomorrow, Thursday');
+    expect((await r.call('edit_alarm', { which: '9:30', date: '2026-11-21' })).raw).toContain('set for 9:30 AM Saturday');
+    // Set for later today, moved to a time already gone today: the next one comes.
+    await r.call('set_alarm', { time: '15:00' });
+    expect((await r.call('edit_alarm', { which: '3 pm', time: '12:00' })).raw).toContain('set for 12 PM tomorrow');
+  });
+
+  it('a skipped day is not in the PC copy', async () => {
+    const r = rig();
+    await r.call('set_alarm', { time: '07:00', repeat: 'daily' });
+    expect((alarmState(r.clock, 'u1', r.now()).list as unknown[]).length).toBe(1);
+    await r.call('edit_alarm', { which: '7', skip_next: true });
+    expect((alarmState(r.clock, 'u1', r.now()).list as unknown[]).length).toBe(0);
+  });
+
   it('ringing ones are never deleted or turned off through the model', async () => {
     const r = rig();
     await r.call('set_alarm', { time: '13:01' });
