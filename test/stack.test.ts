@@ -2373,3 +2373,53 @@ describe('a music quiz in the call', () => {
     await r.stack.stop();
   });
 });
+
+describe('a ringing alarm', () => {
+  /** One alarm of the owner's, due a second ago, before the stack starts. */
+  const ringing = (dir: string) =>
+    writeFileSync(
+      join(dir, 'alarms.json'),
+      JSON.stringify({ version: 1, alarms: [{ id: 'al1', userId: OWNER, speaker: 'Rique', kind: 'alarm', label: '', at: Date.now() - 1000, base: Date.now() - 1000, time: '07:00', tz: 'UTC', enabled: true }], prefs: {}, sounds: [] }),
+    );
+  const alarmsLeft = (dir: string) => JSON.parse(readFileSync(join(dir, 'alarms.json'), 'utf8')).alarms.length;
+
+  it("the owner's stop turns it off and never reaches the model", async () => {
+    const r = await rig({}, { prepare: ringing });
+    r.voiceStates.set(OWNER, { channelId: CALL, mute: false, deaf: false });
+    r.loggedIn();
+    await until(() => r.logged.some((l) => l.m === 'alarm sound' && l.f.place === 'discord'), 'the ring in the call');
+    r.heard(r.discordPipe, OWNER, 'stop');
+    await until(() => alarmsLeft(r.dir) === 0, 'the alarm off');
+    await sleep(50);
+    expect(r.llmBodies).toHaveLength(0);
+    expect(r.tts.calls).toContain('Alarm off.');
+    await r.stack.stop();
+  });
+
+  it("someone else's stop leaves it ringing, and the PC copy of the owner's words is ignored while they're in her call", async () => {
+    const r = await rig({}, { prepare: ringing });
+    r.voiceStates.set(OWNER, { channelId: CALL, mute: false, deaf: false });
+    const { pipe } = r.connect();
+    r.loggedIn();
+    await until(() => r.logged.some((l) => l.m === 'alarm sound'), 'the ring');
+    r.heard(r.discordPipe, SAM, 'stop');
+    r.heard(pipe, OWNER, 'stop');
+    await sleep(100);
+    expect(alarmsLeft(r.dir)).toBe(1);
+    expect(r.logged.some((l) => l.m === 'alarm words')).toBe(false);
+    r.heard(r.discordPipe, OWNER, 'snooze');
+    await until(() => r.logged.some((l) => l.m === 'alarm snoozed'), 'the snooze');
+    await r.stack.stop();
+  });
+
+  it('rings at the PC when they are not in her call, and stops from there', async () => {
+    const r = await rig({}, { prepare: ringing });
+    const { pipe } = r.connect();
+    r.loggedIn();
+    await until(() => r.logged.some((l) => l.m === 'alarm sound' && String(l.f.place).startsWith('sat:')), 'the ring at the PC');
+    expect(r.stack.busy()).toBe(true);
+    r.heard(pipe, OWNER, "I'm up");
+    await until(() => alarmsLeft(r.dir) === 0, 'the alarm off');
+    await r.stack.stop();
+  });
+});

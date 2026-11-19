@@ -22,7 +22,7 @@ import {
 import type { Logger, Tool, ToolContext, UserId } from '../core/interfaces.js';
 import type { DecoderFactory, Track } from '../features/music.js';
 import { TONES } from '../features/alarm-tones.js';
-import { type AlarmClock, type SavedSound, clockText, LIMITS } from '../features/alarms.js';
+import { type AlarmClock, type SavedSound, clockText, LIMITS, localDate } from '../features/alarms.js';
 
 // --- the PC's copy -----------------------------------------------------------------
 
@@ -38,7 +38,8 @@ export function alarmState(clock: AlarmClock, userId: UserId, now = Date.now()):
     type: 'alarms',
     ringing: mine.filter((a) => a.ringingSince !== undefined).map((a) => ({ id: a.id, kind: a.kind, label: a.label, base: a.base })),
     list: mine
-      .filter((a) => a.enabled && a.ringingSince === undefined && a.at - now <= PC_AHEAD_MS)
+      // A skipped day isn't sent: the PC would ring it if the server were down.
+      .filter((a) => a.enabled && a.ringingSince === undefined && a.at - now <= PC_AHEAD_MS && !(a.skip?.includes(localDate(a.base, a.tz)) && !a.snoozed))
       .map((a) => ({ id: a.id, kind: a.kind, label: a.label, at: a.at, base: a.base, sound: clock.soundOf(a) })),
     snoozeMin: p.snoozeMin,
     ringMin: p.ringMin,

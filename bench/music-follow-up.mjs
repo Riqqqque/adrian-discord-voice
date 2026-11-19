@@ -10,6 +10,7 @@ import { ConversationOrchestrator } from '../dist/brain/orchestrator.js';
 import { SessionMemory } from '../dist/brain/sessions.js';
 import { loadConfig, readSecrets } from '../dist/config.js';
 import * as music from '../dist/features/music.js';
+import { alarmKit } from './alarm-kit.mjs';
 import { SOUND_RULE, soundTool } from '../dist/features/sounds.js';
 
 const c = loadConfig(process.argv[2]);
@@ -27,12 +28,13 @@ const player = new Proxy({}, {
   },
 });
 const sounds = { find: async (q) => (calls.push(`sound(${q})`), { title: q, ref: '' }), play: async () => {} };
-const tools = [...music.musicTools(player), soundTool(sounds)];
+const alarms = alarmKit(c.timezone, (name) => calls.push(`alarm:${name}`));
+const tools = [...music.musicTools(player), soundTool(sounds), ...alarms.tools];
 const memory = new SessionMemory(16, 3_600_000);
 const o = new ConversationOrchestrator(llm, memory, tools, {
   spokenName: 'Adrian', writtenName: 'A.D.R.I.A.N.', timezone: c.timezone, firstEventTimeoutMs: 12000, maxTokens: 500, maxToolRounds: 3,
   stablePrefix: true,
-  stableLines: [SOUND_RULE, ...music.musicRules()],
+  stableLines: [SOUND_RULE, ...music.musicRules(), alarms.rule],
   context: () => ['Reply in English.', music.musicState(player)],
 });
 
