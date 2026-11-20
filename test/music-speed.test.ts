@@ -197,6 +197,13 @@ describe('a catalog answer in another script', () => {
     await s.close();
     expect(s.hits.map((h) => h.client)).toEqual(['WEB_REMIX']);
   });
+
+  it('still looks further for a version the song lacks', async () => {
+    const s = await api((b) => (b.context.client.clientName === 'WEB_REMIX' ? ytm(song(id('studio'), 'Lemon', '米津玄師')) : web(video(id('desk'), 'Kenshi Yonezu Lemon Tiny Desk', 'NPR Music', '5:00'))));
+    const yt = new YoutubeSource({ ytdlp: 'yt-dlp', searchApi: s.url, webApi: s.url }, ytdlp([]));
+    expect(await yt.songId('kenshi yonezu lemon tiny desk', sig())).toMatchObject({ id: id('desk'), via: 'ytsearch-match' });
+    await s.close();
+  });
 });
 
 describe('the song catalog’s top row longer than a song', () => {

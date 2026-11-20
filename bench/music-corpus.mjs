@@ -267,8 +267,7 @@ for (const [n, item] of corpus.entries()) {
     break;
   }
   results.push(row);
-  if (out) appendFileSync(`${out}l`, `${JSON.stringify(row)}
-`);
+  if (out) appendFileSync(`${out}l`, `${JSON.stringify(row)}\n`);
   console.log(`${hit ? 'HIT ' : 'MISS'} ${String(row.urlMs ?? '-').padStart(5)}ms ${String(row.audioMs ?? '-').padStart(5)}ms yt=${row.yt} ${item.say.padEnd(48).slice(0, 48)} → ${row.got}`);
   await sleep(50);
 }
