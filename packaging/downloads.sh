@@ -22,8 +22,8 @@ MODELS=(
   # Multilingual (25 European languages) always-on recognizer; replaced v2 in 0.7.0.
   # Upstream re-exported it in place on 2026-11-07 (same checkpoint and tokens, newer
   # export tools, plus a model card): 1495e91b... is that upload, 5793d0fd... the 2025 one.
-  # Same words and wake decisions on our benches; the new export keeps about 0.2-0.3 GB
-  # more memory after a long clip (20-35 s), so a server installed from the 2025 one keeps it.
+  # Same words and wake decisions on our benches; the new export keeps about 10 MB more
+  # memory per second of the longest clip decoded (+0.2-0.3 GB at 20-35 s). Both are listed.
   "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8|$SHERPA/asr-models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8.tar.bz2|1495e91b59d7fc53ddca91f3431758ec99f8fa253fdb0e1e851be0f72b14b0f9,5793d0fd397c5778d2cf2126994d58e9d56b1be7c04d13c7a15bb1b4eafb16bf|tar.bz2||465:645:645"
   # Second pass for non-English questions (Chinese, Japanese, Vietnamese, ...). Only int8 files are used.
   "sherpa-onnx-whisper-small|$SHERPA/asr-models/sherpa-onnx-whisper-small.tar.bz2|486a46afbb7ba798507190ffe02fea2dd726049af212e774537efac6afb210a6|tar.bz2|small-encoder.onnx small-decoder.onnx test_wavs|610:1285:360"
@@ -129,7 +129,7 @@ fetch() {
   fi
   # A file that arrived in full but isn't one this version knows: the site has
   # a different file now. Retrying fetches the same one, so say what helps.
-  local changed="the file on the download site is not one this version of A.D.R.I.A.N. knows (most likely it was replaced by a new upload), so this version won't use it. Nothing was installed from it. Running the command again won't change that. What to do: install the newest A.D.R.I.A.N. release, which may know the new file; or put a mirror you trust that still has a known copy in ADRIAN_DOWNLOAD_MIRRORS; or report it at $ISSUES with this message. Don't skip the check: it is what tells a changed file from a tampered one."
+  local changed="the file on the download site is not one this version of A.D.R.I.A.N. knows (most likely it was replaced by a new upload), so this version won't use it. Nothing was installed from it. Running the command again won't change that. What to do: install the newest A.D.R.I.A.N. release, which may know the new file; or put a mirror you trust that still has a known copy in ADRIAN_DOWNLOAD_MIRRORS; or report it at $ISSUES with this message. Don't put the file in place by hand: the check is what keeps an unknown file off this computer."
   local short="Running the same command again fixes a download that was cut short or changed on the way (a proxy or a captive Wi-Fi page can do that); everything that already finished is kept. If it fails the same way twice, $changed"
   if [ -n "$want" ] && [ "$(mb "$size")" -lt $((want * 9 / 10)) ]; then
     die "$name doesn't match its checksum, and it's smaller than it should be ($(mb "$size") MB of about $want MB). $short (${bad[*]}.)"
