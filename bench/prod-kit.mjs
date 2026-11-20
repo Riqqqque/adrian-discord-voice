@@ -6,6 +6,8 @@
 // alarms and timers on a stub clock); everything that would reach the network,
 // Discord or a PC returns a canned answer from `answers[name](args)` (or
 // "Nothing found."). `record(name, args)` sees every call.
+// `pc`: 'connected' (a PC answers with `answers`), 'absent' (the PC tools and
+// rule are there, as live, but this person has no PC connected), or false.
 import { genderLines } from '../dist/app/identity.js';
 import { matureContext } from '../dist/brain/mature.js';
 import { tavilySearchTool, timeTool } from '../dist/brain/tools.js';
@@ -36,7 +38,7 @@ const quiet = { info() {}, warn() {}, error() {}, debug() {} };
 /** Run for real: no network, no sound, nothing outside this process. */
 const LOCAL = new Set(['get_time', 'set_reminder', 'set_alarm', 'set_timer', 'edit_alarm', 'list_timers', 'cancel_timer', 'alarm_control', 'alarm_options', 'remember', 'forget', 'roll_dice', 'flip_coin', 'game', 'music_taste']);
 
-export function prodKit(c, { record = () => {}, answers = {}, pc = true, player } = {}) {
+export function prodKit(c, { record = () => {}, answers = {}, pc = 'connected', player } = {}) {
   const tz = c.timezone;
   const stubPlayer =
     player ??
@@ -73,7 +75,7 @@ export function prodKit(c, { record = () => {}, answers = {}, pc = true, player 
     ...taste.tools(),
     quizzes.tool(() => undefined),
     soundTool({ find: async () => undefined, play: async () => {} }),
-    ...(pc ? pcTools({ pcFor: () => fakePc, findVideo: async () => 'jfKfPfyJRdk' }) : []),
+    ...(pc ? pcTools({ pcFor: () => (pc === 'absent' ? undefined : fakePc), findVideo: async () => 'jfKfPfyJRdk' }) : []),
     ...discordTools({ client: {}, allowedGuilds: [], members: false, presences: false, timezone: tz }, { limiter: new RelayLimiter(10, 5), isOwner: () => false, maxChars: 500 }),
     ...handoffTools({ things: nobody, starts: {}, callRoom: 'discord', pcFor: () => fakePc, callMusic: () => undefined, call: () => undefined, inCall: () => false, isOwner: () => true, canSee: async () => true, readable: false }),
     tellCallTool({ nameOf: () => 'Sam', inHerCall: () => false, call: () => undefined, isMember: async () => true, announce: async () => true, post: async () => 'general', limiter: { take: () => undefined, release() {} }, maxChars: 200 }),
