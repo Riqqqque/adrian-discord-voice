@@ -42,6 +42,12 @@ const SLOW_REJOIN_MS = 5 * 60_000;
 /** Left Ready and not back after this long: the library's own reconnect has no
  *  time limit, and one lost packet leaves it in Signalling or Connecting for good. */
 const STUCK_MS = 30_000;
+/** Back in Signalling after a drop and still there after this long: the library's
+ *  rejoin names the channel she's already in, and Discord rarely answers that (prod,
+ *  30 days: of 5 given time, 4 got nothing in 29 s to 40 h; one came back via a new
+ *  voice server after 7.4 s). Moves leave Signalling in under 0.1 s, fresh joins in
+ *  1.5 s at most. */
+const SIGNAL_MS = 5_000;
 
 /** Opus bitrate for everything the bot plays (music and speech). */
 const OPUS_BITRATE = 128_000;
@@ -273,8 +279,10 @@ export class DiscordVoiceTransport extends EventEmitter implements VoiceTranspor
   private async recoverOnce(conn: VoiceConnection | undefined, resuming: boolean): Promise<void> {
     const gen = this.gen;
     const current = () => !this.closing && gen === this.gen; // not kicked, moved or left meanwhile
+    const since = performance.now();
     if (conn) {
-      this.emit('disconnected', 'voice connection dropped');
+      const status = conn.state.status;
+      this.emit('disconnected', status === VoiceConnectionStatus.Connecting ? 'voice link resuming' : status === VoiceConnectionStatus.Signalling ? 'voice link rejoining' : 'voice connection dropped');
       try {
         if (!resuming) {
           await Promise.race([
@@ -282,17 +290,19 @@ export class DiscordVoiceTransport extends EventEmitter implements VoiceTranspor
             entersState(conn, VoiceConnectionStatus.Connecting, 5_000),
           ]);
         }
-        await entersState(conn, VoiceConnectionStatus.Ready, STUCK_MS);
+        await readyOrStuck(conn);
+        if (current()) this.log.info('voice back', { ms: Math.round(performance.now() - since), via: 'library' });
         return; // the library reconnected by itself
-      } catch {
-        /* fall through to a full rejoin */
+      } catch (e) {
+        if (!current()) return;
+        this.log.warn('voice stuck, rebuilding', { status: conn.state.status, why: (e as Error).message });
       }
-      if (!current()) return;
-      this.log.warn('voice stuck, rebuilding', { status: conn.state.status });
       this.dropAllStreams();
       this.leave(conn);
     }
+    let attempts = 0;
     while (current()) {
+      attempts++;
       if (this.rejoins === MAX_REJOINS) this.emit('failed', `not back after ${MAX_REJOINS} rejoin attempts; still trying`);
       this.rejoins++;
       const delay = this.rejoins > MAX_REJOINS ? SLOW_REJOIN_MS : Math.min(30_000, 1_000 * 2 ** (this.rejoins - 1)) + Math.random() * 500;
@@ -301,6 +311,7 @@ export class DiscordVoiceTransport extends EventEmitter implements VoiceTranspor
       if (!current()) return;
       try {
         await this.join();
+        if (conn) this.log.info('voice back', { ms: Math.round(performance.now() - since), via: 'rejoin', attempts });
         return;
       } catch (e) {
         this.log.warn('rejoin failed', { error: (e as Error).message });
@@ -387,6 +398,39 @@ export class DiscordVoiceTransport extends EventEmitter implements VoiceTranspor
     }
     this.emit('membersChanged', members);
   }
+}
+
+/** Resolves once `conn` is Ready. Rejects after STUCK_MS, after SIGNAL_MS in a row in
+ *  Signalling, when it's destroyed, or on a connection error (as entersState does:
+ *  in prod those were 521/522 answers, and the resume never came back from them). */
+function readyOrStuck(conn: VoiceConnection): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let signalTimer: NodeJS.Timeout | undefined;
+    const limit = setTimeout(() => finish(new Error('not back in time')), STUCK_MS);
+    const check = () => {
+      const s = conn.state.status;
+      if (s === VoiceConnectionStatus.Ready) return finish();
+      if (s === VoiceConnectionStatus.Destroyed) return finish(new Error('destroyed'));
+      if (s !== VoiceConnectionStatus.Signalling) {
+        clearTimeout(signalTimer);
+        signalTimer = undefined;
+      } else if (!signalTimer) {
+        signalTimer = setTimeout(() => finish(new Error('rejoin not answered')), SIGNAL_MS);
+      }
+    };
+    const onError = (e: Error) => finish(e);
+    const finish = (e?: Error) => {
+      clearTimeout(limit);
+      clearTimeout(signalTimer);
+      conn.off('stateChange', check);
+      conn.off('error', onError);
+      if (e) reject(e);
+      else resolve();
+    };
+    conn.on('stateChange', check);
+    conn.on('error', onError);
+    check();
+  });
 }
 
 /** Destroy a voice connection unless it already is (destroying twice throws). */
