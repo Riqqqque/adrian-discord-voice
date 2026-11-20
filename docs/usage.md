@@ -13,7 +13,7 @@ The spoken name is "Adrian". Facts here are for version 0.17.1.
 
 | You say | It does |
 |---|---|
-| "Hey Adrian, …" | Answers the question. Greetings like "hi", "yo", "okay", "hello", "hola", "oye" and "chào" work too, and from the next release "hey there", "good morning", "good evening", "morning" and "excuse me". |
+| "Hey Adrian, …" | Answers the question. Greetings like "hi", "yo", "okay", "hello", "hola", "oye" and "chào" work too, and from the next release "hey there", "good morning", "good evening", "morning" and "excuse me", which are answered at once only for something only it does (see below). |
 | "Adrian, …" | Treated as a question to it. |
 | "… hey Adrian, …" in the middle of a sentence | Also a question to it. |
 | "Adrian?" (the name alone) | "Yes?", then your next words within 20 seconds are the question. |
