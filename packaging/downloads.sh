@@ -40,7 +40,7 @@ refuse_symlinks() {
 }
 
 fetch() { # fetch url sha256 dest
-  local url=$1 sha=$2 dest=$3 name
+  local url=$1 sha=$2 dest=$3 name rc
   name=$(basename "$url")
   if [ -n "${ADRIAN_DOWNLOAD_CACHE:-}" ] && [ -f "$ADRIAN_DOWNLOAD_CACHE/$name" ]; then
     if echo "$sha  $ADRIAN_DOWNLOAD_CACHE/$name" | sha256sum -c --status; then
@@ -51,8 +51,12 @@ fetch() { # fetch url sha256 dest
   fi
   say "Downloading $name"
   # Limits on a stall, not on total time: a big model on a slow line is fine.
-  curl -fL --retry 3 --connect-timeout 30 --speed-time 60 --speed-limit 1024 --proto '=https' --tlsv1.2 -o "$dest" "$url"
-  echo "$sha  $dest" | sha256sum -c --status || die "checksum mismatch for $name"
+  curl -fL --retry 3 --connect-timeout 30 --speed-time 60 --speed-limit 1024 --proto '=https' --tlsv1.2 -o "$dest" "$url" || {
+    rc=$? # curl's own code stays the exit code
+    printf 'error: downloading %s stopped (curl error %s: the connection dropped, or the site is down or blocked). Check the internet connection, then run the same command again: everything that already finished is kept.\n' "$name" "$rc" >&2
+    return "$rc"
+  }
+  echo "$sha  $dest" | sha256sum -c --status || die "$name doesn't match its pinned checksum, so the download is damaged or was changed on the way. Run the same command again; if it keeps happening, something between you and the site is changing files."
 }
 
 install_node() { # install_node <opt dir> <scratch dir>
