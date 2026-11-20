@@ -7,6 +7,7 @@ import { LlmHttpError } from './openai-compatible.js';
 import { SentenceSplitter, type SplitterOptions, toSpeakable } from './speech-text.js';
 import { countable, stripImages } from './images.js';
 import { asUntrustedData } from './tools.js';
+import { type CacheWarmer, type Prefix, prefixKey, WARM_PLACEHOLDER, type WarmResult } from './prewarm.js';
 
 export interface OrchestratorOptions {
   /** Name the assistant answers to when spoken. */
@@ -37,6 +38,8 @@ export interface OrchestratorOptions {
   filler?: () => string;
   /** Rules that never change between requests (cached with the stable prompt). */
   stableLines?: string[];
+  /** Cache warm-ups (with stablePrefix): `prewarm()` sends one, and every answer tells it the prefix is warm. Can be shared. */
+  warmer?: CacheWarmer;
 }
 
 export interface Usage {
@@ -202,7 +205,9 @@ export class ConversationOrchestrator {
             : []),
         ]);
     const history = this.memory.history(userId) as ChatMessage[];
-    const stable: ChatMessage = { role: 'system', content: stablePrompt(this.o, tools.map((t) => t.spec.name)), cache: true };
+    const stable = this.stable(tools);
+    // Which cached prefix this request uses, for the warmer.
+    const warmKey = this.o.warmer && this.o.stablePrefix ? this.prefix(tools, stable).key : undefined;
     const messages: ChatMessage[] = this.o.stablePrefix
       ? [
           stable,
@@ -227,6 +232,7 @@ export class ConversationOrchestrator {
         let roundText = '';
         let metered = false;
         let calls: { id: string; name: string; arguments: string; extra?: unknown }[] = [];
+        const roundStart = performance.now();
         const roundCtl = new AbortController();
         const endRound = () => roundCtl.abort();
         signal.addEventListener('abort', endRound, { once: true });
@@ -273,6 +279,7 @@ export class ConversationOrchestrator {
               usage.cachedTokens += ev.cachedTokens;
               usage.cacheWriteTokens += ev.cacheWriteTokens ?? 0;
               usage.outputTokens += ev.outputTokens;
+              if (warmKey && ev.cachedTokens + (ev.cacheWriteTokens ?? 0) > 0) this.o.warmer!.note(warmKey, performance.now() - roundStart);
             }
           }
         } catch (e) {
@@ -428,6 +435,24 @@ export class ConversationOrchestrator {
       if (spoken) this.memory.append(userId, { role: 'assistant', content: spoken });
       onUsage?.(usage);
     }
+  }
+
+  /** The cached system block: the one builder for answers and warm-ups. */
+  private stable(tools: Tool[]): ChatMessage {
+    return { role: 'system', content: stablePrompt(this.o, tools.map((t) => t.spec.name)), cache: true };
+  }
+
+  /** The part of every request that's cached (stablePrefix): all tools and the stable prompt, byte for byte as `ask` sends them. */
+  private prefix(tools: Tool[] = this.tools, stable: ChatMessage = this.stable(tools)): Prefix {
+    const specs = tools.map((t) => t.spec);
+    return { key: prefixKey(this.llm.model, [stable.content], specs), messages: [stable, { role: 'user', content: WARM_PLACEHOLDER }], tools: specs };
+  }
+
+  /** Someone is about to ask (woken, push-to-talk): warm the cached prefix
+   *  now so their answer doesn't pay for writing it. Never throws. */
+  prewarm(reason: string): WarmResult {
+    if (!this.o.warmer || !this.o.stablePrefix) return 'off';
+    return this.o.warmer.warm(() => this.prefix(), reason);
   }
 
   private async *withFirstEventTimeout(src: AsyncIterable<LlmEvent>, signal: AbortSignal, round: AbortController): AsyncGenerator<LlmEvent> {
