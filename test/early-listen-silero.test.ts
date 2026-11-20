@@ -14,7 +14,7 @@ import { clips, join16, MODELS, NO_MODELS, quiet } from './speech-clips.js';
 
 const SILERO = MODELS && join(MODELS, 'silero_vad.onnx');
 const ON = !!SILERO && existsSync(SILERO);
-if (!ON) console.warn(`early-listen-silero: skipped, ${NO_MODELS}`);
+if (!ON) process.stderr.write(`early-listen-silero: skipped, ${NO_MODELS}\n`);
 
 const vadOpts = (minSilence: number) => ({ model: SILERO!, threshold: 0.5, minSilence, minSpeech: 0.25, maxSpeech: 20 });
 
