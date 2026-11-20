@@ -296,6 +296,32 @@ sc({ id: 'sam-asks', room: 'call', q: 'how many players are on a soccer team', a
   ['what about futsal', 'for', 3],
 ] });
 
+// ---------------- Statements (added after the first report) ----------------
+// Follow-ups to her that are statements, not questions or orders: objections,
+// constraints, thanks with a tail, "more like that", answering her question;
+// plus a few statement-shaped lines to someone else. Labeled before running;
+// `--split stmt`. Not rewordings of any held-out case.
+sc({ id: 'thighs', room: 'pc', set: 'stmt', q: 'how long should I bake chicken thighs', a: 'About thirty five minutes at 425.', said: [['my oven only goes to 400', 'for', 4]] });
+sc({ id: 'podcast', room: 'pc', set: 'stmt', q: 'recommend a podcast for my commute', a: "Try Radiolab, it's science stories.", said: [["I've already heard all of those", 'for', 4]] });
+sc({ id: 'dad', room: 'pc', set: 'stmt', q: "what's a good gift for my dad", a: 'A nice multitool or a whiskey sampler.', said: [["he doesn't drink", 'for', 3]] });
+sc({ id: 'door', room: 'pc', set: 'stmt', q: 'how do I fix a squeaky door', a: 'Spray WD-40 on the hinges and swing it a few times.', said: [["I don't have any WD-40", 'for', 5]] });
+sc({ id: 'stardew', room: 'pc', set: 'stmt', q: 'suggest a game like Stardew Valley', a: 'Try Coral Island.', said: [['that one was too slow for me', 'for', 4]] });
+sc({ id: 'workout', room: 'pc', set: 'stmt', q: "what's a quick workout", a: 'Three rounds of twenty squats, ten pushups and a one minute plank.', said: [["thanks, I'll try that tonight", 'for', 4]] });
+sc({ id: 'scifi', room: 'pc', set: 'stmt', q: 'name a good sci-fi book', a: 'Project Hail Mary by Andy Weir.', said: [['I loved that one, something like it would be great', 'for', 5]] });
+sc({ id: 'water', room: 'pc', set: 'stmt', q: 'how much water should I drink a day', a: 'Around eight cups is a common target.', said: [['that seems like a lot', 'for', 3]] });
+sc({ id: 'pasta', room: 'pc', set: 'stmt', q: 'how long do I boil pasta', a: 'About ten minutes.', said: [["the water's boiling, can you grab the salt", 'not', 6]] });
+sc({ id: 'sunny', room: 'pc', set: 'stmt', q: "what's the weather tomorrow", a: 'Sunny, around sixty.', said: [["honey I'm taking the dog out", 'not', 7]] });
+sc({ id: 'evanston', room: 'pc', set: 'stmt', q: 'how far is Chicago from Evanston', a: 'About fifteen miles.', said: [["I'll pick you up at seven then", 'not', 8]] });
+sc({ id: 'jackbox', room: 'call', set: 'stmt', q: 'suggest a party game for tonight', a: 'Try Jackbox, Party Pack 9 has good ones.', said: [['yeah we did that already, something different', 'for', 3, undefined, [['Sam', 'we played that last week']]]] });
+sc({ id: 'budapest', room: 'call', set: 'stmt', q: "what's a good movie for the group", a: 'How about The Grand Budapest Hotel?', said: [["Kim's seen it already", 'for', 3]] });
+sc({ id: 'trivia', room: 'call', set: 'stmt', q: 'give me a trivia question', a: "What's the only planet that spins clockwise?", said: [["I think it's Venus", 'for', 4]] });
+sc({ id: 'cozy', room: 'call', set: 'stmt', q: 'what should we name the server', a: 'How about The Cozy Corner?', said: [['another one like that but funnier', 'for', 3]] });
+sc({ id: 'overcooked', room: 'call', set: 'stmt', q: 'how do we beat this level in Overcooked', a: 'Have one person only chop and one only cook.', said: [["we tried that and it still didn't work", 'for', 3]] });
+sc({ id: 'celsius', room: 'call', set: 'stmt', q: 'convert 30 celsius to fahrenheit', a: "That's 86 degrees.", said: [["thanks, that's what I figured", 'for', 2]] });
+sc({ id: 'topping', room: 'call', set: 'stmt', q: "what's the best pizza topping", a: "Pepperoni, it's the classic for a reason.", said: [['pineapple is better and you know it', 'for', 3]] });
+sc({ id: 'worldcup', room: 'call', set: 'stmt', q: 'who won the last world cup', a: 'Argentina, in 2022.', said: [['facts, he carried them', 'not', 3, undefined, [['Kim', 'messi goat']]]] });
+sc({ id: 'lethal', room: 'call', set: 'stmt', q: 'suggest a game for the four of us', a: 'Try Lethal Company.', said: [['Sam you still have it installed right', 'not', 4]] });
+
 // ---- Run ------------------------------------------------------------------
 const META = /\b(was(n'?t| not) (that |this )?(for|to|meant for|talking to) me|(were|are) you talking to me|talking to (me|someone else)|did you mean me|meant for me|not sure (if )?(that was|you were) (for|talking to) me)\b/i;
 const TOOL = {
@@ -310,7 +336,7 @@ const TOOL = {
 const trials = [];
 for (const x of S) {
   if (ROOM !== 'all' && x.room !== ROOM) continue;
-  const split = x.hold ? 'holdout' : 'tune';
+  const split = x.set ?? (x.hold ? 'holdout' : 'tune');
   if (SPLIT !== 'all' && SPLIT !== split) continue;
   x.said.forEach(([said, label, secs, tool, lines], i) => trials.push({ ...x, n: i, split, said, label, secs, tool, lines: lines ?? [] }));
 }
@@ -370,12 +396,12 @@ for (const t of trials) {
 }
 const f = (k) => (tally[k] ? `${tally[k][0]}/${tally[k][1]}` : '-');
 console.log('');
-for (const sp of ['tune', 'holdout']) {
+for (const sp of ['tune', 'holdout', 'stmt']) {
   if (!tally[`${sp} not`] && !tally[`${sp} for`]) continue;
   console.log(`${sp}: side talk silent ${f(`${sp} not`)}, follow-ups answered ${f(`${sp} for`)}, ambiguous answered ${f(`${sp} either answered`)}`);
 }
 console.log(`by room: pc not ${f('pc not')}, pc for ${f('pc for')}, call not ${f('call not')}, call for ${f('call for')}`);
 console.log(`meta answers: ${tally.meta?.[1] ?? 0}`);
-const scored = ['tune not', 'tune for', 'holdout not', 'holdout for'].reduce((a, k) => [a[0] + (tally[k]?.[0] ?? 0), a[1] + (tally[k]?.[1] ?? 0)], [0, 0]);
+const scored = ['tune not', 'tune for', 'holdout not', 'holdout for', 'stmt not', 'stmt for'].reduce((a, k) => [a[0] + (tally[k]?.[0] ?? 0), a[1] + (tally[k]?.[1] ?? 0)], [0, 0]);
 console.log(`wrong actions: ${wrong} (any tool on side talk, or a different tool than asked) of ${trials.length}`);
 console.log(`\n${scored[0]}/${scored[1]} judged as expected`);
