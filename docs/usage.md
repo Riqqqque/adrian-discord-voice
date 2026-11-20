@@ -28,7 +28,7 @@ The spoken name is "Adrian". Facts here are for version 0.17.1.
 - **A friend called Adrian** (next release). The wake check reads words, not who is being spoken to, so in a call with someone of that name:
   - Questions to them that end in the name ("are you coming, Adrian?", "can you heal Adrian?", "what a shot, Adrian!") wake it loosely. The model is asked whether it was meant for it and usually stays quiet, but each one costs a model call and ducks the music for a few seconds.
   - A stop phrased as a question ("can you stop, Adrian?") stops the music without asking the model.
-  - A greeting with the name alone ("good morning, Adrian", "morning Adrian") gets "Yes?", and "excuse me, Adrian, ..." is answered as a question to it. "Good morning, Adrian" therefore says "Yes?" rather than starting the briefing; "Hey Adrian, good morning" still starts it.
+  - A greeting with the name alone ("good morning, Adrian", "morning Adrian") gets "Yes?", and "excuse me, Adrian, ..." is answered as a question to it. "Good morning, Adrian" therefore gets "Yes?" rather than the briefing; with "Hey Adrian, good morning" the model still decides, as before.
   - "Adrian, pass me the controller" has always been taken as an order to it.
   - These rules are English only: "¿Qué hora es, Adrián?" doesn't wake it.
 
@@ -539,6 +539,8 @@ When a limit is reached it says so. By voice it says it once, then stays quiet a
 | Longest question passed to the model (voice and text) | `limits.maxRequestChars` (600 characters, 20 to 4000) | Nothing: the rest of the question is cut off. |
 
 Plain music orders and typed music commands count toward the hourly limit too, though they cost nothing. Things answered instantly don't count. The cloud voice has its own monthly character budget; past it, it switches to the local voice until the next month. See [costs.md](costs.md).
+
+To see how close you are, open the admin page's Status tab. From the next release its dashboard shows spending against both caps, the cloud voice's characters, Groq and Tavily use, how fast answers come, voice and PC drops, restarts and recent errors, with a "Needs attention" list at the top ([install.md](install.md#the-dashboard)).
 
 ## Who it is
 
