@@ -1452,6 +1452,18 @@ export async function startVoiceStack(
     const vs = inHerChannel(userId);
     return transport.isReady() && !!vs && !vs.mute && !vs.deaf;
   }
+  /** Their Discord client plays her call: in her voice channel and not deafened.
+   *  Muted covers only their own mic, and her voice link being down doesn't stop
+   *  the others. Their PC's mic then hears the call through the speakers, and
+   *  everything a PC hears counts as its owner. The PC app's echo gate only
+   *  knows her own audio, not Discord's, so it can't tell; push-to-talk and
+   *  typing in the window are the only words surely theirs. (Another voice
+   *  channel or app is out of sight here: roadmap F1.) */
+  function callPlaysAt(userId: UserId): boolean {
+    const vs = inHerChannel(userId);
+    return !!vs && !vs.deaf;
+  }
+  const CALL_PLAYS_HERE = 'Your Discord call plays on this PC, so here I only take push-to-talk.';
   /** Stops so far, per room and person. They skip the second listens, so one
    *  can overtake the question it's for: that question checks this before it goes on. */
   const stops = new Map<string, number>();
@@ -1473,7 +1485,8 @@ export async function startVoiceStack(
     const said = m.woke ? m.remainder : text;
     const kind = classify(said)?.kind;
     const forHer = m.woke || ctl.listeningTo(userId, startedAt) || !!pttOpen?.();
-    if (!forHer || !said.trim() || kind === 'stop' || kind === 'name' || !cloudSttFor(rm, userId) || inHerCall(userId)) return;
+    // heard() drops what a PC hears while its speakers play her call: not worth a listen.
+    if (!forHer || !said.trim() || kind === 'stop' || kind === 'name' || !cloudSttFor(rm, userId) || (!!rm.ui && callPlaysAt(userId) && !pttOpen?.())) return;
     if (o.unlessDangling && endsDangling(said)) return;
     early.set(samples, cloudListen(samples, o.dropped));
   }
@@ -1508,26 +1521,36 @@ export async function startVoiceStack(
     // Asking whether push-to-talk is on also uses it up, whatever was said.
     const ptt = direct?.() ?? false;
     if (!e.woke && ptt) e = { ...e, woke: true, command: e.text };
-    // An alarm of theirs ringing: stop / snooze / "I'm up" are for it, in any room, before anything else.
-    // Not from a PC while they're in her call: its mic also hears the call through the speakers,
-    // and everything it hears counts as its owner. Their call hears them anyway.
-    const pcHearsCall = !!rm.ui && !ptt && inHerCall(e.userId);
-    if (!pcHearsCall && alarmHeard(rm, e.userId, e.woke ? e.command || e.text : e.text, e.woke)) return;
     const first = classify(e.woke ? e.command : e.text);
     const stop = first?.kind === 'stop';
-    if (stop) noteStop(rm, e.userId);
-    if (first?.kind === 'stop' && !first.weak) callOff(e.userId, ctl);
-    // In her Discord call too: the call hears the same words, and that's
-    // where a group wants her (music for everyone). The call answers; it can
-    // still reach this PC through the PC tools. Push-to-talk and typing in
-    // the window stay with the PC, and so does everything while muted there.
-    // A stop isn't handed over: it's for whichever room she's talking in.
-    if (!ptt && rm.ui && inHerCall(e.userId) && !(stop && ctl.busy)) {
-      if (e.woke) {
-        log.info('pc deferred to discord', { room: rm.key });
-        rm.ui.transcript('her', 'Answering in the Discord call.');
+    // A PC whose speakers play her call hears everyone in it, as its owner (callPlaysAt).
+    // Only a stop gets through: stopping is safe whoever said it. It drops a
+    // question of theirs still waiting on a second listen, calls off a restart
+    // counting down, and stops what she's saying at this PC. Not alarms,
+    // follow-ups, questions or orders.
+    const pcHearsCall = !!rm.ui && !ptt && callPlaysAt(e.userId);
+    if (pcHearsCall && stop) {
+      noteStop(rm, e.userId);
+      if (!first.weak) callOff(e.userId, ctl);
+    }
+    if (pcHearsCall && !(stop && ctl.busy)) {
+      if (inHerCall(e.userId)) {
+        // They're heard in the call itself, and it answers. It can still reach this PC through the PC tools.
+        if (e.woke) {
+          log.info('pc deferred to discord', { room: rm.key });
+          rm.ui!.transcript('her', 'Answering in the Discord call.');
+        }
+      } else if (e.woke) {
+        log.info('pc hears the call', { room: rm.key });
+        rm.ui!.transcript('her', CALL_PLAYS_HERE);
       }
       return;
+    }
+    // An alarm of theirs ringing: stop / snooze / "I'm up" are for it, in any room, before anything else.
+    if (!pcHearsCall) {
+      if (alarmHeard(rm, e.userId, e.woke ? e.command || e.text : e.text, e.woke)) return;
+      if (stop) noteStop(rm, e.userId);
+      if (first?.kind === 'stop' && !first.weak) callOff(e.userId, ctl);
     }
     if (!rm.ui && !stop && (pcHasWords.get(e.userId) ?? 0) > performance.now()) return;
     // The windows are judged from when they started talking, not when the words land.
@@ -1622,7 +1645,11 @@ export async function startVoiceStack(
   }
   // Before the question reaches it: after a long quiet Speechify stalls on the first sentence.
   source.on('speechStart', () => void cloud?.warmIfIdle());
-  pipeline.on('voiceActivity', (id, ms) => ctl.voiceActivity(id, ms));
+  pipeline.on('voiceActivity', (id, ms) => {
+    // The call's voices through their speakers would talk over her here: only a stop cuts her off then.
+    if (rm.ui && callPlaysAt(id) && !pttOpen?.()) return;
+    ctl.voiceActivity(id, ms);
+  });
   pipeline.on('error', (id, err) => log.warn('listen error', { user: id, error: err.message }));
   return pipeline;
   }
