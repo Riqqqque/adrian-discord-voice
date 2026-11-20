@@ -2,7 +2,7 @@
 // messages, what each PC is told about its owner's alarms, and saving a
 // sound from YouTube as an alarm sound.
 
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import {
@@ -49,11 +49,23 @@ export function alarmState(clock: AlarmClock, userId: UserId, now = Date.now()):
 
 // --- buttons -------------------------------------------------------------------------
 
-export function alarmButtons(userId: UserId): ActionRowBuilder<ButtonBuilder> {
+/** Stop / Snooze for one ring of one alarm: `alarm:<action>:<owner>:<alarm id>:<its base, base 36>`.
+ *  An older message's buttons then can't stop what rings now. Messages sent
+ *  before 0.17.2 carry only `alarm:<action>:<owner>`, and still work. */
+export function alarmButtons(userId: UserId, ring?: { alarmId: string; base: number }): ActionRowBuilder<ButtonBuilder> {
+  const tail = ring ? `:${ring.alarmId}:${ring.base.toString(36)}` : '';
   return new ActionRowBuilder<ButtonBuilder>().addComponents(
-    new ButtonBuilder().setCustomId(`alarm:stop:${userId}`).setLabel('Stop').setStyle(ButtonStyle.Danger),
-    new ButtonBuilder().setCustomId(`alarm:snooze:${userId}`).setLabel('Snooze').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`alarm:stop:${userId}${tail}`).setLabel('Stop').setStyle(ButtonStyle.Danger),
+    new ButtonBuilder().setCustomId(`alarm:snooze:${userId}${tail}`).setLabel('Snooze').setStyle(ButtonStyle.Secondary),
   );
+}
+
+/** What a button's custom id says. */
+export function parseAlarmButton(id: string): { action: 'stop' | 'snooze'; owner: string; only?: { id: string; base?: number } } | undefined {
+  const [kind, action, owner = '', alarmId, base] = id.split(':');
+  if (kind !== 'alarm' || (action !== 'stop' && action !== 'snooze')) return undefined;
+  const b = base !== undefined ? parseInt(base, 36) : undefined;
+  return { action, owner, ...(alarmId ? { only: { id: alarmId, ...(b !== undefined && Number.isFinite(b) ? { base: b } : {}) } } : {}) };
 }
 
 // --- saving a clip -------------------------------------------------------------------
@@ -80,7 +92,14 @@ export async function saveClip(d: {
   }
   if (!t) return `Found no short "${d.query}" sound on YouTube.`;
   // 48 kHz stereo from ffmpeg, kept as 24 kHz mono: half a minute is 1.4 MB.
-  const dec = d.decode({ url: t.ref });
+  if (d.signal.aborted) return 'That took too long.';
+  let dec: ReturnType<DecoderFactory>;
+  try {
+    dec = d.decode({ url: t.ref });
+  } catch (e) {
+    d.log.warn('alarm sound decode failed', { error: (e as Error).message.slice(0, 120) });
+    return "Couldn't read that sound.";
+  }
   const want = CLIP_MAX_S * 48_000 * 4;
   const parts: Buffer[] = [];
   let got = 0;
@@ -94,27 +113,34 @@ export async function saveClip(d: {
         if (got >= want) stop();
       });
       dec.pcm.on('end', () => resolve());
+      // An ffmpeg that never started closes its output with no end and no error.
+      dec.pcm.on('close', () => resolve());
       dec.pcm.on('error', (e) => reject(e));
     });
   } catch (e) {
     return (e as Error).message === 'aborted' ? 'That took too long.' : "Couldn't read that sound.";
   }
+  // Not a byte: ffmpeg couldn't open or decode it.
+  if (!got) return "Couldn't read that sound.";
   const pcm = Buffer.concat(parts).subarray(0, Math.min(got, want));
   const frames = Math.floor(pcm.length / 8); // two stereo frames → one mono sample
   if (frames < 24_000 / 4) return 'That sound came out empty; try another.';
   const out = new Int16Array(frames);
-  let peak = 1;
+  let peak = 0;
   for (let i = 0; i < frames; i++) {
     const o = i * 8;
     const v = (pcm.readInt16LE(o) + pcm.readInt16LE(o + 2) + pcm.readInt16LE(o + 4) + pcm.readInt16LE(o + 6)) / 4;
     out[i] = v;
     peak = Math.max(peak, Math.abs(v));
   }
+  // Silence, or a hiss under -50 dB, would ring as nothing at all once raised.
+  if (peak < 100) return 'That sound came out empty; try another.';
   // Leading and trailing silence off, and the same peak as the built-in tones.
   let a = 0;
   let b = frames;
   while (a < b && Math.abs(out[a]!) < peak * 0.02) a++;
   while (b > a && Math.abs(out[b - 1]!) < peak * 0.02) b--;
+  if (b - a < 24_000 / 4) return 'That sound came out empty; try another.';
   const k = (0.5 * 32767) / peak;
   const trimmed = Int16Array.from(out.subarray(a, b), (v) => Math.round(v * k));
   const file = `${randomUUID().slice(0, 12)}.pcm`;
@@ -122,6 +148,8 @@ export async function saveClip(d: {
     mkdirSync(d.dir, { recursive: true, mode: 0o750 });
     writeFileSync(join(d.dir, file), Buffer.from(trimmed.buffer, trimmed.byteOffset, trimmed.byteLength), { mode: 0o640 });
   } catch (e) {
+    // A full disk can leave part of the file behind.
+    rmSync(join(d.dir, file), { force: true });
     d.log.warn('alarm sound save failed', { error: (e as Error).message });
     return "Couldn't save it on the server.";
   }
@@ -225,7 +253,21 @@ export interface AlarmCommandDeps {
   said?: (userId: UserId, text: string) => void;
 }
 
-const plain = (raw: string) => raw.replace(/ \[id [\w-]+\]/g, '').replace(/ \(Note:.*\)$/, '').trim();
+/** The tools answer the model ("ask what time", "they have"); /alarm shows the
+ *  same words to the person, so they're turned to face them. */
+export function forPerson(raw: string): string {
+  return raw
+    .replace(/ \[id [\w-]+\]/g, '')
+    .replace(/ \(Note: saving to disk failed[^)]*\)/, ' Saving it to disk failed just now, so it may not survive a restart.')
+    .replace(/ \(Note:.*\)$/, '')
+    .replace(/; ask what time\./, '. Try a time like 7:00, 6:30am or 18:45.')
+    .replace(/; ask which days\./, '. Use daily, weekdays, weekends, or days like mon,wed,fri.')
+    .replace(/ Tell them to say stop or snooze; it can be (.+?) after that\./, ' Stop or snooze it first; it can be $1 after that.')
+    .replace(/\bThey have\b/g, 'You have')
+    .replace(/\bTheir\b/g, 'Your')
+    .replace(/\bthey are in neither\b/g, "you're in neither")
+    .trim();
+}
 
 export function registerAlarmCommands(d: AlarmCommandDeps): void {
   const tool = (n: string) => d.tools.find((t) => t.spec.name === n);
@@ -234,7 +276,7 @@ export function registerAlarmCommands(d: AlarmCommandDeps): void {
     if (!t) return "Alarms aren't available right now.";
     const raw = await t.run(args, AbortSignal.timeout(40_000), ctx);
     const text = typeof raw === 'string' ? raw : raw.text;
-    return plain(t.speak?.(args, text, ctx) || text);
+    return forPerson(t.speak?.(args, text, ctx) || text);
   };
 
   const sounds = (userId: UserId, typed: string) => {
@@ -267,6 +309,11 @@ export function registerAlarmCommands(d: AlarmCommandDeps): void {
     let out: string;
     switch (sub) {
       case 'set':
+        // set_alarm drops a date once there's a repeat: say so instead.
+        if (o.getString('date') && (o.getString('days') || (o.getString('repeat') && o.getString('repeat') !== 'once'))) {
+          out = 'Give a date for a one-off, or repeat or days for one that repeats, not both.';
+          break;
+        }
         out = await run(
           'set_alarm',
           {
@@ -287,7 +334,7 @@ export function registerAlarmCommands(d: AlarmCommandDeps): void {
         break;
       case 'stop':
       case 'snooze': {
-        const r = d.clock.control(u, sub, o.getInteger('minutes') ?? undefined);
+        const r = d.clock.control(u, sub, o.getInteger('minutes') ?? undefined, { typed: true });
         if (r.done) d.said?.(u, r.say);
         out = r.say;
         break;
@@ -300,7 +347,8 @@ export function registerAlarmCommands(d: AlarmCommandDeps): void {
           out = 'No alarm or timer like that. Pick one from the list.';
           break;
         }
-        if (a.ringingSince !== undefined) d.clock.control(u, 'stop');
+        // Not a stop: a snooze right after must not bring it back.
+        d.clock.unring(a);
         d.clock.remove([a.id]);
         out = `Deleted your ${a.kind === 'timer' ? 'timer' : `${clockText(a.base, a.tz)} alarm`}${a.label ? ` (${a.label})` : ''}.`;
         break;
@@ -335,19 +383,30 @@ export function registerAlarmCommands(d: AlarmCommandDeps): void {
   };
 
   const button = async (i: ButtonInteraction) => {
-    const [, action, owner] = i.customId.split(':');
-    if (action !== 'stop' && action !== 'snooze') return;
+    const b = parseAlarmButton(i.customId);
+    if (!b) return;
+    const { action, owner, only } = b;
     if (i.user.id !== owner && !d.isOwner(i.user.id)) {
       await i.reply({ content: "That's someone else's alarm.", flags: MessageFlags.Ephemeral });
       return;
     }
-    const r = d.clock.control(owner!, action);
-    if (r.done) d.said?.(owner!, r.say);
-    // The message keeps what it said, without the buttons, plus what happened.
-    await i.update({ content: `${i.message.content}\n${r.done ? `→ ${r.say}` : r.say}`.slice(0, 1900), components: [] }).catch(async () => {
-      await i.reply({ content: r.say, flags: MessageFlags.Ephemeral }).catch(() => undefined);
-    });
+    const r = d.clock.control(owner, action, undefined, { typed: true, ...(only ? { only } : {}) });
     d.log.info('alarm button', { user: i.user.id, for: owner, action, done: r.done });
+    if (r.done) {
+      d.said?.(owner, r.say);
+      // The message keeps what it said, without the buttons, plus what happened.
+      await i.update({ content: `${i.message.content}\n→ ${r.say}`.slice(0, 1900), components: [] });
+      return;
+    }
+    // Still waiting out a snooze: the buttons stay for later.
+    if (only && d.clock.forUser(owner).some((a) => a.id === only.id && (only.base === undefined || a.base === only.base))) {
+      await i.reply({ content: r.say, flags: MessageFlags.Ephemeral });
+      return;
+    }
+    // Over already (a second press, or stopped some other way): the buttons go,
+    // and the text stays as it is, which may already say how it ended.
+    await i.update({ components: [] });
+    await i.followUp({ content: r.say, flags: MessageFlags.Ephemeral });
   };
 
   d.client.on(Events.InteractionCreate, (i) => {
@@ -361,7 +420,9 @@ export function registerAlarmCommands(d: AlarmCommandDeps): void {
     p?.catch(async (e: unknown) => {
       d.log.warn('alarm command failed', { error: (e as Error).message });
       if (!i.isRepliable()) return;
-      await (i.replied || i.deferred ? i.editReply({ content: "Sorry, that didn't work." }) : i.reply({ content: "Sorry, that didn't work.", flags: MessageFlags.Ephemeral })).catch(() => undefined);
+      const sorry = { content: "Sorry, that didn't work.", flags: MessageFlags.Ephemeral } as const;
+      // A button's answer is its own message: never write over that.
+      await (i.replied || i.deferred ? (i.isButton() ? i.followUp(sorry) : i.editReply({ content: sorry.content })) : i.reply(sorry)).catch(() => undefined);
     });
   });
 }
