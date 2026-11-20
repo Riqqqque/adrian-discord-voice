@@ -84,7 +84,7 @@ export const PocConfigSchema = z.object({
       asrModelDir: z.string().min(1),
       /** Parakeet threads. Every segment anyone says goes through it, side talk
        *  included. onnxruntime's idle threads spin: 4 threads cost twice the CPU
-       *  of 2 for the same words and no faster answers (bench/sidetalk-score.mjs). */
+       *  of 2 for the same words, and answer only 10-50 ms sooner (bench/sidetalk-score.mjs). */
       asrThreads: z.number().int().min(1).max(8).default(2),
       /** Whisper threads, for the second pass on questions that aren't in English (rare). */
       whisperThreads: z.number().int().min(1).max(8).default(4),
