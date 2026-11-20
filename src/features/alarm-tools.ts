@@ -2,7 +2,7 @@
 // cover reminders.
 
 import type { Tool, ToolContext, UserId } from '../core/interfaces.js';
-import { PendingYes } from '../brain/tools.js';
+import { asksMore, PendingYes } from '../brain/tools.js';
 import { localToEpoch, spokenDuration, type Reminders } from './reminders.js';
 import { TONES, isTone } from './alarm-tones.js';
 import {
@@ -64,7 +64,8 @@ export function alarmTools(d: AlarmToolDeps): Tool[] {
   const lineFor = (raw: string, ctx: ToolContext): string | undefined => {
     const line = lines.get(raw);
     lines.delete(raw);
-    return line && d.english(ctx.userId) ? line : undefined;
+    // They also asked or ordered something else: the model answers the whole of it.
+    return line && d.english(ctx.userId) && !asksMore(ctx.said) ? line : undefined;
   };
   const sentence = (parts: string[]) => `${parts.join(', ').replace(/^./, (x) => x.toUpperCase())}.`;
   /** A sound as she'd name it out loud. */
@@ -212,7 +213,7 @@ export function alarmTools(d: AlarmToolDeps): Tool[] {
       return `Alarm set: ${describe(r)}.${where(ctx.userId, 'alarm')}${saveNote()}`;
     },
     speak: (_a, raw, ctx) => {
-      if (!d.english(ctx.userId) || !raw.startsWith('Alarm set:') || raw.includes('(Note:')) return undefined;
+      if (!d.english(ctx.userId) || asksMore(ctx.said) || !raw.startsWith('Alarm set:') || raw.includes('(Note:')) return undefined;
       const r = c.forUser(ctx.userId, 'alarm').find((x) => raw.includes(`[id ${x.id}]`));
       if (!r) return undefined;
       const when = r.days?.length ? `${clockText(r.base, r.tz)} ${daysText(r.days)}` : `${clockText(r.base, r.tz)} ${dayText(r.base, r.tz, now())}`;
@@ -259,7 +260,7 @@ export function alarmTools(d: AlarmToolDeps): Tool[] {
       return `Timer set: ${describe(r)}.${saveNote()}`;
     },
     speak: (a, raw, ctx) => {
-      if (!d.english(ctx.userId) || !raw.startsWith('Timer set:') || raw.includes('(Note:')) return undefined;
+      if (!d.english(ctx.userId) || asksMore(ctx.said) || !raw.startsWith('Timer set:') || raw.includes('(Note:')) return undefined;
       const ms = Math.round((num(a.hours) * 3600 + num(a.minutes) * 60 + num(a.seconds)) * 1000);
       return `Timer set for ${spokenDuration(ms)}.`;
     },
@@ -276,8 +277,8 @@ export function alarmTools(d: AlarmToolDeps): Tool[] {
           which: { type: 'string' },
           time: { type: 'string' },
           repeat: { type: 'string' },
-          label: { type: 'string' },
-          sound: { type: 'string' },
+          label: { type: 'string', description: 'The new label; "none" takes it off.' },
+          sound: { type: 'string', description: 'A sound name from alarm_options; "default" puts their default back.' },
           play: { type: 'string' },
           date: { type: 'string' },
           on: { type: 'boolean' },
@@ -358,8 +359,15 @@ export function alarmTools(d: AlarmToolDeps): Tool[] {
           spoken.push("it's not skipping any days now");
         }
       }
-      // An empty label or sound is the model filling in a field, not a change.
-      if (str(a.label) && str(a.label).slice(0, 80) !== (hit.label ?? '')) {
+      // An empty label or sound is the model filling in a field, not a change;
+      // "none" takes the label off, and "default" puts their default sound back.
+      if (/^(?:none|no label|nothing|clear|remove it)$/i.test(str(a.label))) {
+        if (hit.label) {
+          hit.label = '';
+          said.push('no label');
+          spoken.push("it has no label now");
+        }
+      } else if (str(a.label) && str(a.label).slice(0, 80) !== (hit.label ?? '')) {
         hit.label = str(a.label).slice(0, 80);
         said.push(`label "${hit.label}"`);
         spoken.push(`it's called ${hit.label} now`);
@@ -502,8 +510,8 @@ export function alarmTools(d: AlarmToolDeps): Tool[] {
           sound: { type: 'string' },
           query: { type: 'string' },
           name: { type: 'string' },
-          default_sound: { type: 'string' },
-          timer_sound: { type: 'string' },
+          default_sound: { type: 'string', description: 'A sound name; "default" goes back to the standard one.' },
+          timer_sound: { type: 'string', description: 'A sound name; "default" goes back to the standard one.' },
           snooze_minutes: { type: 'number' },
           ring_minutes: { type: 'number' },
           fade_in_seconds: { type: 'number' },

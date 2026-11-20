@@ -81,6 +81,9 @@ await ask('asked', 'call', 'do you remember what I do for a living', { says: /pi
 // Kept to themselves in a shared call.
 await ask('private', 'call', 'where does Sean live', { speaker: 'Sam', not: /denver/i });
 await ask('private', 'call', "I'm starving, what should I eat", { not: /vegetarian|peanut/i, max: 30 });
+// A question that only shares a word with a note (review S5).
+await ask('private', 'call', 'how does this work anyway', { not: /pizza/i, max: 60 });
+await ask('private', 'call', 'what game should we play tonight', { not: /valorant/i, max: 60 });
 // Used without being asked, where only they hear.
 await ask('used', 'desk', 'what should I make for dinner tonight', { not: /chicken|beef|pork|steak|bacon|sausage|\bham\b|turkey|fish|salmon|shrimp|tuna|meat(?!less)/i, max: 40 });
 // Naming the allergy to steer clear of it is fine; suggesting peanuts is not.
@@ -91,6 +94,8 @@ await ask('used', 'desk', "what was my dog's name again", { says: /biscuit/i });
 // "Remember that ...": saved and confirmed in a few words; a question with it still gets its answer.
 await ask('remember', 'call', 'remember that my anniversary is June 12', { tool: 'remember', args: (a) => /june/i.test(a.note ?? ''), max: 12 });
 await ask('remember', 'desk', 'remember I take my coffee black', { tool: 'remember', args: (a) => /black/i.test(a.note ?? ''), max: 12 });
+// Another order with it (review S4): saved, and the order still answered.
+await ask('remember', 'desk', 'remember I am trying to eat less sugar and give me a breakfast idea', { tool: 'remember', says: /oat|egg|yogurt|toast|avocado|smoothie|chia|omelet|berries|fruit/i, max: 40 });
 await ask('remember', 'desk', "remember my wifi password is on the fridge, and what's a good router?", { tool: 'remember', says: /router|mesh|eero|tp-?link|asus|netgear|wi-?fi (6|7|six|seven)|deco|orbi|google/i, max: 45 });
 // Needs a search: the right answer, said briefly, without talk about the search.
 await ask('search', 'call', 'who won the world series', { speaker: 'Sam', tool: 'web_search', says: /dodgers/i, max: 20, srcOk: false });

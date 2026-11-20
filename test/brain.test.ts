@@ -152,6 +152,13 @@ describe('system prompt', () => {
     expect(both).toMatch(/always call web_search/);
     expect(both).toMatch(/get_time/);
   });
+
+  it('sends what changes day to day (sunset, store hours) to a search, not to memory', () => {
+    const rule = systemPrompt(o, 'R', 'today', ['web_search']).split('\n').find((l) => l.includes('always call web_search'));
+    expect(rule).toMatch(/sunrise and sunset/);
+    expect(rule).toMatch(/store hours/);
+    expect(systemPrompt(o, 'R', 'today')).toMatch(/sunrise and sunset[^\n]*can't look those up/);
+  });
 });
 
 describe('orchestrator', () => {

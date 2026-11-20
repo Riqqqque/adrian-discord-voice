@@ -33,26 +33,32 @@ const QUESTION = /\?|\b(?:what|when|where|who|which|how|did|does|do|remember|rem
 const NOT_A_TOPIC = new Set(
   ('about again all and any anything are been but call called can could day did does doing done everything for from get got had has have hello her here hers him his how into just know knows like mine name named not now number one our out people person please really recall remember remind said say says she should so some something stuff tell that the their them then there these they thing things this those time told too very was were what when where which who whom whose why will with would yes you your yours').split(' '),
 );
-/** Words that ask about the same thing as a note's word ("what do I do for a living" is "works at ..."). */
+/** Question words that ask about the same thing as a note's word ("what do I do for a living" is "works at ..."). */
 const SAME_AS: Record<string, string> = {
   job: 'work', jobs: 'work', career: 'work', living: 'work', employer: 'work', workplace: 'work',
   pup: 'dog', puppy: 'dog', pupper: 'dog', doggo: 'dog', kitty: 'cat', kitten: 'cat',
   bday: 'birthday', allergy: 'allergic', allergies: 'allergic',
 };
-/** A word's rough stem, so "live", "lives" and "living" meet, and "work" and "works". */
-const stem = (word: string) => {
-  const w = SAME_AS[word] ?? word;
-  const s = w.replace(/ies$/, 'y').replace(/(?:ing|ed|es|s)$/, '').replace(/e$/, '');
-  return s.length >= 3 ? s : w; // "bed" stays "bed", not "b"
-};
-const topics = (s: string) => (s.toLowerCase().match(/[\p{L}\p{N}]{3,}/gu) ?? []).filter((w) => !NOT_A_TOPIC.has(w)).map(stem);
+/** A note's word said another way in a question ("living in Austin" answers "where do I live"). */
+const NOTE_FORM: Record<string, string> = { living: 'live' };
+/** Plurals and third person only, so "lives" meets "live" and "works" meets
+ *  "work", but "caring" never becomes "car" or "hated" "hat". */
+const stem = (w: string) => w.replace(/ies$/, 'y').replace(/(s|x|z|ch|sh)es$/, '$1').replace(/([^s])s$/, '$1');
+const words = (s: string) => (s.toLowerCase().match(/[\p{L}\p{N}]{3,}/gu) ?? []).filter((w) => !NOT_A_TOPIC.has(w));
+/** Everyday verbs ("how does this work", "is it working") are a topic only
+ *  when the question is about them, in the first person. */
+const VERB = new Set('work live play like love use need want make take drive watch eat drink run keep feel look care hate study go'.split(' '));
+const ABOUT_THEM = /\b(?:i|i'm|im|i've|i'd|me|my|mine|myself)\b/i;
 
 /** Do their own words ask about this note? "What do you know about me" doesn't
  *  count: in a shared place that would read out everything. */
 export function asksAbout(said: string | undefined, note: string): boolean {
   if (!said || !QUESTION.test(said)) return false;
-  const words = new Set(topics(note));
-  return topics(said).some((w) => words.has(w));
+  const theirs = ABOUT_THEM.test(said);
+  const topics = new Set(words(note).map((w) => stem(NOTE_FORM[w] ?? w)));
+  return words(said)
+    .map((w) => stem(SAME_AS[w] ?? w))
+    .some((w) => topics.has(w) && (theirs || !VERB.has(w)));
 }
 
 export class UserNotes {
