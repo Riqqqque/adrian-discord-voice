@@ -208,7 +208,7 @@ Outside the home channel she leaves after 10 minutes with nobody else there.
 
 Steps that matter when you change things:
 
-- **Wake on text, not sound.** The decision is made on the transcript (`src/wake/text-wake.ts`), so "Hadrian built a wall" or "Adrian's coming over" do not wake her. A loose wake goes to the model as a follow-up that it may answer with `SILENT`: the name followed by talk about her ("is in", "will handle", "said", "and"), and from the next release a question with the name at the end ("what time is it, Adrian?"; the words before the name are the request) or the bare name after a lead-in ("hold on guys. Adrian, what time is it?"). A loose wake still runs stops and hold phrases without the model, so a question-shaped stop said to someone called Adrian stops the music.
+- **Wake on text, not sound.** The decision is made on the transcript (`src/wake/text-wake.ts`), so "Hadrian built a wall" or "Adrian's coming over" do not wake her. A loose wake goes to the model as a follow-up that it may answer with `SILENT`: the name followed by talk about her ("is in", "will handle", "said", "and"), and from the next release a question with the name at the end ("what time is it, Adrian?"; the words before the name are the request) or the bare name after a lead-in ("hold on guys. Adrian, what time is it?"). A loose wake still runs stops and hold phrases without the model, but from the next release the lead-in and name-at-the-end paths don't wake on a stop, a hold or the bare name ("can you stop, Adrian?" is left to whoever is called Adrian), exclamations and game talk about someone ("what a save, Adrian", "can you heal Adrian?") don't wake, and an everyday greeting ("good morning", "hey there", "excuse me") wakes only when what follows is something only she does; anything else after it is judged. A loose wake hands the model the whole sentence, name included, with a judge line saying her name was in it but maybe about her rather than to her, and keeps its local words unless the cloud's (or Whisper's) words also wake her.
 - **The window is judged from when the person started talking** (`startedAt`), not from when the transcript arrived.
 - **The model's text is read in as fast as it comes** (`src/core/eager.ts`) while earlier sentences are still being spoken. `brain.totalTimeoutMs` (20 s) limits generating the answer, not speaking it. A slow tool extends it to that tool's own timeout plus 8 s. Playback has a 2 minute hard cap.
 - **Short answers.** The stable prompt defines a short answer (one sentence under twenty words; at most two short sentences for how, why and what-should-I questions), and every spoken turn repeats the length rule last, before the person's words (`SPOKEN_TURN` in `src/brain/orchestrator.ts`; text chat doesn't get it), with "a plain fact is just the fact, no backstory". A safety warning that matters and every item of a list they asked for are always kept: the stable prompt says so ("Two things short never cuts"); from the next release `SPOKEN_TURN` no longer repeats that exception.
@@ -233,7 +233,8 @@ The PC app only gates the mic. Everything else (VAD, ASR, wake, turn-taking, the
    │  mic always open, 20 ms frames; energy gate opens after 60 ms above the
    │  learned threshold (300 ms preroll), closes after 1.2 s of quiet
    │  full duplex: opens over her voice only above 3x the expected echo
-   │  push-to-talk (Ctrl+Alt+Space) forces it open; typed text goes as `text`
+   │  push-to-talk (Ctrl+Alt+Space) forces it open while held; typed text goes as `text`
+   │  after each welcome and on change: `output` (headphones, speakers or unknown)
    ▼
  WebSocket /satellite: speech_start, binary PCM (48 kHz mono s16le), speech_end
    ▼
@@ -251,12 +252,15 @@ The PC app only gates the mic. Everything else (VAD, ASR, wake, turn-taking, the
    │  English (they can't be judged);
    │  more speech during a hold is joined to the clip; 15 s total cap
    │  Groq listen may start early during a hold
+   │  early decodes wait behind every other clip queued for Parakeet
    ▼
  Parakeet ASR → wake check → heard()
-   │  push-to-talk open (15 s)? → the next clip is for her without the name
+   │  push-to-talk held? → what closes between key-down and key-up is for her
+   │                        (apps before 0.17.2: the next clip within 15 s)
+   │  owner in a voice call the bot can see, not deafened, PC not on headphones?
+   │      → only push-to-talk and typing; a stop still stops; her name gets a chime
    │  owner audible in her Discord call? → the PC defers: "Answering in the Discord call."
    │                                       (push-to-talk, typing and stops stay at the PC)
-   │  PC mic while the owner is in her call → alarm words are ignored (it hears the call)
    ▼
  controller (follow-up 20 s, barge-in 600 ms; quiet while gaming turns both off)
    ▼
@@ -270,9 +274,10 @@ The PC app only gates the mic. Everything else (VAD, ASR, wake, turn-taking, the
 
 PC-specific parts:
 
-- **Early listen.** Both VAD waits are whole numbers of Silero windows (10 and 25 x 512 samples), so for speech said in one go the two cut at the same sample and the early words are the same words, about 0.5 s sooner when the Groq listen is on. A pause of 0.32-0.8 s inside the speech makes them differ: the early clip is dropped, its Groq request aborted, and timing is exactly as without it. A clip arriving while speech is held, or a second pause within the same speech, isn't decoded early. `pc heard` lines carry `early: true` when the words came from the early listen.
+- **Early listen.** Both VAD waits are whole numbers of Silero windows (10 and 25 x 512 samples), so for speech said in one go the two cut at the same sample and the early words are the same words, about 0.5 s sooner when the Groq listen is on. A pause of 0.32-0.8 s inside the speech makes them differ: the early clip is dropped, its Groq request aborted, and timing is exactly as without it. A clip arriving while speech is held, or a second pause within the same speech, isn't decoded early. `pc heard` lines carry `early: true` when the words came from the early listen. `SileroVad` feeds sherpa exactly one 512-sample window per call, so reuse doesn't depend on the app's frame size. Early decodes go behind every real clip in Parakeet's queue (`DecodeQueue`, `src/speech/decode-queue.ts`), so the Discord call's clips aren't held up by them, except for one already running. A doubted pause is judged when a fresh decode would have ended, with or without early words. Every Groq call counts in one sliding minute (`CloudBudget`, `src/speech/cloud-budget.ts`); early ones go out only while it holds fewer than 14, and not for 10 minutes after a 429.
 - **PC tools.** The model has nine `pc_*` tools ([tools.md](tools.md)). Each call is sent as an `action` to the asker's own connected PC (`pcFor` in `stack.ts` filters on the owner; no tool argument can name a PC or a person). The PC checks it against its own local policy before doing anything; the server cannot change that policy. Sleep, restart and shutdown need the person's own spoken yes on their very next turn. Simple orders confirm in a fixed short line ("Spotify's open.") instead of a second model call. An order about the house (a door, the garage, the lights, the TV, the heat) never reaches the PC unless the PC is named: `houseOrder` in `src/satellite/tools.ts` refuses it before the PC is looked up, reading only the person's own words, and tells the model to use a home-control tool if there is one.
-- **Defer to the call.** If the PC's owner is audible in her Discord call (in her channel, not muted or deafened, voice link up), the call answers and the PC stays quiet. From a push-to-talk press until 3 s after the PC uses it (at most 15 s if unused), the call ignores that person's words, except stops.
+- **Defer to the call.** If the PC's owner is audible in her Discord call (in her channel, not muted or deafened, voice link up), the call answers and the PC stays quiet. While push-to-talk is held, and for 3 s after, the call ignores that person's words, except stops.
+- **The call plays here.** While the owner is in any voice channel the bot can see, in any of its servers, and not deafened, their speakers play that call, so the PC's mic hears everyone in it (`pcGuarded` in `stack.ts`). Then the PC takes only push-to-talk and typing, unless its app says it plays through headphones (`output`). Her own voice link doesn't matter: disconnecting her and then moving the owner lifts nothing. A stop still stops her, music and sounds, but never an alarm; her name or alarm words get a transcript line and a soft chime (`notice`, at most every 20 s). The orb's `listenMs` is 0 then. A muted owner's alarm rings in the call with DM buttons, unless the PC is on headphones.
 - **Quiet while gaming.** PC apps from 0.15.6 report `activity`. While a game is in front and `satellite.quietWhileGaming` is on, every turn needs her name, push-to-talk or typing, answers are kept to a sentence, and reminders are held until the match ends (`held-while-gaming.json`). Timers still ring.
 - **Speech end is measured differently.** At a PC, `speechEndToAudioMs` includes the 0.8 s silence wait, the Smart Turn check and any hold, so it reads about 1 s higher than the older figure that left those out (`stack.ts`, near the `AnswerRecord`).
 
@@ -443,6 +448,8 @@ Hearing and speaking run on your own hardware by default. The main things that g
 | Data | Goes to | When |
 |---|---|---|
 | The request text, the prompt (who's in the call, recent call talk including other people's side talk, the asker's notes, music state) and tool results | The language model provider | Every model call |
+| A credential-free `GET` that only opens a connection (each provider answers 401 and keeps it): `/v1/models`, `/openai/v1/models`, `/v1/voices`, `/` | Claude, Groq, Speechify, Tavily | From the next release, when someone starts talking and that provider's connection has closed: at most about once per provider every 6 minutes while people talk (`src/core/http.ts`) |
+| A cache warm-up: the cached tools and system prompt, a placeholder user turn, `max_tokens: 0` | Claude | From the next release (`brain.prewarm`), while a woken question is still being listened to, or on push-to-talk |
 | Audio of requests already judged for her, plus a vocabulary prompt that includes the configured creator name and nicknames | Groq | Only with `cloudStt.enabled`, for PC rooms (and PC owners in the call) or everyone with `rooms: "all"`. Side talk never goes. |
 | English answer sentences | Speechify | Only with a `cloudVoice` section (`enabled`, the default) and its key |
 | Screenshots from `pc_screen` | Claude | Only when asked; seen in one model call, never kept. The OpenAI-compatible adapter never sends pictures. |
