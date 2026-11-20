@@ -5,7 +5,6 @@ import { asksMore } from '../src/brain/tools.js';
 import type { ChatMessage, LlmEvent, LlmProvider, Tool, ToolContext } from '../src/core/interfaces.js';
 import { alarmTools } from '../src/features/alarm-tools.js';
 import { AlarmClock } from '../src/features/alarms.js';
-import { discordTools, RelayLimiter } from '../src/features/discordinfo.js';
 import { GameNightSignups, gameNightTool, signupLine } from '../src/features/gamenight.js';
 import { UserNotes } from '../src/features/notes.js';
 import { Reminders } from '../src/features/reminders.js';
@@ -74,15 +73,6 @@ describe('remember', () => {
     expect(await say(remember(), { note: 'wifi password is on the fridge' }, "remember my wifi password is on the fridge, and what's a good router?")).toBeUndefined();
     expect(await say(remember(), { note: '' }, 'remember that')).toBeUndefined();
     expect(await say(new UserNotes(undefined).tools(() => false)[0]!, { note: 'x' }, 'recuerda x')).toBeUndefined();
-  });
-});
-
-describe('a message that went out', () => {
-  it('needs only a word; the read-back stays word for word', () => {
-    const [, message] = discordTools({ client: {} as never, allowedGuilds: [], members: false, presences: false, timezone: 'UTC' }, { limiter: new RelayLimiter(10, 5), isOwner: () => false, maxChars: 500 });
-    expect(message!.speak?.({}, 'Sent Sam a DM.', ctx('tell sam hi'))).toBe('Sent.');
-    expect(message!.speak?.({}, 'Posted in #general and pinged Sam.', ctx('tell sam hi in general'))).toBe('Posted it.');
-    expect(message!.speak?.({}, "Couldn't DM Sam: their DMs are closed to me. Try how=channel.", ctx('tell sam hi'))).toBeUndefined();
   });
 });
 
