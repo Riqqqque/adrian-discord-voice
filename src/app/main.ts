@@ -103,7 +103,9 @@ const shutdown = shutdownOnSignal({
   },
   exit: (code) => process.exit(code),
   exitNow: (signal) => reraise(signal),
-  stopTimeoutMs: 20_000,
+  // Well inside systemd's TimeoutStopSec=20, which counts from the same SIGTERM:
+  // the last flush must run before its SIGKILL.
+  stopTimeoutMs: 15_000,
 });
 // A stray rejection (a dropped connection, a failed write) is logged, not
 // fatal: one bad request must not take the whole bot down.

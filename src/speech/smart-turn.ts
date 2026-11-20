@@ -18,6 +18,8 @@ const FRAMES = (SECONDS * RATE) / HOP; // 800 after dropping the last one
 export interface TurnDetector {
   /** Probability (0..1) that the speech ending here is a finished turn. */
   complete(samples: Float32Array): Promise<number>;
+  /** Let go of it: its worker thread and model end (a stack restart makes a new one). */
+  close?(): Promise<void>;
 }
 
 // --- Whisper log-mel ---------------------------------------------------------
@@ -149,6 +151,10 @@ export class SmartTurn implements TurnDetector {
                     waiting.set(id, { ok, fail });
                     w.postMessage({ id, samples });
                   }),
+            close: async () => {
+              dead ??= new Error('smart turn closed');
+              await w.terminate();
+            },
           });
           return;
         }

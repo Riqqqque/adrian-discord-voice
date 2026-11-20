@@ -1908,6 +1908,8 @@ export async function startVoiceStack(
   } catch (e) {
     clearInterval(idleTimer);
     clearInterval(alarmRefresh);
+    // Home control's retries would go on pushing into this dead stack's tools.
+    mcpLink?.stop();
     throw e;
   }
 
@@ -2050,10 +2052,14 @@ export async function startVoiceStack(
       headsUp.flush();
       music?.stop();
       mixer.stopAll();
-      await satServer?.close();
+      // Before the PCs' close, which can wait on a link that died without a word.
       await orchestrator?.stopWarming(); // a stopped warm-up's cost lands before the save
       ledger.flush();
       voiceBudget.flush();
+      // Its worker and model stay for good otherwise, one more per restart.
+      await turn?.detector.close?.().catch(() => undefined);
+      turn = undefined;
+      await satServer?.close();
       try {
         await transport.disconnect();
       } finally {

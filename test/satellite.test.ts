@@ -34,7 +34,7 @@ function freePort(): Promise<number> {
 const until = (check: () => void) => vi.waitFor(check, { timeout: 5_000, interval: 5 });
 
 /** A server on a free port, and a client helper that collects what it receives. */
-async function rig(opts: { heartbeatMs?: number } = {}) {
+async function rig(opts: { heartbeatMs?: number; closeGraceMs?: number } = {}) {
   const d = devices();
   const { token, device } = d.add('Desk PC', OWNER);
   const port = await freePort();
@@ -274,6 +274,19 @@ describe('how a satellite link ended', () => {
     await until(() => expect(r.ends().map((e) => e.by)).toEqual(['replaced']));
     await r.server.close();
     expect(r.ends().map((e) => e.by)).toEqual(['replaced', 'shutdown']);
+  });
+});
+
+describe('closing the server', () => {
+  it('does not wait for a PC whose link died without a word', async () => {
+    const r = await rig({ closeGraceMs: 100 });
+    // Past the upgrade, then silent: it never answers the close frame (asleep, Wi-Fi gone).
+    const pc = await rawClient(r.port);
+    const t0 = Date.now();
+    await r.server.close();
+    // ws's own wait for the close answer is 30 s.
+    expect(Date.now() - t0).toBeLessThan(5_000);
+    await until(() => expect(pc.closed()).toBe(true));
   });
 });
 
