@@ -14,14 +14,15 @@ import { Agent, Pool } from 'undici';
 
 /** How long an idle connection stays open, per provider (ms). Measured on
  *  2026-11-20: Cloudflare (Claude, Groq) closes one after 400 s, Tavily after
- *  245 s, Speechify's Google front end after 600 s. A little under each. */
+ *  245 s, Speechify's Google front end after 610 s. A little under each. */
 export const IDLE_MS: Record<string, number> = {
   'https://api.anthropic.com': 360_000,
   'https://api.groq.com': 360_000,
   'https://api.speechify.ai': 540_000,
   'https://api.tavily.com': 210_000,
 };
-/** Anything else (a local model server, say): Node's own default. */
+/** Anything else (a local model server, say) is left as Node has it: 4 s,
+ *  or what the server's Keep-Alive header asks for. */
 const OTHER_IDLE_MS = 4_000;
 /** `wake()` keeps a provider that isn't registered ready this long after its last use. */
 const RECENT_MS = 3_600_000;
@@ -48,7 +49,7 @@ export function connectionDropped(e: unknown): boolean {
 export interface ConnectionsOptions {
   /** Idle limit per origin (ms); default `IDLE_MS`. */
   idleMs?: Record<string, number>;
-  /** Idle limit for any other origin (ms). Default 4 s, as Node's. */
+  /** Idle limit for any other origin (ms). Default: Node's own (4 s, or the server's Keep-Alive hint). */
   otherIdleMs?: number;
   /** HTTP/2 where the server offers it. */
   allowH2?: boolean;
@@ -82,9 +83,9 @@ export class Connections {
     return new Agent({
       ...(this.o.allowH2 ? { allowH2: true } : {}),
       factory: (origin, opts) => {
-        const idle = this.idleFor(String(origin));
-        const pool = new Pool(origin, { ...opts, keepAliveTimeout: idle, keepAliveMaxTimeout: idle });
         const key = originOf(String(origin));
+        const idle = (key && (this.o.idleMs ?? IDLE_MS)[key]) || this.o.otherIdleMs;
+        const pool = new Pool(origin, idle ? { ...opts, keepAliveTimeout: idle, keepAliveMaxTimeout: idle } : opts);
         if (key) this.pools.set(key, pool);
         return pool;
       },
