@@ -173,6 +173,21 @@ describe('a start that failed', () => {
       expect(r.m.state).toBe('stopped');
     });
 
+    it('a shutdown while a restart stops the old stack does not start a new one first', async () => {
+      const r = rig([]);
+      let release!: () => void;
+      const slow = { stop: () => new Promise<void>((res) => (release = res)) } as unknown as Awaited<ReturnType<StartFn>>;
+      r.start.mockResolvedValueOnce(slow);
+      await r.m.restart();
+      const restarting = r.m.restart(); // a settings save: the old stack is stopping
+      await vi.advanceTimersByTimeAsync(0);
+      const stopped = r.m.stop(); // SIGTERM meanwhile
+      release();
+      await Promise.all([restarting, stopped]);
+      expect(r.start).toHaveBeenCalledTimes(1);
+      expect(r.m.state).toBe('stopped');
+    });
+
     it('a restart by hand takes over from the wait', async () => {
       const r = rig([dns]);
       await r.m.restart();
