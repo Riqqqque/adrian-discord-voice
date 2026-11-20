@@ -403,7 +403,8 @@ export function discordTools(d: DiscordInfoDeps, relay?: { limiter: RelayLimiter
     },
     acts: true,
     timeoutMs: 12_000,
-    speak: (_a, raw) => (raw.startsWith(READ_BACK) ? raw : undefined),
+    // The read-back word for word; a message that went out needs only a word.
+    speak: (_a, raw) => (raw.startsWith(READ_BACK) ? raw : /^Sent .+ a DM\.$/.test(raw) ? 'Sent.' : /^Posted in #.+ and pinged .+\.$/.test(raw) ? 'Posted it.' : undefined),
     asks: (raw) => raw.startsWith(READ_BACK),
     run: async (a, _signal, ctx) => {
       if ((sends.get(ctx) ?? 0) >= MAX_PER_TURN) return 'Not sent: three messages is the most I send in one go.';
