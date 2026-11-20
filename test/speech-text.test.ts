@@ -11,11 +11,10 @@ describe('forSpeech (English voices)', () => {
     ['The thermostat says 72° inside.', 'The thermostat says 72 degrees inside.'],
     // Dates and times
     ['until Nov 9.', 'until November 9th.'],
-    ['Alarm set for 8:15 AM Saturday, November 28.', 'Alarm set for 8:15 AM Saturday, November 28th.'],
-    ['November 28, 2026', 'November 28th, 2026'],
+    ['Cut it by 1/2.', 'Cut it by half.'],
+    ['Due on 1/2.', 'Due on January 2nd.'],
     ['Your appointment is on 11/21 at 2 PM.', 'Your appointment is on November 21st at 2 PM.'],
     ['Your next alarm is at 07:00.', "Your next alarm is at 7 o'clock."],
-    ["It's 5:00 PM.", "It's 5 PM."],
     ['Your timer has 1:30 left.', 'Your timer has 1 minute 30 seconds left.'],
     ['Severance S3E3: downloading, 75%, 00:04:10 left', 'Severance season 3 episode 3: downloading, 75%, 4 minutes 10 seconds left'],
     // Units, money, symbols
@@ -29,7 +28,7 @@ describe('forSpeech (English voices)', () => {
     ['AC/DC is playing next.', 'AC DC is playing next.'],
     // Abbreviations and numerals
     ["Meet me at St. Mary's at 5.", "Meet me at Saint Mary's at 5."],
-    ["It's approx. 20 min away.", "It's approximately 20 minutes away."],
+    ["It's approx. 20 min away.", "It's approximately 20 min away."],
     ['Playing Pt. 2 by Kanye West.', 'Playing Part 2 by Kanye West.'],
     ['Hades II is on sale.', 'Hades 2 is on sale.'],
     ['Cats vs. dogs.', 'Cats versus dogs.'],
@@ -45,6 +44,8 @@ describe('forSpeech (English voices)', () => {
       'Grand Theft Auto V is out.', // single-letter numerals are too often letters
       'The score was 3-1 at halftime.', // Kokoro reads ranges; "2 to 3" made "40 to 60" heard as "4 to 60"
       'You have 300 GB free.',
+      'About 5 km, 1.2 kg or 150 lbs, in 20 min.',
+      "It's 5:00 PM on November 28.",
       '#gaming',
     ]) expect(forSpeech(t)).toBe(t);
   });
@@ -69,6 +70,8 @@ describe('toSpeakable', () => {
     expect(toSpeakable('You can grab it from https://modrinth.com/mod/jei right now.')).toBe('You can grab it from modrinth.com right now.');
     expect(toSpeakable('See https://www.youtube.com/watch?v=abc.')).toBe('See youtube.com.');
     expect(toSpeakable('(https://example.org)')).toBe('(example.org)');
+    // Never the whole address, however it's wrapped.
+    for (const t of ['http://localhost:8080/x', '"https://x.com"', '<https://a.b>', '**https://x.com**', 'go to https://x.com/a?b=c&d=e, then']) expect(toSpeakable(t)).not.toMatch(/https?:|\/\//);
   });
 
   it('keeps "#1" but drops a heading marker', () => {
