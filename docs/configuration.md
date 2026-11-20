@@ -171,6 +171,7 @@ sudo adrian restart
 | `music.autoplay` | `true` | Keep playing similar songs after the queue ends |
 | `music.prefix` | `!` | Typed music commands start with this (`!play x`, `!skip`, `!join`). Symbols only, up to 3; empty turns them off. Without the Message Content intent they only work after an @mention (`@A.D.R.I.A.N. !play x`). |
 | `music.topSongs` | `true` | Artist requests shuffle the artist's top songs, ranked by Deezer's free public API. Off: their top song, then similar ones |
+| `music.directSearch` | `true` | Video searches ask YouTube's search directly (one request, about 0.5 s) instead of starting yt-dlp for them. It isn't a documented API: if it fails 3 times in a row it rests for 5 minutes and yt-dlp searches. Off: yt-dlp searches every time |
 | `music.plexBackup` | `true` | Use Plex music when YouTube fails (needs `PLEX_TOKEN`) |
 | `music.ffmpeg` | `"ffmpeg"` | Path to ffmpeg |
 | `music.quiz.enabled` | `true` | "Start a music quiz" |

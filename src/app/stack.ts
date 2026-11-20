@@ -221,6 +221,7 @@ export async function startVoiceStack(
         ytdlp,
         node: process.execPath,
         searchApi: YTM_API,
+        directSearch: mc.directSearch,
         ...(musicWebKey ? { findVideos: (q: string, signal: AbortSignal) => webYoutubeVideos(musicWebKey, q, signal) } : {}),
       }),
     );
