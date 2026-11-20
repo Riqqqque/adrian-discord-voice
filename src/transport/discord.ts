@@ -43,9 +43,10 @@ const SLOW_REJOIN_MS = 5 * 60_000;
  *  time limit, and one lost packet leaves it in Signalling or Connecting for good. */
 const STUCK_MS = 30_000;
 /** Back in Signalling after a drop and still there after this long: the library's
- *  rejoin names the channel she's already in, and Discord never answers that (prod,
- *  30 days: 0 of 7 came back by themselves). Moves leave Signalling in under 0.1 s,
- *  fresh joins in 1.5 s at most. */
+ *  rejoin names the channel she's already in, and Discord rarely answers that (prod,
+ *  30 days: of 5 given time, 4 got nothing in 29 s to 40 h; one came back via a new
+ *  voice server after 7.4 s). Moves leave Signalling in under 0.1 s, fresh joins in
+ *  1.5 s at most. */
 const SIGNAL_MS = 5_000;
 
 /** Opus bitrate for everything the bot plays (music and speech). */
