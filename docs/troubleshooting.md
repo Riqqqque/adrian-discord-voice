@@ -138,6 +138,7 @@ their timing and cost, and today's spend.
 - **"Sign in to confirm you're not a bot":** YouTube is blocking your server's IP address. She pauses YouTube for 30 minutes; there's no fix without an account, so use Plex music (`"play X from Plex"`) in the meantime.
 - **Wrong song:** the logs show `music search` (what it searched for) and `music playing` (what it picked). If speech recognition misheard the title, say the artist too ("play Humble by Kendrick Lamar"). A version said by name ("tiny desk", "live", "remix") must appear in what she picks, so ask for it in words. A bare genre ("play jazz") plays a playlist; to get a song titled like a genre, name its artist.
 - **`direct video search failed` or `direct search answer unreadable`:** YouTube's search answered with something she couldn't read. That search falls back to yt-dlp by itself, a second or two slower.
+- **`direct video search resting`:** three direct video searches failed in a row, so for 5 minutes yt-dlp does every video search (a second or two slower each). It tries again by itself. To stop using YouTube's search page entirely: `sudo adrian config music.directSearch false` and restart.
 - **Choppy:** each song logs `music ended` with `musicGaps` and `longestStallMs`. Large stalls mean the CPU is overloaded; lower `listen.asrThreads` and `voice.threads`, or check other load on the machine.
 - **"You've asked for a lot in the last hour":** music requests count toward the hourly limit too.
 

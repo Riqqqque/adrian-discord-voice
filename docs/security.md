@@ -118,7 +118,7 @@ The link and the PC are described in [satellite.md](satellite.md) and
 | Deezer's public API | An artist's name | Top songs and "play X" (`music.topSongs`) |
 | Open-Meteo, your RSS feeds, your iCal address | The configured place, plain fetches | Weather, headlines, calendar |
 | Your own services (Plex, Sonarr, Radarr, Steam, Helix, Home Assistant) | Lookups and the actions you allowed | When asked |
-| GitHub | Release checks (server auto-update and the PC app) | Hourly on servers with auto-update; from each PC 3 minutes after the app starts, then every 6 hours |
+| GitHub | Release checks (server auto-update, the admin dashboard and the PC app) | Hourly on servers with auto-update; from the dashboard only while its page is open, at most every 6 hours (next release); from each PC 3 minutes after the app starts, then every 6 hours |
 
 Nothing is sent anywhere for analytics.
 
@@ -140,6 +140,7 @@ On the server, under `/var/lib/adrian` (mode 0750, service user only) and
 | Minecraft server jobs being watched (Helix start, stop, restart) | `game-server-jobs.json` |
 | Join history for heads-ups, weekly counts for the recap | `heads-up.json`, `weekly-recap.json` |
 | Spend per day, cloud voice characters per month | `usage.json`, `voice-usage.json` |
+| Dashboard counters: answer times, drops, restarts, Tavily and Groq counts, and the latest warning and error lines as logged (secrets and long IDs masked, cut to 160 characters; an address in an error message stays) (next release) | `dashboard.json` |
 | Recordings of PC requests, if `satellite.recordDays` is set | `pc-recordings/` |
 
 Conversation history, recent talk in the call, pasted links and admin

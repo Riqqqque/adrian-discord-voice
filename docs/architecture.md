@@ -208,11 +208,12 @@ Outside the home channel she leaves after 10 minutes with nobody else there.
 
 Steps that matter when you change things:
 
-- **Wake on text, not sound.** The decision is made on the transcript (`src/wake/text-wake.ts`), so "Hadrian built a wall" or "Adrian's coming over" do not wake her. A loose wake (the name followed by "is", "was", "said" and so on) goes to the model as a follow-up that it may answer with `SILENT`.
+- **Wake on text, not sound.** The decision is made on the transcript (`src/wake/text-wake.ts`), so "Hadrian built a wall" or "Adrian's coming over" do not wake her. A loose wake goes to the model as a follow-up that it may answer with `SILENT`: the name followed by talk about her ("is in", "will handle", "said", "and"), and from the next release a question with the name at the end ("what time is it, Adrian?"; the words before the name are the request) or the bare name after a lead-in ("hold on guys. Adrian, what time is it?"). A loose wake still runs stops and hold phrases without the model, so a question-shaped stop said to someone called Adrian stops the music.
 - **The window is judged from when the person started talking** (`startedAt`), not from when the transcript arrived.
 - **The model's text is read in as fast as it comes** (`src/core/eager.ts`) while earlier sentences are still being spoken. `brain.totalTimeoutMs` (20 s) limits generating the answer, not speaking it. A slow tool extends it to that tool's own timeout plus 8 s. Playback has a 2 minute hard cap.
-- **Short answers.** The stable prompt defines a short answer (one sentence under twenty words; at most two short sentences for how, why and what-should-I questions), and every spoken turn repeats the rule last, before the person's words (`SPOKEN_TURN` in `src/brain/orchestrator.ts`; text chat doesn't get it). A safety warning that matters and every item of a list they asked for are always kept.
-- **Confirmations say themselves.** Tools that only confirm (alarm edits and settings, game-night sign-ups, taste, remember, the PC tools and more) return their own spoken line, so the turn ends after one model call. When the person's words also ask something (`asksMore`), the model answers instead.
+- **Short answers.** The stable prompt defines a short answer (one sentence under twenty words; at most two short sentences for how, why and what-should-I questions), and every spoken turn repeats the length rule last, before the person's words (`SPOKEN_TURN` in `src/brain/orchestrator.ts`; text chat doesn't get it), with "a plain fact is just the fact, no backstory". A safety warning that matters and every item of a list they asked for are always kept: the stable prompt says so ("Two things short never cuts"); from the next release `SPOKEN_TURN` no longer repeats that exception.
+- **Live facts are looked up.** The stable prompt says the model's knowledge stops well before today, and that anything that changes day to day or depends on where they are (sunrise and sunset, the weather, scores, prices, store hours, what's open) is looked up, never answered from memory (next release; `bench/live-facts.mjs`).
+- **Confirmations say themselves.** Tools that only confirm (alarm edits and settings, game-night sign-ups, taste, remember, the PC tools and more) return their own spoken line, so the turn ends after one model call. When the person's words also ask something, or give another order after a break ("I love Frank Ocean, play something of his"; a leading name, filler or polite "can you" doesn't count), the model answers instead (`asksMore`; from the next release it also gates the alarm, timer, reminder and game-night sign-up lines). The PC lines and the game-night "Pinged them." line don't check it, and an order after a full stop ("Set a timer. Play some lofi.") isn't seen.
 - **A filler** ("One sec.", "Let me check.", "On it.") is said when a slow tool has not answered within 900 ms and nothing has been said yet.
 - **After the answer**: cost is added to the ledger, automatic memory may run (every 4 exchanges per person), an interrupted answer is marked in history so it isn't picked up again, and an `answered` log line records the timing fields below.
 - **Barge-in** (talking over her for `bargeInMs`: 2.5 s in a call, 0.6 s at a PC) counts only from the asker or a priority role, only once her voice is audible, and never while a tool is carrying out an order.
@@ -279,7 +280,7 @@ The wire protocol is in [satellite.md](satellite.md). Setting up the app is in [
 
 ## Timings
 
-Each answer logs an `answered` line with these fields. The admin dashboard shows p50/p95 for four of them: `sttLatencyMs`, `llmFirstChunkMs`, `ttsFirstMs` and `speechEndToAudioMs`.
+Each answer logs an `answered` line with these fields. The admin page's Status card shows p50/p95 for four of them over the last 200 answers: `sttLatencyMs`, `llmFirstChunkMs`, `ttsFirstMs` and `speechEndToAudioMs`. From the next release the dashboard below it shows p50/p90 of `speechEndToAudioMs` (all, in the call, at a PC) and of every stage field, over the last day and 7 days (`src/web/metrics.ts` reads the `answered` lines; percentiles are within about 6%).
 
 | Field | Measures |
 |---|---|
@@ -323,7 +324,10 @@ Music is slower than speech: the direct YouTube Music song search takes about 0.
                                 ├─ song: YouTube Music search (direct API, 1.5 s timeout)
                                 │        → yt-dlp search fallback; weak match → wider
                                 │          YouTube search (YouTube's own search API,
-                                │          2 s, then yt-dlp) and Tavily for the spelling
+                                │          2 s, then yt-dlp) and Tavily for the spelling;
+                                │          the direct video searches of one lookup
+                                │          share 3 s, and 3 failures in a row rest
+                                │          them for 5 min (music.directSearch)
                                 ├─ artist: Deezer top songs (shuffled), radio fill; the
                                 │          artist's own top song waits up to 3 s
                                 ├─ a bare genre or era ("jazz", "90s r&b"): a playlist
@@ -347,7 +351,8 @@ Music is slower than speech: the direct YouTube Music song search takes about 0.
 - Each room has its own player, queue (`music.maxQueue`, 25) and autoplay. Queues, volumes and history are memory only. A PC's player goes away when it disconnects.
 - At a PC, "pause", "skip" and "what's playing" go to the PC's own media (`pc_media`) unless her music is playing there.
 - Matching: a version named in the request (tiny desk, live, acoustic, remix, sped up, session, cover ...) must appear in a result that replaces the catalog song; whole sets (tiny desk, concert, session, unplugged) may run up to 40 minutes. A catalog answer in another script (夜に駆ける for "yoru ni kakeru") is kept. Sound-alike matching treats a soft g like j and two words as one name ("me goes" = Migos).
-- A YouTube "Sign in to confirm" bot check pauses YouTube for 30 minutes; requests then go to Plex, or she says "I can't reach YouTube right now."
+- A YouTube "Sign in to confirm" bot check pauses YouTube for 30 minutes; requests then go to Plex, or she says "I can't reach YouTube right now." From the next release a yt-dlp run started early (beside the search, for a list's first song, or as a spare) is dropped too if the pause began while it waited.
+- Spares (next release): an album, playlist or vibe starts one spare yt-dlp while its listing loads, and only that list's first looked-up song may take it; another room never does. A spare not taken within 20 s is dropped. The music quiz starts none.
 - ffmpeg inputs are limited to `http,https,tls,tcp,crypto`, so a track URL can never read local files. The Plex token goes only in a header, and only to the Plex origin.
 - With nobody human in the call for 2 minutes, music and any quiz stop (see [Rooms](#rooms) for leaving an empty channel).
 - Sound effects (`play_sound`) use the same YouTube search and ffmpeg, capped at 15 s, as a speech channel so music ducks under them. The music quiz borrows the room's player.
@@ -399,6 +404,7 @@ State folder: `ADRIAN_STATE`, default `/var/lib/adrian`, owned by the service us
 | `setup-code` | `src/web/auth.ts` | One-time setup code, 1 h lifetime | |
 | `usage.json` | `src/limits/usage-ledger.ts` | Spend and request count per local day, last 400 days; saved 2 s after a change and on stop | Starts empty |
 | `voice-usage.json` | `src/speech/speechify.ts` (`CharBudget`) | Cloud voice characters per month | |
+| `dashboard.json` | `src/web/metrics.ts` | The dashboard's counters: 24 hourly and 8 daily slots, the errors, restarts and Tavily/Groq rings, and a `running` flag that tells a clean stop from a crash; mode 0600, saved at start, every 5 min and at shutdown (next release) | Starts empty |
 | `satellites.json` | `src/satellite/devices.ts` | Paired PCs: id, name, owner, SHA-256 of the token (never the token), mode 0600 | |
 | `alarms.json` | `src/features/alarms.ts` | Alarms and timers including ring state, each person's alarm settings, saved sound names | Parse error: moved aside as `alarms.json.unreadable-<ms>` and never written over; other read errors lock saving |
 | `alarm-sounds/<id>.pcm` (the first 12 characters of a random UUID, e.g. `1b4e28ba-2fa.pcm`) | `src/app/alarm-commands.ts` | Saved alarm clips, mono s16le 24 kHz, at most 30 s | Missing file: classic tone |
