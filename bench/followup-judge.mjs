@@ -224,8 +224,8 @@ sc({ id: 'bulls', room: 'pc', q: "what's the score of the Bulls game", a: 'Bulls
   ["perfect, that's all I needed", 'either', 4],
 ] });
 sc({ id: 'smart', room: 'pc', q: 'how many bones are in the human body', a: 'Two hundred six in an adult.', loose: true, said: [
-  // "Adrian is kind of smart actually": a loose wake hands the model the words after her name.
-  ['is kind of smart actually', 'not', 5],
+  // A loose wake: since wake-2 the model gets the whole sentence, name and all, with the loose-wake line.
+  ['Adrian is kind of smart actually', 'not', 5],
 ] });
 
 // ---------------- Call (Morgan, Sam and Kim) ----------------
@@ -287,8 +287,8 @@ sc({ id: 'frozen', room: 'call', q: 'how long do I cook a frozen pizza', a: 'Abo
   ['hmm where is my headset charger', 'either', 6],
 ] });
 sc({ id: 'slow', room: 'call', hold: true, q: 'what time is it in Tokyo', a: "It's 9:40 in the morning there.", loose: true, said: [
-  // "Adrian is so slow lol": the model gets the words after her name.
-  ['is so slow lol', 'not', 3],
+  // A loose wake, as above.
+  ['Adrian is so slow lol', 'not', 3],
   ['and in London?', 'for', 2],
 ] });
 sc({ id: 'sam-asks', room: 'call', q: 'how many players are on a soccer team', a: 'Eleven on the field for each side.', said: [
@@ -362,7 +362,9 @@ async function trial(t) {
     let out = '';
     let silent = false;
     const hint = MUSICISH.test(t.said);
-    const opts = { followUp: true, ...(t.room === 'pc' ? { desk: true } : {}), ...(hint ? { extra: [MUSIC_FOLLOW_UP] } : {}), sinceMs: t.secs * 1000, onSilent: () => (silent = true) };
+    // In a `loose` scenario, the line with her name in it is the loose wake.
+    const loose = !!t.loose && /\badrian\b/i.test(t.said);
+    const opts = { followUp: true, ...(loose ? { loose: true } : {}), ...(t.room === 'pc' ? { desk: true } : {}), ...(hint ? { extra: [MUSIC_FOLLOW_UP] } : {}), sinceMs: t.secs * 1000, onSilent: () => (silent = true) };
     for await (const chunk of brain.ask(user, 'Morgan', t.said, AbortSignal.timeout(30_000), undefined, { channelId: ch }, opts)) out += (out ? ' ' : '') + chunk;
     const got = silent ? 'silent' : META.test(out) ? 'meta' : out || state.calls.length ? 'answer' : 'silent';
     return { got, out, calls: state.calls };

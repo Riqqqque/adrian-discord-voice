@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { callFollowUp, deskFollowUp } from '../src/brain/followup.js';
+import { callFollowUp, callLooseWake, deskFollowUp, deskLooseWake } from '../src/brain/followup.js';
 import { ConversationOrchestrator } from '../src/brain/orchestrator.js';
 import { SessionMemory } from '../src/brain/sessions.js';
 import type { ChatMessage, LlmEvent, LlmProvider } from '../src/core/interfaces.js';
@@ -47,6 +47,24 @@ describe('follow-up judge lines', () => {
     await ask(r.o, { followUp: true });
     expect(r.llm.last).toContain(callFollowUp('Sam'));
     expect(r.llm.last).not.toContain("PC's microphone");
+  });
+
+  it('give a loose wake its own line, which knows the name is in it and leans to answering', async () => {
+    const r = rig();
+    await ask(r.o, { followUp: true, loose: true, desk: true });
+    expect(r.llm.last).toContain(deskLooseWake('Sam'));
+    expect(r.llm.last).not.toContain(deskFollowUp('Sam'));
+    await ask(r.o, { followUp: true, loose: true });
+    expect(r.llm.last).toContain(callLooseWake('Sam'));
+    expect(r.llm.last).not.toContain(callFollowUp('Sam'));
+    for (const line of [deskLooseWake('Sam'), callLooseWake('Sam')]) {
+      expect(line).toContain('with your name in it');
+      expect(line).toContain('past tense');
+      expect(line).toContain('about you rather than to you');
+    }
+    // The same "not for you" list as a follow-up in that place.
+    expect(deskLooseWake('Sam')).toContain("The PC's microphone also hears everything else said near it");
+    expect(callLooseWake('Sam')).toContain('answering or reacting to what someone else just said');
   });
 
   it('leave the text-chat line as it was', async () => {
