@@ -7,6 +7,7 @@
 import sherpa from 'sherpa-onnx-node';
 import type { TextToSpeech } from '../core/interfaces.js';
 import { gainAndLimit, integratedLoudness } from '../audio/loudness.js';
+import { forSpeech } from '../brain/speech-text.js';
 
 import { KOKORO_VOICES } from './voices.js';
 
@@ -147,7 +148,10 @@ export class KokoroTts implements TextToSpeech {
 
   async synthesize(text: string, opts: { voice: string; speed: number }, signal?: AbortSignal) {
     const gain = await this.gainFor(opts.voice, opts.speed);
-    const r = await this.raw(text, opts.voice, opts.speed, signal);
+    // English voices get times, units and symbols in words (forSpeech).
+    const lang = langOf(opts.voice);
+    const said = lang === 'us' || lang === 'gb' ? forSpeech(text) : text;
+    const r = await this.raw(said, opts.voice, opts.speed, signal);
     return { ...r, samples: levelChunk(r.samples, r.sampleRate, gain) };
   }
 }
