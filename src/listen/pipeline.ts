@@ -139,6 +139,19 @@ function sameSamples(a: Float32Array, b: Float32Array): boolean {
   return true;
 }
 
+const rms = (x: Float32Array) => Math.sqrt(x.reduce((n, v) => n + v * v, 0) / Math.max(1, x.length));
+
+/** A flush before the full wait ran out (a push-to-talk key, the app's end of
+ *  speech) closes the early clip plus the silence heard since: `clip` then
+ *  starts `flushed`, and nothing after it is as loud as speech in it. */
+function clipThenQuiet(clip: Float32Array, flushed: Float32Array): boolean {
+  if (flushed.length < clip.length) return false;
+  for (let i = 0; i < clip.length; i++) if (clip[i] !== flushed[i]) return false;
+  const loud = rms(clip) / 2;
+  for (let o = clip.length; o < flushed.length; o += SILERO_WINDOW) if (rms(flushed.subarray(o, o + SILERO_WINDOW)) > loud) return false;
+  return true;
+}
+
 /** Segments shorter than this are coughs/clicks; don't spend ASR on them. */
 const MIN_SEGMENT_SECONDS = 0.3;
 /** Silence after the speech when asking whether the turn is over (what the normal wait has heard). */
@@ -314,12 +327,13 @@ export class ListeningPipeline extends EventEmitter {
     delete u.clip;
   }
 
-  /** The early clip, if the full wait closed exactly the same audio (else it's dropped). */
-  private takeEarly(u: UserState | undefined, samples: Float32Array): EarlyClip | undefined {
+  /** The early clip, if the full wait closed exactly the same audio, or a flush
+   *  closed it with only quiet after (else it's dropped). */
+  private takeEarly(u: UserState | undefined, samples: Float32Array, closedBy: ClosedBy): EarlyClip | undefined {
     const c = u?.clip;
     if (!c) return undefined;
     delete u.clip;
-    if (sameSamples(c.samples, samples)) {
+    if (sameSamples(c.samples, samples) || (closedBy === 'flush' && !u.early?.isSpeaking() && clipThenQuiet(c.samples, samples))) {
       c.taken = true;
       return c;
     }
@@ -331,8 +345,9 @@ export class ListeningPipeline extends EventEmitter {
     const closedAt = performance.now();
     const u = this.users.get(userId);
     if (u) delete u.earlyOpen;
-    const early = this.takeEarly(u, samples);
-    if (early) samples = early.samples; // the same audio: the array its words and any early listen are for
+    const early = this.takeEarly(u, samples, closedBy);
+    // The same audio (a flush's trailing quiet left off): the array its words and any early listen are for.
+    if (early) samples = early.samples;
     const short = samples.length / ASR_SAMPLE_RATE < MIN_SEGMENT_SECONDS;
     if (!this.turn) {
       if (!short) this.transcribe(userId, samples, { vadClosedAt: closedAt, closedBy, ...(early ? { early: true } : {}) }, early?.words);
