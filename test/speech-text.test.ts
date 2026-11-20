@@ -68,6 +68,9 @@ describe('forSpeech (English voices)', () => {
     ['Use 3/8 inch screws.', 'Use 3 eighths inch screws.'],
     ['Only 1/10 of a second.', 'Only one tenth of a second.'],
     ['Top speed is 60km/h.', 'Top speed is 60 kilometers per hour.'],
+    ['Step 2/6 is the hardest.', 'Step 2 of 6 is the hardest.'],
+    ['Episode 5/12 is out.', 'Episode 5 of 12 is out.'],
+    ['Doors open 11/21 at 8.', 'Doors open November 21st at 8.'],
   ];
   for (const [text, said] of cases) it(text, () => expect(forSpeech(text)).toBe(said));
 
@@ -79,6 +82,8 @@ describe('forSpeech (English voices)', () => {
       'Main St. Then left.', // Street, not Saint
       'Turn left on 5th St. Then go two blocks.', // after a number too
       'It is open 24/7.',
+      'There are 3/20 players online.', // a count before a noun, not a date
+      'You have watched 5/12 episodes.',
       'Dated 11/21/2026.', // a full date is the voice's
       'Grand Theft Auto V is out.', // single-letter numerals are too often letters
       'The score was 3-1 at halftime.', // Kokoro reads ranges; "2 to 3" made "40 to 60" heard as "4 to 60"

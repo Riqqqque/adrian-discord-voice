@@ -5,12 +5,13 @@
 // has, and nothing before or after it. The press and the release each cut what
 // is being heard right then, so audio from before the press (someone in a call
 // through the speakers, already talking) and after the release never joins it.
-// Older apps send only the press: then the next thing heard within 15 s is theirs.
+// Older apps send only the press: then the next thing heard within 15 s that
+// closed after the press is theirs.
 
 export interface PttHooks {
   /** A segment that closed at `closedAt` (performance.now()) was said with the
    *  key. `first`: the first in this press, which needs no name. A one-shot
-   *  press (older apps) is used up by whatever comes next. `press`: which held
+   *  press (older apps) is used up by the next segment that closed after it. `press`: which held
    *  press it belongs to, so segments of one press can be kept in order. */
   said(closedAt: number): { ptt: boolean; first: boolean; press?: number };
   /** The key is down now, or a one-shot press is waiting. */

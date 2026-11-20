@@ -1299,16 +1299,16 @@ describe('a loose wake while an answer runs (REVIEW-11)', () => {
     expect(r.answers[0]!.signal.aborted).toBe(true);
   });
 
-  it('a maybe that waited too long goes without an apology', async () => {
+  it('a maybe that waited behind a long answer is still judged, not apologized for', async () => {
     const r = rig();
     r.wake('a', 'tell me a story');
     await r.tick();
-    loose(r, 'a', 'can you revive Adrian');
+    loose(r, 'a', 'can you turn it down Adrian');
     await r.tick(DEFAULT_CONTROLLER_OPTIONS.maxWaitMs + 1);
     r.answers[0]!.finish();
     await r.tick();
     expect(r.said).not.toContain('Sorry, I missed that.');
-    expect(r.answers).toHaveLength(1);
+    expect(r.answers.map((x) => x.command)).toEqual(['tell me a story', 'can you turn it down Adrian']);
   });
 
   it('a clear request from them afterwards drops their waiting maybe', async () => {

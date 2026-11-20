@@ -211,21 +211,29 @@ const WEEKDAY_BEFORE = /\b(?:mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun)(?:day|
 const SCORE_BEFORE = /\b(?:won|lost|beat|beats|lead|leads|led|trail|trails|trailed|odds(?:\s+(?:of|are|at))?)\s+$/i;
 /** What says "a/b" is a rating: "3/4 stars", "8/10 overall". */
 const RATING_NEXT = /^\s*(?:stars?|rating|points?|overall)\b/i;
+/** A position in a series just before: "Step 2/6" is "2 of 6". */
+const OF_BEFORE = /\b(?:step|episode|ep|part|page|game|round|level|chapter|track|question|disc|stage|set|match|map|wave|floor|book|volume|vol|week|day)\.?\s+$/i;
+/** Where a date can end: "The release is 11/21.", "11/21 at 8". Before a
+ *  noun ("3/12 players") it's a count, left as it is. */
+const CLAUSE_END = /^\s*(?:[.,;:!?)]|$|(?:at|and|or|in|from)\b)/i;
 
 /** "a/b" as it is said. Only clear fractions are read as fractions ("3/4 of a
  *  cup", "1/2"); ratings ("4/5 stars", "7.8/10") are "out of", a score after
- *  "won" is "to", and a month/day pair is a date. */
+ *  "won" is "to", "Step 2/6" is "2 of 6", and a month/day pair after a weekday
+ *  or at the end of a clause is a date. */
 function slash(m: string, a: string, b: string, before: string, after: string): string {
-  const date = !a.includes('.') && !b.includes('.') && +a >= 1 && +a <= 12 && +b >= 1 && +b <= 31 ? `${MONTHS[+a - 1]} ${ordinal(+b)}` : undefined;
   if (a.includes('.') || b.includes('.')) return `${a} out of ${b}`;
+  const date = +a >= 1 && +a <= 12 && +b >= 1 && +b <= 31 ? `${MONTHS[+a - 1]} ${ordinal(+b)}` : undefined;
   if (date && WEEKDAY_BEFORE.test(before)) return date;
   if (+a < +b && FRACTION_NEXT.test(after)) return FRACTIONS[m] ?? fraction(+a, +b) ?? m;
   if (SCORE_BEFORE.test(before)) return `${a} to ${b}`;
+  if (OF_BEFORE.test(before) && +a <= +b) return `${a} of ${b}`;
   if ((+b === 5 || +b === 10 || +b === 100 || RATING_NEXT.test(after)) && +a <= +b) return `${a} out of ${b}`;
   if (FRACTIONS[m]) return FRACTIONS[m];
   // "50/50"; "3/3" in a stat line is "3 for 3".
   if (a === b) return +a >= 13 ? `${a} ${b}` : `${a} for ${b}`;
-  return date ?? fraction(+a, +b) ?? m;
+  if (date && CLAUSE_END.test(after)) return date;
+  return fraction(+a, +b) ?? m;
 }
 
 export function ordinal(n: number): string {
