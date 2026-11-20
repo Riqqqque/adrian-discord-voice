@@ -2,9 +2,14 @@
 // DOM library in this repo, and a real browser isn't needed to see what a button
 // does when a request fails.
 
-import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { UsageLedger } from '../src/limits/usage-ledger.js';
+import { buildDashboard } from '../src/web/dashboard.js';
+import { Metrics } from '../src/web/metrics.js';
 
 type Kid = El | string;
 
@@ -80,6 +85,42 @@ const SETTINGS = {
   search: false,
 };
 
+/** What GET /api/dashboard answers, made by the real code from log lines. */
+function dashboardFixture() {
+  let now = Date.UTC(2026, 10, 20, 12);
+  const m = new Metrics({ timezone: 'UTC', version: '0.17.1', now: () => now });
+  const log = (msg: string, f: Record<string, unknown> = {}, level = 'info') => m.observe(level, msg, f);
+  for (let i = 0; i < 20; i++) log('answered', { room: 'discord', outcome: 'finished', speechEndToAudioMs: 1600, sttLatencyMs: 120, llmFirstChunkMs: 700, ttsFirstMs: 250, costUsd: 0.0011 });
+  for (let i = 0; i < 10; i++) log('answered', { room: 'sat:x', outcome: 'finished', speechEndToAudioMs: 2400, groqMs: 450, costUsd: 0.0011 });
+  log('satellite connected', { device: 'A' });
+  log('satellite disconnected', { device: 'A' });
+  now += 3_000;
+  log('satellite connected', { device: 'A' });
+  log('primary LLM failed; using fallback', { error: 'HTTP 529 overloaded' }, 'warn');
+  m.noteCall('tavily', 200);
+  m.begin();
+  const stateDir = mkdtempSync(join(tmpdir(), 'adrian-ui-'));
+  writeFileSync(join(stateDir, 'voice-usage.json'), JSON.stringify({ version: 1, months: { '2026-11': 123_456 } }));
+  const ledger = new UsageLedger(undefined, { perUserPerHour: 30, dailyUsd: 1, monthlyUsd: 10 }, 'UTC', () => now);
+  ledger.addCost(0.033);
+  return buildDashboard({
+    metrics: m.snapshot(),
+    spend: ledger.summary(),
+    config: { cloudVoice: { enabled: true, apiKeySecret: 'SPEECHIFY_API_KEY', monthlyChars: 950_000 }, cloudStt: { enabled: false, apiKeySecret: 'GROQ_API_KEY' }, brain: { search: { apiKeySecret: 'TAVILY_API_KEY' } } } as never,
+    secretNames: ['SPEECHIFY_API_KEY', 'TAVILY_API_KEY'],
+    stateDir,
+    timezone: 'UTC',
+    version: '0.17.1',
+    stackState: 'running',
+    voiceReady: true,
+    system: { diskFreeGiB: 41.5, diskTotalGiB: 98.3, memAvailableMiB: 9100, memTotalMiB: 15900, rssMiB: 1540, memLimitMiB: 5120 },
+    release: { latest: '0.18.0', checkedAt: '2026-11-20T11:00:00.000Z', error: null },
+    docker: false,
+    now,
+  });
+}
+const DASH = dashboardFixture();
+
 type Reply = { status?: number; body?: unknown } | 'offline';
 type Route = (method: string, body: Record<string, unknown> | undefined) => Reply;
 
@@ -94,6 +135,7 @@ async function page(routes: Record<string, Route> = {}, search = '', settings: u
     '/api/settings': () => ({ body: { settings, presets: PRESETS, voices: ['af_heart'], ok: true } }),
     '/api/secrets': () => ({ body: { secrets: stored.map((name) => ({ name })) } }),
     '/api/logs': () => ({ body: { lines: [] } }),
+    '/api/dashboard': () => ({ body: DASH }),
     ...routes,
   };
   const sandbox = {
@@ -502,5 +544,76 @@ describe('first-run setup, for someone new to it', () => {
   it('the status page says what to do about a failed start', async () => {
     const p = await page({ '/api/status': () => ({ body: { ...STATUS, state: 'failed', error: 'An invalid token was provided.', fix: 'Reset Token, then paste it.' } }) });
     expect(p.text()).toContain('What to do: Reset Token, then paste it.');
+  });
+});
+
+describe('the dashboard numbers', () => {
+  /** The text of the card under this heading. */
+  const card = (p: Page, title: string) => p.elements().find((e) => e.className === 'card' && e.children.some((k) => typeof k !== 'string' && k.tag === 'h2' && k.textContent === title))?.textContent ?? '';
+
+  it('shows what needs attention first', async () => {
+    const p = await page();
+    const t = card(p, 'Needs attention');
+    expect(t).toContain('The main language model failed 1 time in the last day; the fallback answered instead.');
+    expect(t).toContain('Version 0.18.0 is available (this is 0.17.1). To install it, run: sudo adrian update.');
+    expect(p.text().indexOf('Needs attention')).toBeLessThan(p.text().indexOf('Spending'));
+  });
+
+  it('shows spend per provider, with what the dollar ledger misses', async () => {
+    const t = card(await page(), 'Spending');
+    expect(t).toContain('$0.0330 today, $0.0330 this month');
+    expect(t).toContain('Caps: $1.00 a day, $10.00 a month.');
+    expect(t).toContain('123,456 of 950,000 characters this month');
+    expect(t).toContain('1 today, 1 this month (the free plan has 1,000)');
+    expect(t).toContain('$0.0011 last day, $0.0011 last 7 days');
+    expect(t).toMatch(/Second listen \(Groq\)off/);
+  });
+
+  it('shows answer speed by room and stage', async () => {
+    const t = card(await page(), 'Answer speed');
+    // 30 answers: the median and 90th, read from bands, within 6%.
+    const row = (name: string) => {
+      const m = new RegExp(`${name.replace(/[()]/g, '\\$&')}([\\d.]+) (s|ms)([\\d.]+) (s|ms)`).exec(t);
+      expect(m, name).not.toBeNull();
+      return [Number(m![1]) * (m![2] === 's' ? 1000 : 1), Number(m![3]) * (m![4] === 's' ? 1000 : 1)];
+    };
+    const near = (got: number[], want: number) => got.forEach((g) => expect(Math.abs(g - want) / want).toBeLessThanOrEqual(0.065));
+    near(row('In the call'), 1600);
+    near(row('At a PC'), 2400);
+    near(row('Speech recognition'), 120);
+    near(row('Second listen (Groq)'), 450);
+    near(row('Model first sentence'), 700);
+    expect(t).not.toContain('End-of-turn check'); // never measured: no row
+    expect(t).toContain('Last day: 30 answers, 0 failed');
+  });
+
+  it('shows link drops, restarts and errors', async () => {
+    const t = card(await page(), 'Reliability');
+    expect(t).toContain('1 PC connected');
+    expect(t).toMatch(/PC links1back in (2\.[89]|3\.[01]) s \(median\)/); // 3 s, within 6%
+    expect(t).toContain('first start with these counters');
+    expect(t).toContain('primary LLM failed; using fallback');
+    expect(t).toContain('HTTP 529 overloaded');
+    const s = card(await page(), 'This server');
+    expect(s).toContain('41.5 GiB of 98.3 GiB');
+    expect(s).toContain('1,540 MiB of the 5,120 MiB cap');
+    expect(s).toContain('0.17.1: 0.18.0 is available');
+  });
+
+  it('says nothing needs attention on a quiet day', async () => {
+    const p = await page({ '/api/dashboard': () => ({ body: { ...DASH, attention: [] } }) });
+    expect(card(p, 'Needs attention')).toContain('Nothing needs attention.');
+  });
+
+  it("still shows the status when the numbers can't be had, and says why", async () => {
+    const p = await page({ '/api/dashboard': failing });
+    expect(p.text()).toContain('Restart bot');
+    expect(p.text()).toContain("The dashboard's numbers are unavailable: the disk is full");
+    expect(p.text()).toContain('Latency (last answers)');
+    expect(p.notice()).toBe('');
+    // ...and picks them up on the next refresh.
+    p.api['/api/dashboard'] = () => ({ body: DASH });
+    await p.tick();
+    expect(p.text()).toContain('Needs attention');
   });
 });

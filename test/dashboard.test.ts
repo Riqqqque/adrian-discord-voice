@@ -29,17 +29,17 @@ function clocked(o: { file?: string; version?: string } = {}) {
   };
 }
 
-const within = (got: number | null, want: number, tol = 0.1) => {
+const within = (got: number | null, want: number, tol = 0.065) => {
   expect(got).not.toBeNull();
   expect(Math.abs(got! - want) / want).toBeLessThanOrEqual(tol);
 };
 
 describe('latency histograms', () => {
-  it('read every value back within 10%', () => {
-    for (let v = 10; v < 60_000; v *= 1.07) within(binValue(binOf(v)), v, 0.1);
+  it('read every value back within 6%', () => {
+    for (let v = 10; v < 600_000; v *= 1.07) within(binValue(binOf(v)), v);
     expect(binOf(0)).toBe(0);
     expect(binValue(binOf(0))).toBe(0);
-    expect(binOf(10 * 60_000)).toBe(BINS - 1);
+    expect(binOf(20 * 60_000)).toBe(BINS - 1);
     expect(binOf(Number.NaN)).toBe(0);
   });
 
@@ -325,10 +325,10 @@ describe('memory', () => {
     c.m.flush();
     const size = statSync(file).size;
     // The histograms (base64) and the rings at their longest.
-    expect(size).toBeLessThan(80_000);
-    // 32 slots: 11 histograms of 48 two-byte bins, 19 counters, a key.
-    expect(before.fixed).toBe(32 * (11 * 48 * 2 + 19 * 8 + 8));
-    expect(before.fixed + before.ringsMax).toBeLessThan(80 * 1024);
+    expect(size).toBeLessThan(120_000);
+    // 32 slots: 11 histograms of 96 two-byte bins, 19 counters, a key.
+    expect(before.fixed).toBe(32 * (11 * 96 * 2 + 19 * 8 + 8));
+    expect(before.fixed + before.ringsMax).toBeLessThan(128 * 1024);
   });
 });
 

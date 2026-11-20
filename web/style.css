@@ -82,6 +82,11 @@ th, td { text-align: left; padding: 6px 4px; border-bottom: 1px solid var(--line
 th { color: var(--muted); font-weight: 550; }
 .bar { height: 8px; border-radius: 99px; background: var(--line); overflow: hidden; margin-top: 4px; }
 .bar > span { display: block; height: 100%; background: var(--accent); }
+.bar.warn > span { background: var(--warn); }
+.bar.bad > span { background: var(--bad); }
+.attn { margin: 0; padding-left: 18px; }
+.attn li { margin: 4px 0; }
+tr.sub td:first-child { padding-left: 16px; color: var(--muted); }
 .logs {
   font: 12px/1.45 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; word-break: break-all;
   max-height: 360px; overflow: auto; background: var(--bg); padding: 8px; border-radius: 8px;

@@ -18,11 +18,11 @@ import { dateFormat } from '../core/time.js';
 
 // --- histograms -----------------------------------------------------------
 
-/** Bin 0 is under 10 ms, the last is 60 s and over; the 46 between grow by
- *  about 21% each, so a percentile read from them is within about 10%. */
-export const BINS = 48;
+/** Bin 0 is under 10 ms, the last is 10 minutes and over; the 94 between grow
+ *  by about 12% each, so a percentile read from them is within about 6%. */
+export const BINS = 96;
 const LO = 10;
-const HI = 60_000;
+const HI = 600_000;
 const RATIO = (HI / LO) ** (1 / (BINS - 2));
 const LOG_RATIO = Math.log(RATIO);
 
