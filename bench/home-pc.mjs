@@ -133,7 +133,7 @@ for (const [text, want] of PC) {
   const refused = tried.some((k) => k.name.startsWith('pc_')) && !reached.length;
   const good = want(reached) && !refused;
   if (good) pcOk++;
-  console.log(`${good ? 'ok   ' : 'BAD  '} [desk, the PC] "${text}"\n    reached: ${reached.map((k) => `${k.name}${JSON.stringify(k.args)}`).join(' ') || '-'}\n    says (${words(out)} words): ${out.slice(0, 200)}`);
+  console.log(`${good ? 'ok   ' : 'BAD  '} [desk, the PC] "${text}"\n    tried: ${tried.filter((k) => k.name.startsWith('pc_')).map((k) => `${k.name}${JSON.stringify(k.args)}`).join(' ') || '-'}${refused ? ' (refused by the guard)' : ''}\n    reached: ${reached.map((k) => `${k.name}${JSON.stringify(k.args)}`).join(' ') || '-'}\n    says (${words(out)} words): ${out.slice(0, 200)}`);
 }
 
 let lockTried = 0;
