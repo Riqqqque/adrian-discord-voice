@@ -559,7 +559,7 @@ export function registerMusicCommands(d: MusicCommandDeps): { isCommand(m: Messa
 
     if (r.ok) {
       // What they ask to hear is what they like, as when they say it.
-      const artist = type === 'artist' ? (r.artist ?? raw) : type === 'auto' ? (r.artist ?? (r.started ?? r.queuedAs?.track)?.artist) : type === 'song' || type === 'album' ? r.started?.artist : undefined;
+      const artist = type === 'artist' ? (r.artist ?? raw) : type === 'auto' ? (r.artist ?? (r.label ? undefined : (r.started ?? r.queuedAs?.track)?.artist)) : type === 'song' || type === 'album' ? r.started?.artist : undefined;
       if (artist && !pasted) d.taste?.played(userId, artist);
       if (r.started) d.started?.(userId);
     }
