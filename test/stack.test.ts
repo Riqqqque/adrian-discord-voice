@@ -2565,6 +2565,19 @@ describe('the local voice at start', () => {
     await r.stack.stop();
   });
 
+  it('stands in for a long sentence the cloud voice would have streamed, loaded on the spot', async () => {
+    const r = await rig({ cloudVoice: { enabled: true } }, { prepare: kokoroFile });
+    expect(r.logged.some((l) => l.m === 'local voice loads on first use')).toBe(true);
+    const long = 'Canberra is the capital, not Sydney, which surprises a lot of people.';
+    expect(long.length).toBeGreaterThan(40);
+    // The rig's fetch refuses Speechify, so the stream fails before any audio.
+    r.steps.push({ parts: [text(long), usage(10, 2)] });
+    r.heard(r.connect().pipe, OWNER, 'hey adrian capital', 'capital of australia');
+    await until(() => r.tts.calls.includes(long), 'the long answer in the local voice');
+    expect(r.warned).toContain('cloud voice failed; local voice for a minute');
+    await r.stack.stop();
+  });
+
   it('stays unloaded while the cloud voice works: answers, fixed replies and the short lines all go to the cloud', async () => {
     const cloudSaid: string[] = [];
     // Audible samples: the Speaker drops a sentence that is all silence, and the
