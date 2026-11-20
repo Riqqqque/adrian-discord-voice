@@ -13,6 +13,8 @@
     { "class": "title", "say": "play not like us", "expect": { "title": "not like us", "artist": "kendrick" } },
     { "class": "title", "say": "play feel good inc", "expect": { "title": "feel good inc", "artist": "gorillaz" } },
     { "class": "title", "say": "play heat waves", "expect": { "title": "heat waves", "artist": "glass animals" } },
+    { "class": "title", "say": "play some nights", "expect": { "title": "some nights", "artist": "fun" } },
+    { "class": "title", "say": "play a little respect", "expect": { "title": "a little respect", "artist": "erasure" } },
 
     { "class": "artist+title", "paired": true, "say": "play humble by kendrick lamar", "expect": { "title": "humble", "artist": "kendrick" } },
     { "class": "artist+title", "say": "play lose yourself eminem", "expect": { "title": "lose yourself", "artist": "eminem" } },
