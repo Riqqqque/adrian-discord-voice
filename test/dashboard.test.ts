@@ -124,6 +124,30 @@ describe('links', () => {
     expect(s.voiceDownForS).toBeNull();
   });
 
+  it('counts drops again once a restarted stack is starting', () => {
+    const c = clocked();
+    c.log('restart requested', { by: 'admin' });
+    c.log('asr loaded', { ms: 900 }); // no satellites: nothing else says it's up
+    c.log('voice disconnected', {}, 'warn');
+    c.step(2_000);
+    c.log('voice state', { to: 'ready' });
+    expect(c.m.snapshot().day.counts.voiceDrops).toBe(1);
+  });
+
+  it('does not count being dragged to another channel as a drop, whichever line comes first', () => {
+    const c = clocked();
+    c.log('moved to another channel', { channelId: '1' });
+    c.log('voice disconnected', {}, 'warn');
+    c.step(1_000);
+    c.log('voice state', { to: 'ready' });
+    c.step(60_000);
+    c.log('voice disconnected', {}, 'warn');
+    c.log('moved to another channel', { channelId: '2' });
+    c.step(1_000);
+    c.log('voice state', { to: 'ready' });
+    expect(c.m.snapshot().day.counts.voiceDrops).toBe(0);
+  });
+
   it('times a PC link back within 10 minutes, and calls a longer gap away', () => {
     const c = clocked();
     c.log('satellite connected', { device: 'A', addr: '192.0.2.1' });
