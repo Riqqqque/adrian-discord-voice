@@ -471,7 +471,7 @@ async function stepLimits({ settings, next, back }) {
       h('div', {}, h('label', {}, 'Daily cap (USD)'), day),
       h('div', {}, h('label', {}, 'Monthly cap (USD)'), mon),
       h('div', {}, h('label', {}, 'Each guest per day (USD)'), guest)),
-    h('p', { class: 'muted small' }, 'Guests are everyone but owners, the creator's accounts and people with a priority role.'),
+    h('p', { class: 'muted small' }, "Guests are everyone but owners, the creator's accounts and people with a priority role."),
     out, h('div', {}, back, save),
   );
 }
