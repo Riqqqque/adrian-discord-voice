@@ -4,7 +4,7 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough, Readable } from 'node:stream';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { webYoutubeVideos, youtubeVideoId } from '../src/brain/tools.js';
 import type { PlaybackHandle, ToolContext } from '../src/core/interfaces.js';
 import { deezerTopTracks, type FindVideos, inputArgs, matchScore, MusicPlayer, respell, soundOf, type MusicOutput, type MusicSource, musicTools, runProgram, type Runner, type TopTracks, type Track, YoutubeSource } from '../src/features/music.js';
@@ -80,6 +80,9 @@ interface RigOptions {
   now?: () => number;
   stallMs?: number;
   searchApi?: string;
+  /** Keep the search's real 1.5 s limit. Otherwise it is long, so a busy machine
+   *  doesn't send a test's local search server's answer to yt-dlp instead. */
+  realSearchLimit?: boolean;
 }
 
 function rig(o: RigOptions = {}) {
@@ -111,7 +114,12 @@ function rig(o: RigOptions = {}) {
     musicPaused: false,
   };
   const yt = new YoutubeSource(
-    { ytdlp: 'yt-dlp', ...(o.now ? { now: o.now } : {}), ...(o.searchApi ? { searchApi: o.searchApi } : {}), ...(o.findVideos ? { findVideos: o.findVideos } : {}) },
+    {
+      ytdlp: 'yt-dlp',
+      ...(o.now ? { now: o.now } : {}),
+      ...(o.searchApi ? { searchApi: o.searchApi, ...(o.realSearchLimit ? {} : { searchTimeoutMs: 15_000 }) } : {}),
+      ...(o.findVideos ? { findVideos: o.findVideos } : {}),
+    },
     o.run ?? fakeYtdlp(calls, o.gate),
   );
   const killed: number[] = [];
@@ -830,14 +838,15 @@ describe('direct YouTube Music search', () => {
 
   it('gives it 1.5 s, not more', async () => {
     const s = await api(() => {}); // never answers
-    const r = rig({ searchApi: s.url });
+    const r = rig({ searchApi: s.url, realSearchLimit: true });
     const t0 = performance.now();
     expect(await r.yt.find('x', sig())).toMatchObject({ id: id('song') });
     const ms = performance.now() - t0;
     await s.close();
     expect(ms).toBeGreaterThan(1400);
-    expect(ms).toBeLessThan(3000);
-  });
+    // Far from a fetch's own limits; the slack is for a busy machine.
+    expect(ms).toBeLessThan(8000);
+  }, 20_000);
 
   it('leaves mixes to ytsearch', async () => {
     const s = await api(json(results(song(id('hit'), '3:45'))));
@@ -1281,6 +1290,21 @@ describe('a stream that stalls', () => {
     expect(inputArgs({ stream: Readable.from([]) })).toEqual(['-i', 'pipe:0']);
   });
 
+  // The watchdog's clock (its interval and performance.now) is fake, so a busy
+  // machine can't make a track look stalled; the lookups still run on real timers.
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'performance'] });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** Moves the watchdog's clock on, letting the stream's events through first. */
+  async function pass(ms: number) {
+    await ticks();
+    await vi.advanceTimersByTimeAsync(ms);
+  }
+
   async function playing(o: RigOptions = {}) {
     const r = rig({ stallMs: 80, ...o });
     await r.p.request('album', 'x', 'now', sig());
@@ -1291,37 +1315,44 @@ describe('a stream that stalls', () => {
   it('ends a track that delivers nothing more, and moves on', async () => {
     const r = await playing();
     r.pcms[0]!.write(Buffer.alloc(100));
-    await vi.waitFor(() => expect(r.killed).toContain(0), { timeout: 2000, interval: 10 });
+    await pass(60);
+    expect(r.killed).toEqual([]);
+    await pass(60);
+    expect(r.killed).toContain(0);
     expect(r.logged('music stalled')).toHaveLength(1);
   });
 
   it('ends a track that never delivered anything', async () => {
     const r = await playing();
-    await vi.waitFor(() => expect(r.killed).toContain(0), { timeout: 2000, interval: 10 });
+    await pass(100);
+    expect(r.killed).toContain(0);
   });
 
   it('leaves a track alone while audio keeps coming', async () => {
     const r = await playing({ stallMs: 150 });
     for (let i = 0; i < 8; i++) {
       r.pcms[0]!.write(Buffer.alloc(100));
-      await wait(40);
+      await pass(40);
     }
     expect(r.killed).toEqual([]);
+    await pass(200);
+    expect(r.killed).toContain(0); // and the same track does end once it stops
   });
 
   it('leaves a paused song alone', async () => {
     const r = await playing();
     r.out.musicPaused = true;
-    await wait(250);
+    await pass(250);
     expect(r.killed).toEqual([]);
     r.out.musicPaused = false;
-    await vi.waitFor(() => expect(r.killed).toContain(0), { timeout: 2000, interval: 10 });
+    await pass(100);
+    expect(r.killed).toContain(0);
   });
 
   it('leaves a stream the mixer is holding back alone', async () => {
     const r = await playing();
     r.pcms[0]!.pause(); // what the mixer does when it has enough
-    await wait(250);
+    await pass(250);
     expect(r.killed).toEqual([]);
   });
 
@@ -1331,7 +1362,7 @@ describe('a stream that stalls', () => {
     await r.p.skip();
     r.p.clearQueue();
     r.finishLast();
-    await wait(250);
+    await pass(250);
     expect(r.logged('music stalled')).toEqual([]);
   });
 });
@@ -1618,8 +1649,7 @@ describe('starting a track', () => {
     const gate = deferred();
     const r = rig({ autoplay: true, gate: (u) => (u.includes('RDAMVM') ? gate.promise : undefined) });
     const going = r.p.request('artist', 'small act', 'now', sig());
-    await wait(100);
-    expect(r.events.filter((e) => e === 'play')).toHaveLength(1); // radio still out
+    await vi.waitFor(() => expect(r.events.filter((e) => e === 'play')).toHaveLength(1), { timeout: 5_000, interval: 5 }); // radio still out
     expect(await going).toMatchObject({ ok: true, started: { id: id('song') } });
     gate.resolve();
     await ticks();

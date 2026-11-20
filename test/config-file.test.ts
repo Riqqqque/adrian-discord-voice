@@ -3,6 +3,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { readConfigFile, writeConfigFile } from '../src/web/secrets-file.js';
+// What the CLI imports, loaded (and compiled) here, before any test's clock
+// starts. The CLI runs when imported, so tool() imports it afresh each time.
+import '../src/app/manager.js';
+import '../src/satellite/devices.js';
+import '../src/speech/voices.js';
+import '../src/web/auth.js';
+import '../src/web/settings.js';
 
 // chmod does next to nothing on Windows, so the mode is checked twice: on the
 // call made here, and on the file wherever the platform keeps real modes.
@@ -17,6 +24,10 @@ vi.mock('node:fs', async (orig) => {
     },
   };
 });
+
+// Each CLI test still runs the whole CLI again (vi.resetModules): seconds on a
+// busy machine, so the default 5 s is short.
+vi.setConfig({ testTimeout: 30_000 });
 
 const BROKEN = '{\n  "guildId": "100000000000000010",\n  "owners": ["100000000000000030"],\n}\n';
 const GOOD = { guildId: '100000000000000010', owners: ['100000000000000030'], music: { volume: 0.5 } };

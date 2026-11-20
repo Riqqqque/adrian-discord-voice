@@ -306,10 +306,11 @@ export class YoutubeSource implements MusicSource {
   private readonly looking = new WeakMap<Track, Promise<void>>();
 
   /** `searchApi`: search YouTube Music directly (see YTM_API); without it, yt-dlp does.
+   *  `searchTimeoutMs`: how long that search may take (YTM_TIMEOUT_MS; tests).
    *  `findVideos`: a web search for YouTube videos, asked only when the song
    *  catalog's answer barely matches the words (a misheard or rare name). */
   constructor(
-    private readonly o: { ytdlp: string; node?: string; timeoutMs?: number; searchApi?: string; findVideos?: FindVideos; now?: () => number },
+    private readonly o: { ytdlp: string; node?: string; timeoutMs?: number; searchApi?: string; searchTimeoutMs?: number; findVideos?: FindVideos; now?: () => number },
     run: Runner = runProgram,
   ) {
     // Everything that starts yt-dlp comes through here, so a bot check stops it all.
@@ -368,7 +369,7 @@ export class YoutubeSource implements MusicSource {
           'user-agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36',
         },
         body: JSON.stringify({ context: { client: { clientName: 'WEB_REMIX', clientVersion: YTM_VERSION, hl: 'en', gl: 'US' } }, query, params: YTM_SONGS }),
-        signal: AbortSignal.any([sig, AbortSignal.timeout(YTM_TIMEOUT_MS)]),
+        signal: AbortSignal.any([sig, AbortSignal.timeout(this.o.searchTimeoutMs ?? YTM_TIMEOUT_MS)]),
       });
       if (!r.ok) throw new Error(`YouTube Music answered ${r.status}`);
       return pickSong((await r.json()) as YtmSearch);

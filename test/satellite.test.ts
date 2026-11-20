@@ -1,10 +1,10 @@
 import { randomBytes } from 'node:crypto';
 import { mkdtempSync } from 'node:fs';
-import { connect } from 'node:net';
+import { type AddressInfo, connect, createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WebSocket } from 'ws';
 import type { SatelliteConnection } from '../src/satellite/connection.js';
 import { SatelliteDevices } from '../src/satellite/devices.js';
@@ -18,25 +18,51 @@ function devices() {
   return new SatelliteDevices(mkdtempSync(join(tmpdir(), 'sat-')));
 }
 
+/** A port nothing is listening on right now. */
+function freePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const s = createServer();
+    s.on('error', reject);
+    s.listen(0, '127.0.0.1', () => {
+      const { port } = s.address() as AddressInfo;
+      s.close(() => resolve(port));
+    });
+  });
+}
+
+/** Waits for a condition instead of a fixed sleep, so a busy machine only makes it slower. */
+const until = (check: () => void) => vi.waitFor(check, { timeout: 5_000, interval: 5 });
+
 /** A server on a free port, and a client helper that collects what it receives. */
 async function rig() {
   const d = devices();
   const { token, device } = d.add('Desk PC', OWNER);
-  const port = 20_000 + Math.floor(Math.random() * 20_000);
+  const port = await freePort();
   const conns: SatelliteConnection[] = [];
-  const server = startSatelliteServer({ bind: '127.0.0.1', port, devices: d, log: quiet as never, welcome: () => ({ owner: 'Rique' }), onConnect: (c) => conns.push(c) });
-  await new Promise((r) => setTimeout(r, 50));
+  let listening!: () => void;
+  const ready = new Promise<void>((r) => (listening = r));
+  const log = { ...quiet, info: (m: string) => m === 'satellite server listening' && listening() };
+  const server = startSatelliteServer({ bind: '127.0.0.1', port, devices: d, log: log as never, welcome: () => ({ owner: 'Rique' }), onConnect: (c) => conns.push(c) });
+  await ready;
+  /** Resolves once the server has answered the hello (its first message) or closed the socket. */
   const client = (hello: unknown) =>
     new Promise<{ ws: WebSocket; got: unknown[]; bins: Buffer[]; closed: Promise<number> }>((resolve) => {
       const ws = new WebSocket(`ws://127.0.0.1:${port}/satellite`);
       const got: unknown[] = [];
       const bins: Buffer[] = [];
-      const closed = new Promise<number>((r) => ws.on('close', (code) => r(code)));
-      ws.on('message', (data, bin) => (bin ? bins.push(data as Buffer) : got.push(JSON.parse(String(data)))));
-      ws.on('open', () => {
-        ws.send(JSON.stringify(hello));
-        setTimeout(() => resolve({ ws, got, bins, closed }), 80);
+      const done = () => resolve({ ws, got, bins, closed });
+      const closed = new Promise<number>((r) =>
+        ws.on('close', (code) => {
+          r(code);
+          done();
+        }),
+      );
+      ws.on('message', (data, bin) => {
+        if (bin) bins.push(data as Buffer);
+        else got.push(JSON.parse(String(data)));
+        done();
       });
+      ws.on('open', () => ws.send(JSON.stringify(hello)));
     });
   return { d, token, device, server, conns, client, port };
 }
@@ -55,18 +81,21 @@ const textFrame = (text: string) => Buffer.concat([Buffer.from([0x81, 0x80 | tex
 
 /** A plain TCP client past the upgrade: it sends whatever bytes it's given. */
 function rawClient(port: number) {
-  return new Promise<{ write: (b: Buffer) => void; closed: () => boolean }>((resolve, reject) => {
+  return new Promise<{ write: (b: Buffer) => void; closed: () => boolean; received: () => string }>((resolve, reject) => {
     let closed = false;
+    let received = '';
     const socket = connect(port, '127.0.0.1', () => {
       socket.write(`GET /satellite HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: ${randomBytes(16).toString('base64')}\r\n\r\n`);
     });
     socket.on('error', () => undefined);
     socket.on('close', () => (closed = true));
-    socket.once('data', (d) => (String(d).startsWith('HTTP/1.1 101') ? resolve({ write: (b) => socket.write(b), closed: () => closed }) : reject(new Error(String(d)))));
+    socket.on('data', (d) => (received += d.toString('latin1')));
+    socket.once('data', (d) =>
+      String(d).startsWith('HTTP/1.1 101') ? resolve({ write: (b) => socket.write(b), closed: () => closed, received: () => received }) : reject(new Error(String(d))),
+    );
   });
 }
 
-const settle = () => new Promise((res) => setTimeout(res, 150));
 
 describe('satellite pairing', () => {
   it('keeps only a hash, and checks tokens', () => {
@@ -123,8 +152,7 @@ describe('satellite connection', () => {
     [100, -200, 300, -400].forEach((v, i) => pcm.writeInt16LE(v, i * 2));
     c.ws.send(pcm);
     c.ws.send(JSON.stringify({ type: 'speech_end' }));
-    await new Promise((res) => setTimeout(res, 80));
-    expect(events).toEqual([`start:${OWNER}`, `audio:${OWNER}:48000`, `end:${OWNER}`]);
+    await until(() => expect(events).toEqual([`start:${OWNER}`, `audio:${OWNER}:48000`, `end:${OWNER}`]));
     expect([...samples!]).toEqual([100, -200, 300, -400]);
 
     // Stereo frames (L, R) in, their average out; a half frame waits for the rest.
@@ -133,13 +161,12 @@ describe('satellite connection', () => {
     const st = Buffer.alloc(10);
     [1000, 3000, -2000, -4000].forEach((v, i) => st.writeInt16LE(v, i * 2));
     out.write(st);
-    await new Promise((res) => setTimeout(res, 80));
+    await until(() => expect(Buffer.concat(c.bins).length).toBeGreaterThanOrEqual(4));
     const got = Buffer.concat(c.bins);
     expect([got.readInt16LE(0), got.readInt16LE(2)]).toEqual([2000, -3000]);
     h.stop();
     expect(await h.done).toBe('stopped');
-    await new Promise((res) => setTimeout(res, 50));
-    expect(c.got).toContainEqual({ type: 'audio_stop' });
+    await until(() => expect(c.got).toContainEqual({ type: 'audio_stop' }));
     c.ws.close();
     await r.server.close();
   });
@@ -188,8 +215,7 @@ describe('satellite frame sizes', () => {
     // A big result for no pending action is ignored, not a reason to drop the PC.
     c.ws.send(JSON.stringify({ type: 'action_result', id: '99', ok: true, result: 'x'.repeat(big) }));
     c.ws.send(JSON.stringify({ type: 'ping' }));
-    await settle();
-    expect(c.got).toContainEqual({ type: 'pong' });
+    await until(() => expect(c.got).toContainEqual({ type: 'pong' })); // answered in order, so the big one was read first
     expect(closed).toBe(0);
     c.ws.send(JSON.stringify({ type: 'text', text: 'y'.repeat(big) }));
     expect([1006, 1009]).toContain(await c.closed);
@@ -231,13 +257,11 @@ describe('satellite bad frames', () => {
     const other = await r.client({ type: 'hello', token: r.token });
     const raw = await rawClient(r.port);
     raw.write(frame);
-    await settle();
-    expect(crashes).toEqual([]);
-    expect(raw.closed()).toBe(true);
+    await until(() => expect(raw.closed()).toBe(true));
 
     other.ws.send(JSON.stringify({ type: 'ping' }));
-    await settle();
-    expect(other.got).toContainEqual({ type: 'pong' });
+    await until(() => expect(other.got).toContainEqual({ type: 'pong' }));
+    expect(crashes).toEqual([]);
     const { token } = r.d.add('Laptop', OWNER);
     const good = await r.client({ type: 'hello', token });
     expect(good.got[0]).toMatchObject({ type: 'welcome', name: 'Laptop' });
@@ -251,11 +275,10 @@ describe('satellite bad frames', () => {
     const r = await rig();
     const raw = await rawClient(r.port);
     raw.write(textFrame(JSON.stringify({ type: 'hello', token: 'sat_nope' })));
-    await settle();
+    await until(() => expect(raw.received()).toContain('bad token')); // refused
     raw.write(BAD_FRAMES.unmasked);
-    await settle();
+    await until(() => expect(raw.closed()).toBe(true));
     expect(crashes).toEqual([]);
-    expect(raw.closed()).toBe(true);
     const good = await r.client({ type: 'hello', token: r.token });
     expect(good.got[0]).toMatchObject({ type: 'welcome' });
     good.ws.close();
@@ -268,12 +291,10 @@ describe('satellite bad frames', () => {
     for (let i = 0; i < 5; i++) await (await r.client({ type: 'hello', token: 'sat_wrong' })).closed;
     const raw = await rawClient(r.port);
     raw.write(BAD_FRAMES.unmasked);
-    await settle();
-    expect(crashes).toEqual([]);
-    expect(raw.closed()).toBe(true);
+    await until(() => expect(raw.closed()).toBe(true));
     other.ws.send(JSON.stringify({ type: 'ping' }));
-    await settle();
-    expect(other.got).toContainEqual({ type: 'pong' });
+    await until(() => expect(other.got).toContainEqual({ type: 'pong' }));
+    expect(crashes).toEqual([]);
     other.ws.close();
     await r.server.close();
   });
@@ -282,14 +303,13 @@ describe('satellite bad frames', () => {
     const r = await rig();
     const raw = await rawClient(r.port);
     raw.write(textFrame(JSON.stringify({ type: 'hello', token: r.token })));
-    await settle();
+    await until(() => expect(r.conns).toHaveLength(1));
     let closed = 0;
     r.conns[0]!.on('closed', () => closed++);
     raw.write(BAD_FRAMES.unmasked);
-    await settle();
+    await until(() => expect(raw.closed()).toBe(true));
+    await until(() => expect(closed).toBe(1));
     expect(crashes).toEqual([]);
-    expect(closed).toBe(1);
-    expect(raw.closed()).toBe(true);
     expect(r.server.connections()).toEqual([]);
     const good = await r.client({ type: 'hello', token: r.token });
     expect(good.got[0]).toMatchObject({ type: 'welcome' });
@@ -311,9 +331,8 @@ describe('satellite bad frames', () => {
     const good = await r.client({ type: 'hello', token: r.token });
     good.ws.send('null');
     good.ws.send(JSON.stringify({ type: 'ping' }));
-    await settle();
+    await until(() => expect(good.got).toContainEqual({ type: 'pong' }));
     expect(crashes).toEqual([]);
-    expect(good.got).toContainEqual({ type: 'pong' });
     good.ws.close();
     await r.server.close();
   });

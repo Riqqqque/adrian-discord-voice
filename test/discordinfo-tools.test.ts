@@ -4,6 +4,9 @@ import { toSpeakable } from '../src/brain/speech-text.js';
 import type { ToolContext } from '../src/core/interfaces.js';
 import { discordTools, namesMember, RelayLimiter } from '../src/features/discordinfo.js';
 
+// vi.waitFor's defaults (1 s, polled every 50 ms) are slow when it passes and too short on a busy machine.
+const WAIT = { timeout: 10_000, interval: 2 };
+
 const ASKER = '100000000000000001';
 const SAM = '100000000000000002';
 const KIM = '100000000000000003';
@@ -326,7 +329,7 @@ describe('message_member rate limit', () => {
     let finish = (_v: object) => {};
     r.sam.send.mockImplementationOnce(() => new Promise((res) => (finish = res)));
     const first = r.tell({ member: 'Sam', message: 'one' });
-    await vi.waitFor(() => expect(r.sam.send).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(r.sam.send).toHaveBeenCalledTimes(1), WAIT);
     expect(await r.tell({ member: 'Kim', message: 'two' })).toBe("Not sent: you've sent 1 messages through me in the last hour.");
     finish({});
     expect(await first).toBe('Sent Sam a DM.');

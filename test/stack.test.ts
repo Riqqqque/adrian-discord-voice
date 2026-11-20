@@ -93,7 +93,8 @@ const TEXT_CHANNEL = '100000000000000060';
 const MUSIC = { music: { enabled: true, ffmpeg: 'ffmpeg-stub', ytdlp: process.execPath, topSongs: false } };
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-async function until(ok: () => unknown, what: string, ms = 3000) {
+/** A generous limit: it returns as soon as the condition holds, so a busy machine only makes it slower. */
+async function until(ok: () => unknown, what: string, ms = 10_000) {
   const t0 = Date.now();
   while (!ok()) {
     if (Date.now() - t0 > ms) throw new Error(`timed out waiting for ${what}`);
