@@ -19,7 +19,9 @@
 #   --keep-data           with --uninstall: keep /etc/adrian and /var/lib/adrian
 #
 # Downloads are checked against the SHA-256 sums in downloads.sh. Set
-# ADRIAN_DOWNLOAD_CACHE=/dir to reuse files already downloaded there.
+# ADRIAN_DOWNLOAD_CACHE=/dir to reuse files already downloaded there, and
+# ADRIAN_DOWNLOAD_MIRRORS="https://..." to try mirrors after the original sites
+# (see downloads.sh; their files must match the same checksums).
 # Running it again is safe: it keeps the config, keys, port and finished
 # downloads, and restarts the service if it was running.
 #
@@ -69,6 +71,8 @@ while [ $# -gt 0 ]; do
 done
 
 say() { printf '\033[1m==>\033[0m %s\n' "$*"; }
+# On stderr, in bold only on a terminal (a piped log gets plain text).
+warn_now() { if [ -t 2 ]; then printf '\033[1mwarning:\033[0m %s\n' "$*" >&2; else printf 'warning: %s\n' "$*" >&2; fi; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 # shellcheck source=downloads.sh
 . "$HERE/downloads.sh"
@@ -167,7 +171,7 @@ pending_hosts() {
   { [ -x "$OPT/node-v$NODE_VERSION/bin/node" ] || [ -f "${ADRIAN_DOWNLOAD_CACHE:-/nonexistent}/$(basename "$NODE_URL")" ] || echo "$NODE_URL"
     for m in "${MODELS[@]}"; do
       IFS='|' read -r name url sha kind _ <<<"$m"
-      [ -e "$VAR/models/$name" ] && [ "$(cat "$VAR/models/.$name.sha256" 2>/dev/null)" = "$sha" ] && continue
+      model_installed "$VAR/models" "$name" "$sha" && continue
       [ -f "${ADRIAN_DOWNLOAD_CACHE:-/nonexistent}/$(basename "$url")" ] && continue
       echo "$url"
     done; } | sed -E 's#^https://([^/]+)/.*#\1#' | sort -u
@@ -303,8 +307,7 @@ if [ -f "$BUNDLE.sha256" ]; then
 elif [ "$REQUIRE_SHA" = 1 ]; then
   die "there's no $(basename "$BUNDLE").sha256 next to the bundle, so it can't be checked (--require-checksum). Nothing was changed. Download the .sha256 from the same Releases page and put it next to the bundle."
 else
-  printf '[1mwarning:[0m %s
-' "NOT CHECKED: there's no $(basename "$BUNDLE").sha256 next to the bundle, so a damaged or changed download would go unnoticed. Download the .sha256 from the same Releases page and put it next to the bundle (--require-checksum refuses to go on without one; get.sh always checks)." >&2
+  warn_now "NOT CHECKED: there's no $(basename "$BUNDLE").sha256 next to the bundle, so a damaged or changed download would go unnoticed. Download the .sha256 from the same Releases page and put it next to the bundle (--require-checksum refuses to go on without one; get.sh always checks)."
 fi
 VERSION=$(tar -xzOf - ./package.json <"$BUNDLE" 2>/dev/null | sed -n 's/^ *"version": *"\([^"]*\)".*/\1/p' | head -1) || true
 [[ $VERSION =~ ^[0-9A-Za-z][0-9A-Za-z.+-]*$ && $VERSION != *..* ]] || die "can't read the version from $BUNDLE; is the download complete? Nothing was changed."
@@ -400,11 +403,16 @@ systemctl daemon-reload
 MARK=$OPT/update-in-progress
 if [ -f "$MARK" ]; then
   refuse_symlinks "$MARK"
-  read -r m_old m_new _ <"$MARK" || true
+  read -r m_old m_new m_phase _ <"$MARK" || true
   say "An update (${m_old:-?} -> ${m_new:-?}) had been cut off; this install takes its place."
-  if [[ ${m_new:-} =~ ^[0-9A-Za-z][0-9A-Za-z.+-]*$ && $m_new != *..* && $m_new != "$VERSION" ]] &&
-    [ "$(basename "$(readlink -f "$OPT/previous" 2>/dev/null)")" != "$m_new" ]; then
-    rm -rf "${OPT:?}/releases/$m_new"
+  if [[ ${m_new:-} =~ ^[0-9A-Za-z][0-9A-Za-z.+-]*$ && $m_new != *..* && $m_new != "$VERSION" ]]; then
+    # It was being rolled back: that version failed here. Remembered, as the
+    # rollback would have, so the hourly check doesn't try it again at once.
+    if [ "${m_phase:-}" = rollback ]; then
+      refuse_symlinks "$OPT/update-failed"
+      echo "$m_new" >"$OPT/update-failed"
+    fi
+    [ "$(basename "$(readlink -f "$OPT/previous" 2>/dev/null)")" = "$m_new" ] || rm -rf "${OPT:?}/releases/$m_new"
   fi
   rm -f "$MARK" "$MARK.unit"
 fi

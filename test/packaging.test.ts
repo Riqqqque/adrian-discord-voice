@@ -2,6 +2,7 @@
 // against throwaway archives, and the limits on model downloads.
 
 import { spawn, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:https';
 import type { AddressInfo } from 'node:net';
@@ -379,7 +380,11 @@ describe.skipIf(!hasBash)('adrian update, judged against the version it replaces
       cp "$3" "$4"
     }
     sleep() { echo "sleep $1" >>log; SECONDS=$((SECONDS + $1 * 10)); [ "$1" = 1 ] || : >watched; }
-    journalctl() { :; }
+    journalctl() { cat journal 2>/dev/null || :; } # her log, when a test gives her one
+    # Something else listening on her port (ss), when a test says so.
+    ss() { [ ! -f port-taken ] || echo 'LISTEN 0 511 127.0.0.1:8790 0.0.0.0:*'; }
+    # A restore extracts to /: never here.
+    tar() { if [ "$1" = -xzf ] && [ "$3" = -C ] && [ "$4" = / ]; then echo "restore extracted" >>log; return 0; fi; command tar "$@"; }
     systemctl() {
       case "$1" in
         show) [ -f watched ] && cat restarts 2>/dev/null || echo 0 ;;
@@ -396,6 +401,9 @@ describe.skipIf(!hasBash)('adrian update, judged against the version it replaces
       case "$1" in
         *releases/latest) printf '{"tag_name":"v${NEW}"}' ;;
         */api/health)
+          echo "$1" >>health.urls
+          # An IPv6 address without brackets is no address curl can reach.
+          case "$1" in *://[[]*) ;; *://*:*:*) return 3 ;; esac
           local f; f=health.$(basename "$(readlink -f opt/current)")
           [ ! -f prepared ] || [ ! -f "$f.prepared" ] || f=$f.prepared
           [ ! -f watched ] || [ ! -f "$f.watched" ] || { [ -f "$f.back" ] && [ $SECONDS -ge "$(cat "$f.back")" ]; } || f=$f.watched
@@ -406,7 +414,7 @@ describe.skipIf(!hasBash)('adrian update, judged against the version it replaces
     }
     runuser() {
       case "$*" in
-        *" port") echo "http 127.0.0.1 8790" ;;
+        *" port") cat port.says 2>/dev/null || echo "http 127.0.0.1 8790" ;;
         *"releases/${NEW}/dist/cli/tool.js check") echo "asked ${NEW}" >>log; cat check.says; return "$(cat check.exit)" ;;
         *" check") echo "Config is complete." ;;
       esac
@@ -415,7 +423,7 @@ describe.skipIf(!hasBash)('adrian update, judged against the version it replaces
       [ -f free-mb ] || { command df "$@"; return; }
       printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\\nfs 1 1 %s 1%% /\\n' $(( $(cat free-mb) * 1024 ))
     }
-    export -f install sleep journalctl systemctl curl runuser df
+    export -f install sleep journalctl ss tar systemctl curl runuser df
     exec bash adrian "$@"`;
 
   /** A server on the old version, with the new one out. */
@@ -593,6 +601,121 @@ exec "${process.execPath.replaceAll('\\', '/')}" "$@"\n`;
     const r = down.run('restart');
     expect(r.code).not.toBe(0);
     expect(r.err).toContain('not healthy after 60 s');
+  }, 60_000);
+
+  describe('a bot that was already failing before the update', () => {
+    const failing = JSON.stringify({ ok: false, state: 'failed', voiceReady: false, busy: false });
+
+    it('is still rolled back, but not called worse: there was nothing to compare with', () => {
+      const m = machine({ before: failing, after: failing });
+      const r = m.run('update');
+      expect(r.code).not.toBe(0);
+      expect(r.err).not.toContain('did worse');
+      expect(r.err).toContain(`Version ${NEW} didn't come up healthy, but ${OLD} wasn't healthy before the update either (it was failed), so this doesn't show ${NEW} is worse.`);
+      expect(r.err).toContain(`rolled back to ${OLD}, but it is not healthy either, as before the update: sudo adrian doctor says why`);
+      expect(m.version()).toBe(OLD);
+      expect(m.unpacked(NEW)).toBe(false);
+      // Remembered, so the hourly check doesn't churn, and doctor says it couldn't be judged.
+      expect(m.marker()).toBe(NEW);
+      const d = m.run('doctor');
+      expect(d.out).toContain(`update ${NEW} was tried here on `);
+      expect(d.out).toContain("couldn't be judged: the bot wasn't healthy before it either");
+      expect(d.out).not.toContain('failed here');
+    }, 60_000);
+
+    it('one that was healthy is still said to have done worse', () => {
+      const m = machine({ after: failing });
+      const r = m.run('update');
+      expect(r.err).toContain(`Version ${NEW} did worse than ${OLD}; rolling back.`);
+      expect(m.run('doctor').out).toContain(`update ${NEW} failed here on `);
+    }, 60_000);
+
+    it('updates when the new version comes up healthy', () => {
+      const m = machine({ before: failing });
+      expect(m.run('update').code).toBe(0);
+      expect(m.version()).toBe(NEW);
+      expect(existsSync(join(m.root, 'opt/update-failed.unjudged'))).toBe(false);
+    }, 60_000);
+  });
+
+  it('adrian rollback with no older version says so, and changes nothing', () => {
+    const m = machine();
+    expect(sh(m.root, 'rm opt/previous').code).toBe(0);
+    const r = m.run('rollback');
+    expect(r.code).toBe(1);
+    expect(r.err).toContain('no previous version to roll back to');
+    expect(m.version()).toBe(OLD);
+    expect(m.restarts()).toEqual([]);
+  }, 60_000);
+
+  describe('a taken admin port', () => {
+    const inUse = 'admin UI failed to start {"error":"listen EADDRINUSE: address already in use 127.0.0.1:8790","host":"127.0.0.1","port":8790}\n';
+
+    it('is named by adrian doctor, with what to do', () => {
+      const m = machine({ before: null });
+      writeFileSync(join(m.root, 'journal'), inUse);
+      const r = m.run('doctor');
+      expect(r.out).toContain('FAIL  admin UI not responding: port 8790 is taken by another program');
+      expect(r.out).toMatch(/what to do: See what holds it: sudo ss -ltnp 'sport = :8790'\. .*--port N/);
+      // Without it in her log, doctor says only what it knows.
+      const plain = machine({ before: null }).run('doctor');
+      expect(plain.out).toContain('FAIL  admin UI not responding\n');
+    }, 60_000);
+
+    function backup(root: string) {
+      writeFileSync(join(root, 'backup.tar.gz'), pack([entry('etc/adrian/', '5'), entry('etc/adrian/config.json'), entry('var/lib/adrian/', '5')]));
+      return 'backup.tar.gz'; // relative: tar takes C:/... for a remote host
+    }
+
+    it('stops a restore before it starts her onto a port another program holds', () => {
+      const m = machine();
+      writeFileSync(join(m.root, 'port-taken'), '');
+      const r = m.run('restore', backup(m.root));
+      expect(r.code).toBe(1);
+      expect(r.err).toContain('restored, but not started: port 8790, the admin port the backup brought, is already used by another program here.');
+      expect(m.log()).toContain('restore extracted');
+    }, 60_000);
+
+    it('is named when a restore can not start her', () => {
+      const m = machine({ before: null });
+      writeFileSync(join(m.root, 'journal'), inUse);
+      const r = m.run('restore', backup(m.root));
+      expect(r.code).toBe(1);
+      expect(r.err).toContain("restored, but she can't start: port 8790 is taken by another program");
+    }, 60_000);
+
+    it('lets a restore onto a free port through', () => {
+      const m = machine();
+      const r = m.run('restore', backup(m.root));
+      expect(r.out).toContain('Restored and running.');
+      expect(r.code).toBe(0);
+    }, 60_000);
+  });
+
+  it('takes "latest" for the newest release even next to a file of that name', () => {
+    const m = machine();
+    writeFileSync(join(m.root, 'latest'), 'a page wget saved\n');
+    const r = m.run('update');
+    expect(r.err).not.toContain('NOT CHECKED');
+    expect(r.code).toBe(0);
+    expect(m.version()).toBe(NEW);
+    // A bundle that isn't there is named as such.
+    const missing = m.run('update', 'nope.tar.gz');
+    expect(missing.err).toContain("there's no bundle file nope.tar.gz");
+  }, 60_000);
+
+  it.each([
+    ['::', 'http://[::1]:8790/api/health', 'http://[::]:8790/'],
+    ['fd00::5', 'http://[fd00::5]:8790/api/health', 'http://[fd00::5]:8790/'],
+    ['0.0.0.0', 'http://127.0.0.1:8790/api/health', 'http://0.0.0.0:8790/'],
+  ])('reaches her on an admin address of %s', (host, probe, shown) => {
+    const m = machine();
+    writeFileSync(join(m.root, 'port.says'), `http ${host} 8790\n`);
+    const r = m.hourly();
+    expect(r.code).toBe(0);
+    expect(m.version()).toBe(NEW);
+    expect(readFileSync(join(m.root, 'health.urls'), 'utf8')).toContain(probe);
+    expect(m.run('url').out.trim()).toBe(shown);
   }, 60_000);
 
   describe('the service file', () => {
@@ -888,5 +1011,150 @@ describe('what memory she needs', () => {
     const install = readFileSync(`${packaging}install.sh`, 'utf8');
     expect(install).toContain('-gt $((4 * 1024 * 1024))');
     expect(install).toContain('less than 4 GB of memory');
+  });
+});
+
+// Upstream replaces files in place now and then (both speech models did in
+// 2026). Every file still has to match a checksum listed in downloads.sh.
+describe.skipIf(!hasBash)('model checksums and mirrors', () => {
+  const OLD_FILE = 'the 2025 upload\n';
+  const NEW_FILE = 'the 2026 re-upload\n';
+  const sha = (s: string | Buffer) => createHash('sha256').update(s).digest('hex');
+  const BOTH = `${sha(NEW_FILE)},${sha(OLD_FILE)}`;
+  // Serves served/<host>/<file name>, whatever the path; logs every URL asked for.
+  const curl = `curl() {
+    local out= src= h
+    while [ $# -gt 0 ]; do case "$1" in -o) out=$2; shift ;; https://*|http://*) src=$1 ;; esac; shift; done
+    echo "$src" >>curl.log
+    h=$(sed -E 's#^https?://([^/]+)/.*#\\1#' <<<"$src")
+    [ -f "served/$h/$(basename "$src")" ] || return 22
+    cp "served/$h/$(basename "$src")" "$out"
+  };`;
+  function site(files: Record<string, string | Buffer>) {
+    const root = sandbox('dl');
+    for (const [path, body] of Object.entries(files)) {
+      mkdirSync(join(root, 'served', path, '..'), { recursive: true });
+      writeFileSync(join(root, 'served', path), body);
+    }
+    return root;
+  }
+  const run = (root: string, script: string, env: NodeJS.ProcessEnv = {}) =>
+    sh(root, `set -euo pipefail; . "${packaging}downloads.sh"; ${curl} ${script}`, [], { ADRIAN_MIRRORS_FILE: `${root}/no-mirrors`, ...env });
+  const asked = (root: string) => (existsSync(join(root, 'curl.log')) ? readFileSync(join(root, 'curl.log'), 'utf8').trim().split('\n') : []);
+
+  it('take a file matching any of the checksums listed, and say which one', () => {
+    const root = site({ 'up.example/m.bin': OLD_FILE });
+    const r = run(root, `fetch https://up.example/m.bin ${BOTH} m.bin; echo "matched $FETCHED_SHA"`);
+    expect(r.err).toBe('');
+    expect(r.out).toContain(`matched ${sha(OLD_FILE)}`);
+    expect(readFileSync(join(root, 'm.bin'), 'utf8')).toBe(OLD_FILE);
+  });
+
+  it('refuse a full-size file no checksum knows, and say plainly that running it again will not help', () => {
+    const changed = Buffer.alloc(2 * 1048576, 1); // 2 MB, as big as it should be
+    const root = site({ 'up.example/m.bin': changed });
+    const r = run(root, `fetch https://up.example/m.bin ${BOTH} m.bin 2`);
+    expect(r.code).toBe(1);
+    expect(r.err).toContain('m.bin downloaded at full size but doesn\'t match any checksum this version knows');
+    expect(r.err).toContain('the file on the download site is not one this version of A.D.R.I.A.N. knows (most likely it was replaced by a new upload)');
+    expect(r.err).toContain("Running the command again won't change that.");
+    expect(r.err).toContain('install the newest A.D.R.I.A.N. release');
+    expect(r.err).toContain(`SHA-256 ${sha(changed)}`);
+    expect(r.err).not.toContain('something between you and the site');
+    expect(existsSync(join(root, 'm.bin'))).toBe(false); // nothing of it is kept
+  });
+
+  it('say a download that came up short is worth one more try', () => {
+    const root = site({ 'up.example/m.bin': 'half a model' });
+    const r = run(root, `fetch https://up.example/m.bin ${BOTH} m.bin 300`);
+    expect(r.code).toBe(1);
+    expect(r.err).toContain("m.bin doesn't match its checksum, and it's smaller than it should be (0 MB of about 300 MB).");
+    expect(r.err).toContain('Running the same command again fixes a download that was cut short');
+    expect(r.err).toContain('If it fails the same way twice, the file on the download site is not one this version');
+  });
+
+  it('try the mirrors in order after the original site, https only, and take only a known file from them', () => {
+    const root = site({ 'up.example/m.bin': NEW_FILE + 'changed', 'bad.example/m.bin': 'not it either', 'good.example/m.bin': OLD_FILE });
+    const r = run(root, `fetch https://up.example/models/m.bin ${BOTH} m.bin; echo "matched $FETCHED_SHA"`, {
+      ADRIAN_DOWNLOAD_MIRRORS: 'http://plain.example/x https://bad.example/x https://good.example/models/',
+    });
+    expect(r.code).toBe(0);
+    expect(r.out).toContain(`matched ${sha(OLD_FILE)}`);
+    expect(r.out).toContain('Downloading m.bin from the mirror good.example');
+    expect(r.err).toContain('ignoring download mirror http://plain.example/x: only https:// mirrors are used');
+    expect(asked(root)).toEqual(['https://up.example/models/m.bin', 'https://bad.example/x/m.bin', 'https://good.example/models/m.bin']);
+  });
+
+  it('give up when no place has a known file, naming each', () => {
+    const root = site({ 'up.example/m.bin': 'changed', 'bad.example/m.bin': 'not it either' });
+    const r = run(root, `fetch https://up.example/m.bin ${BOTH} m.bin`, { ADRIAN_DOWNLOAD_MIRRORS: 'https://bad.example/x https://gone.example/x' });
+    expect(r.code).toBe(1);
+    expect(r.err).toContain('up.example gave 0 MB with SHA-256');
+    expect(r.err).toContain('bad.example gave 0 MB with SHA-256');
+    expect(r.err).toContain('downloading m.bin from gone.example stopped (curl error 22');
+  });
+
+  it("keep curl's exit code when nothing could be downloaded at all", () => {
+    const root = site({});
+    const r = run(root, `fetch https://up.example/m.bin ${BOTH} m.bin`);
+    expect(r.code).toBe(22);
+    expect(r.err).toContain('m.bin could not be downloaded (tried: up.example)');
+  });
+
+  it('read the mirrors from a file too, for the hourly update', () => {
+    const root = site({ 'up.example/m.bin': 'changed', 'good.example/m.bin': NEW_FILE });
+    writeFileSync(join(root, 'mirrors'), '# our own copy\nhttps://good.example/x\n');
+    const r = run(root, `fetch https://up.example/m.bin ${BOTH} m.bin`, { ADRIAN_MIRRORS_FILE: `${root}/mirrors` });
+    expect(r.code).toBe(0);
+    expect(asked(root)).toEqual(['https://up.example/m.bin', 'https://good.example/x/m.bin']);
+  });
+
+  it('take a cached file with any known checksum', () => {
+    const root = site({});
+    mkdirSync(join(root, 'cache'));
+    writeFileSync(join(root, 'cache/m.bin'), OLD_FILE);
+    const r = run(root, `fetch https://up.example/m.bin ${BOTH} m.bin; echo "matched $FETCHED_SHA"`, { ADRIAN_DOWNLOAD_CACHE: `${root}/cache` });
+    expect(r.out).toContain(`matched ${sha(OLD_FILE)}`);
+    expect(asked(root)).toEqual([]);
+  });
+
+  it('keep a model installed from either upload, and record the one each install got', () => {
+    const root = site({ 'up.example/m.bin': NEW_FILE });
+    mkdirSync(join(root, 'models'));
+    mkdirSync(join(root, 'tmp'));
+    writeFileSync(join(root, 'models/m.bin'), OLD_FILE);
+    writeFileSync(join(root, 'models/.m.bin.sha256'), `${sha(OLD_FILE)}\n`);
+    const models = `MODELS=("m.bin|https://up.example/m.bin|${BOTH}|file||400:400:400");`;
+    // Installed from the 2025 upload: kept, nothing downloaded, nothing left to make room for.
+    const kept = run(root, `${models} install_models "$PWD/models" "$PWD/tmp"; disk_needed "$PWD/opt" "$PWD/models"`);
+    expect(kept.code).toBe(0);
+    expect(asked(root)).toEqual([]);
+    expect(kept.out.trim().split(' ')[1]).toBe('0');
+    // A fresh install gets the 2026 one, and its marker says so.
+    rmSync(join(root, 'models/m.bin'));
+    const fresh = run(root, `${models} install_models "$PWD/models" "$PWD/tmp"`);
+    expect(fresh.code).toBe(0);
+    expect(readFileSync(join(root, 'models/m.bin'), 'utf8')).toBe(NEW_FILE);
+    expect(readFileSync(join(root, 'models/.m.bin.sha256'), 'utf8').trim()).toBe(sha(NEW_FILE));
+    // A marker from a file no list knows (an older pin) still means: fetch it again.
+    writeFileSync(join(root, 'models/.m.bin.sha256'), `${'0'.repeat(64)}\n`);
+    expect(run(root, `${models} disk_needed "$PWD/opt" "$PWD/models"`).out.trim().split(' ')[1]).toBe('400');
+  });
+
+  it('list both uploads of the two speech models that upstream replaced', () => {
+    const pins = readFileSync(`${packaging}downloads.sh`, 'utf8');
+    const entry = (name: string) => pins.split('\n').find((l) => l.trim().startsWith(`"${name}|`)) ?? '';
+    const shas = (name: string) => entry(name).split('|')[2]?.split(',') ?? [];
+    expect(shas('sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8')).toEqual([
+      '1495e91b59d7fc53ddca91f3431758ec99f8fa253fdb0e1e851be0f72b14b0f9',
+      '5793d0fd397c5778d2cf2126994d58e9d56b1be7c04d13c7a15bb1b4eafb16bf',
+    ]);
+    expect(shas('kokoro-multi-lang-v1_0')).toEqual([
+      '60703707bc05ccd48d60e1eb723f38b07d6e474795a0b6a588d7220400e0f7a4',
+      'c5f7e2d2caf082bc1d20fb70334a61d99d20b484500aad32e7cf84c128ea3298',
+    ]);
+    for (const l of pins.split('\n').filter((x) => /^\s+"[^"|]+\|https:/.test(x))) {
+      for (const s of l.split('|')[2]!.split(',')) expect(s, l).toMatch(/^[0-9a-f]{64}$/);
+    }
   });
 });

@@ -40,6 +40,9 @@ UNIT=/etc/systemd/system/$SERVICE.service
 # The version the last update had to give up on. Root's, not in $VAR: the
 # service must not be able to clear it, or plant one to stop an update.
 FAILED=$OPT/update-failed
+# Beside it when that version couldn't be judged: the old one wasn't healthy
+# before the update either.
+UNJUDGED=$OPT/update-failed.unjudged
 # An update under way: "OLD NEW PHASE PREVIOUS" (PHASE: prep, switched, or
 # rollback while it goes back; PREVIOUS: where "previous" pointed before it, or
 # -), and the service file from before it (.unit). Left behind only when an
@@ -61,16 +64,24 @@ tool_of() { # tool_of RELEASE_DIR ARGS: one release's node helper, as the servic
 }
 tool() { tool_of "$APP" "$@"; }
 addr() { tool port; } # → "http 127.0.0.1 8790"
+# url_host HOST [reach]: HOST as it goes in a URL (an IPv6 address in brackets).
+# With reach, an address meaning "all of them" becomes loopback, as install.sh does.
+url_host() {
+  local h=$1
+  if [ "${2:-}" = reach ]; then case $h in 0.0.0.0) h=127.0.0.1 ;; ::|'[::]') h=::1 ;; esac; fi
+  case $h in \[*\]) ;; *:*) h="[$h]" ;; esac
+  printf '%s\n' "$h"
+}
 health() { # health [timeout_s] → prints JSON, exit 0 if healthy
   local proto host port t=${1:-5}
   read -r proto host port < <(addr)
-  [ "$host" = 0.0.0.0 ] && host=127.0.0.1
+  host=$(url_host "$host" reach)
   curl -fsS -k --max-time "$t" "$proto://$host:$port/api/health"
 }
 health_body() { # health_body [timeout_s] → the answer whatever its status (a failed start is a 503)
   local proto host port t=${1:-5}
   read -r proto host port < <(addr)
-  [ "$host" = 0.0.0.0 ] && host=127.0.0.1
+  host=$(url_host "$host" reach)
   curl -sS -k --max-time "$t" "$proto://$host:$port/api/health"
 }
 # wait_healthy seconds [HEALTH]: healthy, and no worse than HEALTH (an earlier
@@ -98,6 +109,21 @@ refuse_symlinks() {
   return 0
 }
 current_version() { basename "$(readlink -f "$APP")"; }
+# port_taken: when her admin page couldn't open its port (EADDRINUSE in the log
+# since she last started), what to do about it. Says nothing otherwise.
+port_taken() {
+  local proto host port log since
+  since=$(systemctl show -p ActiveEnterTimestamp --value "$SERVICE" 2>/dev/null || true)
+  log=$(journalctl -u "$SERVICE" --no-pager -o cat -n 200 ${since:+--since "$since"} 2>/dev/null || true)
+  grep -q 'EADDRINUSE' <<<"$log" || return 0
+  read -r proto host port < <(addr) || true
+  echo "port ${port:-?} is taken by another program, so her admin page can't start (EADDRINUSE in her log)."
+  echo "See what holds it: sudo ss -ltnp 'sport = :${port:-PORT}'. Stop that program, or move her: run the installer again with --port N (a free one, for example $(( ${port:-8790} + 2 ))), then sudo adrian restart."
+}
+port_in_use() { # port_in_use PORT: something listens there right now (unknown without ss: no)
+  command -v ss >/dev/null || return 1
+  [ -n "$(ss -Hltn "sport = :$1" 2>/dev/null)" ]
+}
 latest_release() { # the newest published version, e.g. 0.14.9
   local json url tag
   # The API answers 60 times an hour per address; the release page's redirect
@@ -134,6 +160,7 @@ roll_back() {
   local old=$1 new=$2 prev=${3:--}
   put_mark "$old" "$new" rollback "$prev"
   echo "$new" >"$FAILED"
+  rm -f "$UNJUDGED"
   [ "$(current_version)" = "$old" ] || switch_to "$old"
   unit_back
   # "previous" goes back to what it was before the update: never the failed one.
@@ -165,6 +192,7 @@ finish_interrupted() {
     # "previous" is a rollback under way too, from a note that didn't say so.)
     # Finish it, failure and all.
     echo "The update to $new failed and was being undone when it was cut off. Finishing that: back to $old." >&2
+    FINISHED="undone $old $new"
     roll_back "$old" "$new" "$prev"
     if wait_healthy 60 >/dev/null; then echo "Back on $old."; else echo "Back on $old, but it isn't healthy either: sudo adrian logs" >&2; fi
   elif [ "$cur" = "$new" ] && [ "$phase" != prep ] && [ -d "$OPT/releases/$old" ]; then
@@ -180,8 +208,10 @@ finish_interrupted() {
     fi
     if answers_as "$new" "$out"; then
       echo "The update to $new was cut off before its checks finished. $new is running and healthy, so it stays."
+      FINISHED="kept $old $new"
     else
       echo "The update from $old to $new was cut off, and $new isn't healthy. Going back to $old." >&2
+      FINISHED="undone $old $new"
       roll_back "$old" "$new" "$prev"
       if wait_healthy 60 >/dev/null; then echo "Back on $old."; else echo "Back on $old, but it isn't healthy either: sudo adrian logs" >&2; fi
     fi
@@ -191,6 +221,7 @@ finish_interrupted() {
     if [ "$prev" != - ] && [ "$prev" != "releases/$new" ] && [ -d "$OPT/$prev" ]; then ln -sfn "$prev" "$OPT/previous"; fi
     [ "$(previous_version)" = "$new" ] || rm -rf "${OPT:?}/releases/$new"
     echo "An update to $new was cut off before it switched over. What it changed is undone; $old is still the one running."
+    FINISHED="undone $old $new"
   else
     # Something else (the installer, or a rollback by hand) has put $cur in place since.
     [ "$cur" = "$new" ] || [ "$(previous_version)" = "$new" ] || rm -rf "${OPT:?}/releases/$new"
@@ -242,7 +273,7 @@ follow_running() { # another update holds the lock: follow it, and touch nothing
 # own (setsid), which a hang-up or Ctrl+C can't reach. Returns only if neither
 # is there, to run here as before.
 detach_update() { # detach_update ARGS...
-  local rcf=$OPT/update.rc self token unit pid="" how="" started=0 envs v rc
+  local rcf=$OPT/update.rc self token unit pid="" how="" started=0 envs envf="" v rc
   local run='bash "$1" update "${@:3}" </dev/null; echo $? >"$2"' # the update's exit code, for this terminal
   refuse_symlinks "$UPDATE_LOG" "$rcf"
   update_running && follow_running
@@ -253,16 +284,24 @@ detach_update() { # detach_update ARGS...
     unit=adrian-update-by-hand-$(date +%Y%m%d-%H%M%S)
     # A unit starts with systemd's environment, not this one.
     envs=(-E ADRIAN_DETACHED=1 -E "ADRIAN_UPDATE_TOKEN=$token" -E "PATH=$PATH")
-    for v in ADRIAN_UPDATE_REPO ADRIAN_DOWNLOAD_CACHE https_proxy HTTPS_PROXY http_proxy HTTP_PROXY no_proxy NO_PROXY all_proxy ALL_PROXY; do
-      [ -z "${!v:-}" ] || envs+=(-E "$v=${!v}")
+    # The rest can hold a password (a proxy's user:password@): any user can read
+    # a unit's Environment=, so they go in a file only root can read, which the
+    # update deletes once it has started.
+    envf=$OPT/.update-env-$token
+    refuse_symlinks "$envf"
+    (umask 077; : >"$envf")
+    for v in ADRIAN_UPDATE_REPO ADRIAN_DOWNLOAD_CACHE ADRIAN_DOWNLOAD_MIRRORS https_proxy HTTPS_PROXY http_proxy HTTP_PROXY no_proxy NO_PROXY all_proxy ALL_PROXY; do
+      [ -z "${!v:-}" ] || printf '%s="%s"\n' "$v" "$(sed 's/[\\"]/\\&/g' <<<"${!v}")" >>"$envf"
     done
-    if systemd-run --unit="$unit" --collect --quiet "${envs[@]}" "$(command -v bash)" -c "$run" adrian-update "$self" "$rcf" "$@" </dev/null >/dev/null 2>&1; then
+    envs+=(-p "EnvironmentFile=$envf" -E "ADRIAN_ENV_FILE=$envf")
+    if systemd-run --unit="$unit" --collect --quiet "${envs[@]}" "$(command -v bash)" -c 'rm -f "$ADRIAN_ENV_FILE"; unset ADRIAN_ENV_FILE; '"$run" adrian-update "$self" "$rcf" "$@" </dev/null >/dev/null 2>&1; then
       started=1
       pid=$(systemctl show -p MainPID --value "$unit" 2>/dev/null) || pid=""
       [[ $pid =~ ^[1-9][0-9]*$ ]] || pid="" # done already
       how="as its own service, $unit"
     fi
   fi
+  [ -z "$envf" ] || [ "$started" = 1 ] || rm -f "$envf" # refused: nothing will read it
   if [ "$started" = 0 ]; then
     command -v setsid >/dev/null || return 0
     ADRIAN_DETACHED=1 ADRIAN_UPDATE_TOKEN=$token setsid bash -c "$run" adrian-update "$self" "$rcf" "$@" </dev/null >/dev/null 2>&1 &
@@ -326,8 +365,9 @@ put_unit_back() { # the service file from before upgrade-prep.sh, if it changed
     systemctl daemon-reload
   fi
 }
-previous_version() { # the release that was current before the last switch
-  [ -L "$OPT/previous" ] && basename "$(readlink -f "$OPT/previous")"
+previous_version() { # the release that was current before the last switch; nothing if none
+  # Never fails: under set -e, prev=$(previous_version) would end the script with no word.
+  [ ! -L "$OPT/previous" ] || basename "$(readlink -f "$OPT/previous")"
 }
 switch_to() { # remember where we came from, then swap the symlink atomically
   ln -sfn "releases/$(current_version)" "$OPT/previous"
@@ -340,12 +380,12 @@ case "$cmd" in
     need_root status
     systemctl --no-pager --lines=0 status "$SERVICE" 2>/dev/null | sed -n '1,4p' || true
     if h=$(health 3 2>/dev/null); then echo "health: $h"; else echo "health: not responding"; fi
-    read -r proto host port < <(addr); echo "admin UI: $proto://$host:$port/"
+    read -r proto host port < <(addr); echo "admin UI: $proto://$(url_host "$host"):$port/"
     n=$(interrupted_note); [ -z "$n" ] || echo "${n#*: }"
     ;;
   logs) journalctl -u "$SERVICE" --no-pager -n 200 -o cat "$@" ;;
   start|stop|restart) need_root "$cmd"; systemctl "$cmd" "$SERVICE"; [ "$cmd" = stop ] || wait_healthy 60 >/dev/null || die "not healthy after 60 s: adrian logs" ;;
-  url) need_root url; read -r proto host port < <(addr); echo "$proto://$host:$port/" ;;
+  url) need_root url; read -r proto host port < <(addr); echo "$proto://$(url_host "$host"):$port/" ;;
   setup-code) need_root setup-code; tool setup-code "$@" ;;
   reset-admin) need_root reset-admin; tool reset-admin && systemctl restart "$SERVICE" ;;
   secret)
@@ -386,7 +426,12 @@ case "$cmd" in
     systemctl is-active --quiet "$SERVICE" && ok "service running" || bad "service not running"
     # A bot that failed to start still answers (503), so the page itself is up.
     h=$(health_body 3 2>/dev/null || true)
-    if [ -z "$h" ]; then bad "admin UI not responding"
+    if [ -z "$h" ]; then
+      taken=$(port_taken)
+      if [ -n "$taken" ]; then
+        bad "admin UI not responding: ${taken%%$'\n'*}"
+        printf '          what to do: %s\n' "${taken#*$'\n'}"
+      else bad "admin UI not responding"; fi
     elif grep -q '"state":"failed"' <<<"$h"; then
       # Why, in words, from the last failed start in the log.
       why=$(journalctl -u "$SERVICE" --no-pager -o cat -n 2000 2>/dev/null | tool explain-log 2>/dev/null || true)
@@ -397,7 +442,11 @@ case "$cmd" in
         bad "the bot failed to start; the admin page's Status tab says why"
       fi
     else ok "health: $h"; fi
-    [ ! -f "$FAILED" ] || warn "update $(cat "$FAILED") failed here on $(date -r "$FAILED" '+%F %H:%M') and was undone; auto-update tries it again a day later, sudo adrian update any time"
+    if [ -f "$FAILED" ] && [ -f "$UNJUDGED" ]; then
+      warn "update $(cat "$FAILED") was tried here on $(date -r "$FAILED" '+%F %H:%M') and undone, but it couldn't be judged: the bot wasn't healthy before it either. Fix what's above, then: sudo adrian update"
+    elif [ -f "$FAILED" ]; then
+      warn "update $(cat "$FAILED") failed here on $(date -r "$FAILED" '+%F %H:%M') and was undone; auto-update tries it again a day later, sudo adrian update any time"
+    fi
     n=$(interrupted_note)
     case "$n" in running:*) warn "${n#*: }" ;; cut\ off:*) bad "${n#*: }" ;; esac
     [ "$(stat -c %a "$ETC/secrets.env")" = 600 ] && ok "secrets.env is 0600" || bad "secrets.env permissions are $(stat -c %a "$ETC/secrets.env") (want 600)"
@@ -445,14 +494,26 @@ case "$cmd" in
     chown -R adrian:adrian "$ETC" "$VAR"; chown -R root:adrian "$VAR/models"
     refuse_symlinks "$ETC/secrets.env"
     chmod 0600 "$ETC/secrets.env"
+    # The backup brings its own admin port: another program here may hold it.
+    read -r _ _ port < <(addr) || port=
+    if [[ ${port:-} =~ ^[0-9]+$ ]] && port_in_use "$port"; then
+      die "restored, but not started: port $port, the admin port the backup brought, is already used by another program here. See what holds it: sudo ss -ltnp 'sport = :$port'. Stop that program, then sudo adrian start; or move her: run the installer again with --port N (a free port), then sudo adrian restart."
+    fi
     systemctl start "$SERVICE"
-    wait_healthy 60 >/dev/null && echo "Restored and running." || die "restored, but the service is not healthy: adrian logs" ;;
+    if wait_healthy 60 >/dev/null; then echo "Restored and running."; exit 0; fi
+    taken=$(port_taken)
+    [ -z "$taken" ] || die "restored, but she can't start: ${taken//$'\n'/ }"
+    die "restored, but the service is not healthy: adrian logs" ;;
   update)
     need_root update
     b=latest require_sha=0
     for a in "$@"; do case "$a" in --require-checksum) require_sha=1 ;; *) b=$a ;; esac; done
-    # A bundle by its full path: the update may run from another folder.
-    [ ! -f "$b" ] || b=$(cd "$(dirname "$b")" && pwd)/$(basename "$b")
+    # A bundle by its full path: the update may run from another folder. The
+    # words stay words, even next to a file of that name (wget saves one as "latest").
+    case "$b" in
+      latest|--auto|--check) ;;
+      *) [ ! -f "$b" ] || b=$(cd "$(dirname "$b")" && pwd)/$(basename "$b") ;;
+    esac
     # By hand at a terminal: the update runs in the background, so a dropped SSH
     # connection (or Ctrl+C) can't stop it halfway; this terminal follows along.
     if [ "$b" != --check ] && [ "$b" != --auto ] && [ -z "${ADRIAN_DETACHED:-}" ] && [ "${ADRIAN_DETACH:-}" != 0 ] \
@@ -497,7 +558,7 @@ case "$cmd" in
         b=$(fetch_release "$v" "$dl") || die "the download of $v failed or didn't match its checksum; nothing was changed. Check the internet connection and run it again."
         ;;
     esac
-    [ -f "$b" ] || die "usage: adrian update [BUNDLE.tar.gz [--require-checksum] | --check]"
+    [ -f "$b" ] || die "there's no bundle file $b. Usage: adrian update (the newest from GitHub), adrian update BUNDLE.tar.gz [--require-checksum], adrian update --check"
     if [ -f "$b.sha256" ]; then
       (cd "$(dirname "$b")" && sha256sum -c --status "$(basename "$b").sha256") || die "bundle checksum mismatch"
     elif [ "$require_sha" = 1 ]; then
@@ -546,7 +607,8 @@ case "$cmd" in
     fi
     # What the new version has to live up to. Fetching models can take a while,
     # so this is also the last look at whether someone has joined her call.
-    was=$(health 5 2>/dev/null || true)
+    # The answer whatever its status: a bot that failed to start answers 503.
+    was=$(health_body 5 2>/dev/null || true)
     if [ "${auto:-0}" = 1 ] && grep -q '"busy":true' <<<"$was"; then
       put_unit_back; rm -rf "${OPT:?}/releases/$new"; rm -f "$MARK" "$unit_before"
       echo "update $new waits: someone is in her call or music is playing"; exit 0
@@ -562,7 +624,7 @@ case "$cmd" in
     if systemctl restart "$SERVICE" && crashes=$(systemctl show -p NRestarts --value "$SERVICE") \
       && wait_healthy 120 "$was" >/dev/null && sleep 60 && wait_healthy 60 "$was" >/dev/null \
       && [ "$(systemctl show -p NRestarts --value "$SERVICE")" = "$crashes" ]; then
-      rm -f "$FAILED" "$MARK" "$unit_before"
+      rm -f "$FAILED" "$UNJUDGED" "$MARK" "$unit_before"
       echo "Updated to $new."
       # keep the three newest releases
       ls -1t "$OPT/releases" | tail -n +4 | while read -r r; do [ "$r" != "$new" ] && [ "$r" != "$old" ] && rm -rf "${OPT:?}/releases/$r"; done
@@ -570,11 +632,23 @@ case "$cmd" in
       # From here every step is worth trying, whatever became of the one before.
       # wait_healthy at the end is what tells the person how it went.
       set +e
-      echo "Version $new did worse than $old; rolling back." >&2
+      unjudged=0
+      if grep -q '"ok":true' <<<"$was"; then
+        echo "Version $new did worse than $old; rolling back." >&2
+      else
+        # Nothing to compare with: say so, and still go back to how it was.
+        unjudged=1
+        how=$(sed -n 's/.*"state":"\([a-z]*\)".*/it was \1/p' <<<"$was")
+        [ -n "$how" ] || how="it did not answer"
+        echo "Version $new didn't come up healthy, but $old wasn't healthy before the update either ($how), so this doesn't show $new is worse. Going back to $old, to leave things as they were." >&2
+      fi
       # Back under the service file $old ran under, "previous" back to what it
       # was before this update, and the failed release gone and remembered.
       roll_back "$old" "$new" "${prev_before:--}"
-      wait_healthy 60 >/dev/null && die "rolled back to $old" || die "rolled back to $old, but it is not healthy either: adrian logs"
+      [ "$unjudged" = 0 ] || : >"$UNJUDGED"
+      wait_healthy 60 >/dev/null && die "rolled back to $old"
+      [ "$unjudged" = 0 ] || die "rolled back to $old, but it is not healthy either, as before the update: sudo adrian doctor says why. Fix that first, then run sudo adrian update again."
+      die "rolled back to $old, but it is not healthy either: adrian logs"
     fi ;;
   auto-update)
     need_root auto-update
@@ -603,7 +677,15 @@ case "$cmd" in
   rollback)
     need_root rollback
     take_update_lock rollback
+    FINISHED=""
     finish_interrupted
+    # A cut-off update was just finished: that was the rollback asked for. Going
+    # on would switch once more, to the release before it.
+    read -r f_how f_old f_new <<<"$FINISHED" || true
+    case "${f_how:-}" in
+      undone) echo "The cut-off update to $f_new is undone, so she's on $(current_version) again. Nothing else was switched; run sudo adrian rollback again to go back further."; wait_healthy 5 >/dev/null; exit ;;
+      kept) echo "The cut-off update to $f_new was finished and $f_new stays. Nothing else was switched; run sudo adrian rollback again to go back to $f_old."; wait_healthy 5 >/dev/null; exit ;;
+    esac
     prev=$(previous_version); [ -n "$prev" ] || die "no previous version to roll back to"
     echo "Switching $(current_version) -> $prev"
     switch_to "$prev"; systemctl restart "$SERVICE"
