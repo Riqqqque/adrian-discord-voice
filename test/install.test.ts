@@ -216,10 +216,36 @@ describe.skipIf(!hasBash)('install.sh run again on a live install', () => {
 
   it('finishes over a bot that failed to start (a bad token, say): the admin page is up to fix it', () => {
     const m = live();
-    m.put('health-code', '503');
+    m.put('health-state', 'failed');
     const r = m.install(['--yes', '--bundle', m.bundle('1.0.1')]);
     expect(r.code).toBe(0);
     expect(r.out).toContain("the bot itself didn't start");
+  }, 60_000);
+
+  it("won't take a port another program holds, and says so before changing anything", () => {
+    const m = live();
+    m.put('listening', '8790\n9000\n');
+    const r = m.install(['--yes', '--port', '9000', '--bundle', m.bundle('1.0.1')]);
+    expect(r.code).not.toBe(0);
+    expect(r.err).toContain('port 9000 is already used by another program');
+    expect(serverOf(m.read('etc/config.json')).port).toBe(8790);
+    expect(m.exists('opt/releases/1.0.1')).toBe(false);
+  }, 60_000);
+
+  it("doesn't take another program's answer on the port for hers", () => {
+    const m = live();
+    // Something else answers there; she never does.
+    const r = m.install(['--yes', '--bundle', m.bundle('1.0.1')], { FOREIGN_ANSWER: '1' });
+    expect(r.code).not.toBe(0);
+    expect(r.err).toContain('did not come up');
+  }, 60_000);
+
+  it('keeps the address after an uninstall that kept the data', () => {
+    const m = live(['--lan']);
+    // --uninstall --keep-data: config stays, Node and the app go.
+    run(m.root, 'rm -rf opt');
+    m.install(['--yes', '--bundle', m.bundle('1.0.1')]);
+    expect(serverOf(m.read('etc/config.json'))).toEqual({ host: '0.0.0.0', port: 8790 });
   }, 60_000);
 
   it('keeps everything else in the config', () => {

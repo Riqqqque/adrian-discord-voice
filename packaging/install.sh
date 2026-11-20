@@ -238,8 +238,17 @@ if [ -f "$ETC/config.json" ] && [ -x "$OPT/node/bin/node" ]; then
   read -r OLD_HOST OLD_PORT < <("$OPT/node/bin/node" -e '
     try{const s=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).server||{};console.log(String(s.host||"-")+" "+String(s.port||"-"))}catch{console.log("- -")}' "$ETC/config.json") || true
   [ "$OLD_HOST" = - ] && OLD_HOST=""; [ "$OLD_PORT" = - ] && OLD_PORT=""
+elif [ -f "$ETC/config.json" ]; then
+  # Kept data without Node (after --uninstall --keep-data): the installer wrote
+  # "server" first, so its first host and port are hers.
+  OLD_HOST=$(sed -n 's/.*"host": *"\([^"]*\)".*/\1/p' "$ETC/config.json" | head -n 1)
+  OLD_PORT=$(sed -n 's/.*"port": *\([0-9][0-9]*\).*/\1/p' "$ETC/config.json" | head -n 1)
 fi
 if [ -z "$PORT" ] && [[ $OLD_PORT =~ ^[0-9]+$ ]]; then PORT=$OLD_PORT; fi
+# A port asked for that isn't hers already must be free.
+if [ -n "$PORT" ] && [ "$PORT" != "$OLD_PORT" ] && ss -Hltn "sport = :$PORT" | grep -q .; then
+  die "port $PORT is already used by another program. Nothing was changed. Pick a free one with --port N, or leave --port out to get the first free one from 8790."
+fi
 if [ -z "$PORT" ]; then
   for p in $(seq 8790 8799); do
     if ! ss -Hltn "sport = :$p" | grep -q .; then PORT=$p; break; fi
@@ -283,6 +292,7 @@ if ! id adrian >/dev/null 2>&1; then
   CREATED_USER=true
 fi
 install -d -m 0755 "$OPT" "$OPT/releases"
+rm -rf "$OPT"/.install-* # left by an install that was cut off
 refuse_symlinks "$ETC" "$VAR" "$VAR/models"
 install -d -m 0750 -o adrian -g adrian "$ETC" "$VAR"
 # Root's from the start, so the service account never gets to plant links in it.
@@ -379,16 +389,18 @@ if [ "$START" = 1 ]; then
   systemctl enable --quiet "$SERVICE"
   # Running from before: it has to restart to run what was just installed.
   if [ "$WAS_ACTIVE" = 1 ]; then systemctl restart "$SERVICE"; else systemctl start "$SERVICE"; fi
-  # Any answer means the admin page is up: 503 is a bot that failed to start
-  # (a bad token, say), which the admin page and the doctor explain.
-  code=000
+  # Her health answer, whatever its status: a 503 is a bot that failed to start
+  # (a bad token, say), which the admin page and the doctor explain. Only her
+  # own answer counts, not another program's on that port.
+  body=""
   for _ in $(seq 1 60); do
-    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "http://127.0.0.1:$PORT/api/health" 2>/dev/null) || true
-    if [ -n "$code" ] && [ "$code" != 000 ]; then break; fi
+    body=$(curl -s --max-time 3 "http://127.0.0.1:$PORT/api/health" 2>/dev/null) || true
+    if grep -q '"state":' <<<"$body"; then break; fi
+    body=""
     sleep 1
   done
-  if [ -z "$code" ] || [ "$code" = 000 ]; then journalctl -u "$SERVICE" -n 30 --no-pager >&2 || true; die "$(explain_down)"; fi
-  [ "$code" = 200 ] || say "warning: the admin page is up, but the bot itself didn't start. Open the admin page, or run: sudo adrian doctor"
+  if [ -z "$body" ]; then journalctl -u "$SERVICE" -n 30 --no-pager >&2 || true; die "$(explain_down)"; fi
+  grep -q '"state":"failed"' <<<"$body" && say "warning: the admin page is up, but the bot itself didn't start. Open the admin page, or run: sudo adrian doctor"
 fi
 
 echo

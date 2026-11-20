@@ -182,6 +182,26 @@ describe.skipIf(!hasBash)('adrian update around it', { timeout: 60_000 }, () => 
     }
   });
 
+  it.runIf(has('flock'))('while one runs, its note reads "under way", not "cut off", and rollback waits for it', () => {
+    const m = machine({ current: NEW, mark: `${OLD} ${NEW} switched` });
+    const held = spawn('flock', [`${m.root}/opt/update.lock`, 'sleep', '5']);
+    spawnSync('sleep', ['0.5']);
+    try {
+      expect(m.run(['status']).out).toContain('is under way right now');
+      const doctor = m.run(['doctor']).out;
+      expect(doctor).toMatch(/warn {2}an update \(1\.0\.0 -> 9\.9\.9\) is under way/);
+      expect(doctor).not.toContain('cut off');
+      const r = m.run(['rollback']);
+      expect(r.err).toContain('another update is already running');
+      expect(m.version()).toBe(NEW);
+      expect(m.exists('opt/update-in-progress')).toBe(true);
+      // --check only looks: no lock, and it leaves the one running alone.
+      expect(m.run(['update', '--check']).code).toBe(0);
+    } finally {
+      held.kill();
+    }
+  });
+
   // A dropped SSH connection sends SIGHUP to everything in the terminal's session.
   it.runIf(has('setsid') && process.platform !== 'win32')('by hand, carries on when the terminal goes away', async () => {
     // Work that takes a while: undoing a cut-off update restarts her (3 s here).
