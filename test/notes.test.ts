@@ -267,6 +267,8 @@ describe('what counts as asking about a note', () => {
     ["what's my job", 'works at a pizza place'],
     ["what's my puppy's name", 'has a dog named Biscuit'],
     ['what are my allergies', 'allergic to peanuts'],
+    ['where do I live', 'living in Austin now'],
+    ['what glasses do I wear', 'wears glasses'],
   ])('%j', (said, text) => {
     expect(asksAbout(said, text)).toBe(true);
   });
@@ -283,6 +285,13 @@ describe('what counts as asking about a note', () => {
     ['do you remember what I do for a living', 'lives in Chicago'],
     ['what game should we play', 'is vegetarian'],
     ['where did I put my bed sheets', 'red car'],
+    // Loose matches that would pull a private note into a shared call (review S5).
+    ['how does this work?', 'works at the hospital'],
+    ['does the mic work', 'works at the hospital'],
+    ['is it working now?', 'works at the hospital'],
+    ['what car should I get?', 'caring for her mom'],
+    ['who hated that movie?', 'hat size is 7'],
+    ['what do you think of this game, do people play it?', 'plays Valorant'],
     ['', note],
     [undefined, note],
   ])('not %j', (said, text) => {
