@@ -16,6 +16,8 @@ export interface SatelliteServerOptions {
   /** Accent color and owner name for the window. */
   welcome: (c: SatelliteConnection) => Record<string, unknown>;
   onConnect: (c: SatelliteConnection) => void;
+  /** Keep-alive ping interval; a PC that misses one whole interval is dropped. */
+  heartbeatMs?: number;
 }
 
 const HELLO_MS = 5_000;
@@ -25,6 +27,7 @@ const LOCKOUT_MS = 10 * 60_000;
 
 export function startSatelliteServer(o: SatelliteServerOptions): { close(): Promise<void>; connections(): SatelliteConnection[] } {
   const live = new Set<SatelliteConnection>();
+  const byWs = new WeakMap<object, SatelliteConnection>();
   const fails = new Map<string, { n: number; until: number }>();
   // Audio frames are small; anything big is not a satellite. The cap leaves room
   // for one screen picture, and only a welcomed satellite gets that far.
@@ -85,14 +88,15 @@ export function startSatelliteServer(o: SatelliteServerOptions): { close(): Prom
       }
       fails.delete(addr);
       // One live connection per device: a reconnect replaces the old one.
-      for (const c of live) if (c.device.id === device.id) void c.disconnect();
+      for (const c of live) if (c.device.id === device.id) void c.disconnect('replaced');
       const conn = new SatelliteConnection(ws, device, typeof m.version === 'string' ? m.version.slice(0, 20) : undefined);
       // Welcomed: room for a picture now (connection.ts lets only action_result be big).
       capFrames(ws, MAX_FRAME);
       live.add(conn);
-      conn.on('closed', () => {
+      byWs.set(ws, conn);
+      conn.on('closed', (info) => {
         live.delete(conn);
-        o.log.info('satellite disconnected', { device: device.name });
+        o.log.info('satellite disconnected', { device: device.name, ...info });
       });
       o.log.info('satellite connected', { device: device.name, version: typeof m.version === 'string' ? m.version.slice(0, 20) : undefined, addr });
       conn.send({ type: 'welcome', name: device.name, ...o.welcome(conn) });
@@ -110,13 +114,14 @@ export function startSatelliteServer(o: SatelliteServerOptions): { close(): Prom
   const beat = setInterval(() => {
     for (const ws of wss.clients) {
       if (!alive.has(ws)) {
+        byWs.get(ws)?.ending('heartbeat');
         ws.terminate();
         continue;
       }
       alive.delete(ws);
       ws.ping();
     }
-  }, 30_000);
+  }, o.heartbeatMs ?? 30_000);
   beat.unref();
 
   return {
@@ -124,7 +129,7 @@ export function startSatelliteServer(o: SatelliteServerOptions): { close(): Prom
     close: () =>
       new Promise((resolve) => {
         clearInterval(beat);
-        for (const c of live) void c.disconnect();
+        for (const c of live) void c.disconnect('shutdown');
         wss.close(() => resolve());
       }),
   };
