@@ -76,7 +76,11 @@ function busy(btn, fn, out) {
 const usd = (x) => (x == null ? '–' : `$${Number(x).toFixed(x < 0.1 ? 4 : 2)}`);
 const ms = (x) => (x == null ? '–' : `${x} ms`);
 
+/** Waits for the bot to be added to a server, on the Discord step. */
+let guildPoll;
+
 function render(...nodes) {
+  clearInterval(guildPoll);
   notice('');
   app.replaceChildren(...nodes);
   window.scrollTo(0, 0);
@@ -99,7 +103,7 @@ async function start() {
     return dashboard();
   }
   document.getElementById('who').replaceChildren();
-  return s.setupNeeded ? claimView() : loginView();
+  return s.setupNeeded ? claimView(s.setupCodeCommand || 'sudo adrian setup-code') : loginView();
 }
 
 function boot() {
@@ -113,7 +117,7 @@ async function logout() {
   boot();
 }
 
-function claimView() {
+function claimView(codeCommand) {
   const code = h('input', { autocomplete: 'one-time-code', placeholder: 'XXXXX-XXXXX', autocapitalize: 'characters' });
   const user = h('input', { autocomplete: 'username', value: 'admin' });
   const pass = h('input', { type: 'password', autocomplete: 'new-password' });
@@ -140,7 +144,7 @@ function claimView() {
       },
     },
     h('h2', {}, 'Create the admin account'),
-    h('p', { class: 'muted small' }, 'On the server, run ', h('code', {}, 'sudo adrian setup-code'), ' to see the one-time setup code. It expires after an hour.'),
+    h('p', { class: 'muted small' }, 'The installer printed a one-time setup code. Lost it, or it expired (they last an hour)? On the server, run ', h('code', {}, codeCommand), ': it shows the current code, or makes a new one.'),
     h('label', {}, 'Setup code'), code,
     h('label', {}, 'Username'), user,
     h('label', {}, 'Password (at least 10 characters)'), pass,
@@ -231,17 +235,34 @@ async function stepDiscord({ settings, has, next, back }) {
   const showGuilds = (r) => {
     const parts = [h('p', {}, 'Signed in as ', h('strong', {}, r.botTag), '.')];
     if (r.publicBot) parts.push(h('div', { class: 'msg warn' }, 'This bot is public: anyone could add it to their server. In the Developer Portal, under Bot, turn Public Bot off.'));
+    if (r.intents) {
+      const on = (x) => (x ? 'on' : 'off');
+      parts.push(h('p', { class: 'muted small' }, `Optional Discord features (Developer Portal, Bot, Privileged Gateway Intents): Message Content is ${on(r.intents.messageContent)} (reading text channels), Server Members is ${on(r.intents.members)} and Presence is ${on(r.intents.presences)} (the member list and who is online). Everything else works with them off.`));
+    }
     parts.push(h('p', { class: 'small' }, 'Add the bot to your server with this link (it asks for View Channels, Connect, Speak, Use Voice Activity, Send Messages, Send Messages in Threads and Read Message History): ', h('a', { href: r.inviteUrl, target: '_blank', rel: 'noopener noreferrer' }, 'Invite A.D.R.I.A.N.')));
     const guild = h('select', {}, h('option', { value: '' }, r.guilds.length ? 'Choose a server' : 'The bot is not in any server yet'), r.guilds.map((g) => h('option', { value: g.id, selected: g.id === settings.guildId }, g.name)));
     const channel = h('select', { disabled: true }, h('option', { value: '' }, 'Choose a server first'));
     const chOut = h('div', { class: 'msg' });
+    /** Can the bot be heard there? Saving still works: a role can be fixed later. */
+    const checkAccess = async () => {
+      if (!guild.value || !channel.value) return msg(chOut, '');
+      try {
+        const a = await api('GET', `/api/check/voice-access?guild=${encodeURIComponent(guild.value)}&channel=${encodeURIComponent(channel.value)}`);
+        if (a.ok) msg(chOut, `The bot can join and speak in ${a.channel}.`, 'ok');
+        else msg(chOut, a.error, 'warn');
+      } catch {
+        msg(chOut, '');
+      }
+    };
+    channel.addEventListener('change', checkAccess);
     const loadChannels = async () => {
       channel.disabled = true;
       if (!guild.value) return;
       try {
         const { channels } = await api('GET', `/api/check/channels?guild=${encodeURIComponent(guild.value)}`);
-        channel.replaceChildren(h('option', { value: '' }, channels.length ? 'Choose a voice channel' : 'No voice channels visible to the bot'), channels.map((c) => h('option', { value: c.id, selected: c.id === settings.channelId }, c.name)));
+        channel.replaceChildren(h('option', { value: '' }, channels.length ? 'Choose a voice channel' : 'No voice channels visible to the bot'), ...channels.map((c) => h('option', { value: c.id, selected: c.id === settings.channelId }, c.name)));
         channel.disabled = false;
+        await checkAccess();
       } catch (e) {
         msg(chOut, e.message, 'bad');
       }
@@ -256,6 +277,19 @@ async function stepDiscord({ settings, has, next, back }) {
     }, chOut));
     const refresh = h('button', { onclick: () => verifyBtn.click() }, 'I added it, refresh');
     after.replaceChildren(...parts, h('label', {}, 'Server'), guild, h('label', {}, 'Voice channel to join'), channel, chOut, refresh, save);
+    // Not in a server yet: look every few seconds, so adding it is the only step.
+    clearInterval(guildPoll);
+    if (!r.guilds.length) {
+      let tries = 0;
+      guildPoll = setInterval(async () => {
+        if (++tries > 120) return clearInterval(guildPoll);
+        const again = await api('POST', '/api/check/discord', { token: '' }).catch(() => null);
+        if (again?.ok && again.guilds.length) {
+          clearInterval(guildPoll);
+          showGuilds(again);
+        }
+      }, 5000);
+    }
   };
 
   verifyBtn.addEventListener('click', busy(verifyBtn, async () => {
@@ -372,7 +406,8 @@ async function stepLlm({ settings, presets, has, next, back }) {
 }
 
 async function stepSearch({ settings, has, next, back }) {
-  const on = h('input', { type: 'checkbox', checked: settings.search || !settings.llm });
+  // On by default only with a key to use: a box that can't be saved without one is a dead end.
+  const on = h('input', { type: 'checkbox', checked: settings.search || (!settings.llm && has('TAVILY_API_KEY')) });
   const key = h('input', { type: 'password', autocomplete: 'off', placeholder: has('TAVILY_API_KEY') ? 'Saved. Paste a new key to replace it.' : 'Paste the Tavily API key' });
   const out = h('div', { class: 'msg' });
   const test = h('button', {}, 'Test');
@@ -397,7 +432,7 @@ async function stepSearch({ settings, has, next, back }) {
   return h(
     'div', { class: 'card' },
     h('h2', {}, 'Web search (Recommended)'),
-    h('p', { class: 'muted small' }, 'Lets A.D.R.I.A.N. look up news, scores and other recent things. Tavily’s free plan includes 1,000 searches a month. Searches are read-only.'),
+    h('p', { class: 'muted small' }, 'Lets A.D.R.I.A.N. look up news, scores and other recent things. Tavily’s free plan includes 1,000 searches a month (sign up at tavily.com). Searches are read-only. Optional: without it she answers from what the model knows, and you can add the key later.'),
     h('label', { class: 'choice' }, on, 'Use web search'),
     h('label', {}, 'Tavily API key'), key, test, out,
     h('div', {}, back, save),
@@ -481,7 +516,7 @@ async function stepFinish({ back }) {
     try {
       const r = await api('POST', '/api/restart', {});
       if (r.state === 'running') return dashboard();
-      msg(out, r.state === 'setup' ? `Still missing: ${r.problems.join('; ')}` : `Could not start: ${r.error}`, 'bad');
+      msg(out, r.state === 'setup' ? `Still missing: ${r.problems.join('; ')}` : `Could not start: ${r.error}${r.fix ? ` What to do: ${r.fix}` : ''}`, 'bad');
     } catch (e) {
       msg(out, e.message, 'bad');
     }
@@ -502,6 +537,7 @@ const LOST_CONTACT = 'Lost contact with the service. Still trying…';
 
 async function dashboard(tab = 'status') {
   clearInterval(timer);
+  voiceAsked = false;
   const tabs = ['status', 'settings', 'keys', 'logs', 'account'];
   const bar = h('div', { class: 'tabs' }, tabs.map((t) => h('button', { class: t === tab ? 'on' : '', onclick: () => reporting(dashboard(t)) }, t[0].toUpperCase() + t.slice(1))));
   const body = h('div');
@@ -520,8 +556,20 @@ async function refresh(view, body) {
   }
 }
 
+/** Why she's running but not in voice, asked once per dashboard visit (Discord rate-limits). */
+let voiceWhy = '';
+let voiceAsked = false;
+
 async function dashStatus(body) {
   const s = await api('GET', '/api/status');
+  if (s.state === 'running' && !s.voiceReady && !voiceAsked && s.uptimeS > 60) {
+    voiceAsked = true;
+    const { settings } = await api('GET', '/api/settings').catch(() => ({ settings: {} }));
+    if (settings.guildId && settings.channelId) {
+      const a = await api('GET', `/api/check/voice-access?guild=${encodeURIComponent(settings.guildId)}&channel=${encodeURIComponent(settings.channelId)}`).catch(() => null);
+      voiceWhy = a && !a.ok && a.error ? a.error : '';
+    }
+  }
   const state = { running: 'ok', starting: 'warn', setup: 'warn', failed: 'bad', stopped: 'bad' }[s.state];
   const sp = s.spend;
   const capRow = (label, val, cap) => {
@@ -544,6 +592,8 @@ async function dashStatus(body) {
         h('tr', {}, h('th', {}, 'Version'), h('td', {}, s.version)),
         h('tr', {}, h('th', {}, 'Uptime'), h('td', {}, s.uptimeS == null ? '–' : `${Math.floor(s.uptimeS / 3600)} h ${Math.floor((s.uptimeS % 3600) / 60)} min`))),
       s.error ? h('div', { class: 'msg bad' }, s.error) : null,
+      s.fix ? h('div', { class: 'msg warn' }, `What to do: ${s.fix}`) : null,
+      s.state === 'running' && !s.voiceReady && voiceWhy ? h('div', { class: 'msg warn' }, voiceWhy) : null,
       s.problems.length ? h('ul', {}, s.problems.map((p) => h('li', { class: 'msg warn' }, p))) : null,
       s.warnings.length ? h('ul', {}, s.warnings.map((w) => h('li', { class: 'msg warn' }, w))) : null,
       s.state === 'setup' ? h('button', { class: 'primary', onclick: () => reporting(wizard(0)) }, 'Continue setup') : null,
