@@ -146,7 +146,7 @@ export function pcTools(d: PcToolDeps): Tool[] {
       description:
         'Open something in the PC\'s browser or Explorer. Use exactly one of: url (a page whose exact address you know, like a site\'s home page), search (a specific page you don\'t know the address of: a mod, product, article, profile, wiki page; the best web result opens), youtube (a search; with play true it opens the top video itself), spotify (a search in their Spotify app: a song, artist, album or playlist; it opens the results, they press play), or folder (downloads, documents, desktop, pictures, music, videos).',
       properties: {
-        url: { type: 'string' },
+        url: { type: 'string', description: 'The site\'s own address: "go to twitch" is https://www.twitch.tv, never a search engine\'s results page.' },
         search: { type: 'string', description: 'The page to find, e.g. "JEI mod modrinth", "RTX 5070 review tom\'s hardware".' },
         youtube: { type: 'string', description: 'What to look up on YouTube.' },
         play: { type: 'boolean', description: 'With youtube: open the top video instead of the results.' },
