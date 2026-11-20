@@ -499,6 +499,24 @@ export const CASES: Case[] = [
     ['the garage, can you shut it', SHUTDOWN],
     ['the front door, lock it', LOCK],
     ['las luces, apágalas', SO],
+    // Added after review: a thing, a break, then the verb alone.
+    ['the lights, turn off', SO],
+    ['living room tv, mute', MUTE],
+    ['front door. lock.', LOCK],
+    ['the garage door — close it', SHUTDOWN],
+  ]),
+  // Added after review: a house thing and the PC named in one phrase.
+  ...rows('a house thing and the PC in one phrase', undefined, [
+    ['lock the door by my computer', LOCK, 'ask'],
+    ['turn down the tv near my computer', DOWN, 'no'],
+    ['turn off the lamp next to my pc', SO, 'ask'],
+    ['turn off the light on my desk by the monitor', SO, 'ask'],
+    ['baja el volumen de la computadora', DOWN, 'go'],
+    ['play this on my pc instead', PLAY, 'go'],
+    ['put the game on my pc', PLAY, 'go'],
+    ['the music, pause', PAUSE, 'go'],
+    ['my screen, turn it off', SO, 'go'],
+    ['the lights are off, unmute', UNMUTE, 'go'],
   ]),
   // Possessives and "'s" for "is".
   ...rows("possessives and 's", undefined, [
