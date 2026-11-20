@@ -1723,15 +1723,16 @@ describe('notes, DMs, text chat and /join through the real stack', () => {
   it('keeps a note told in a DM out of a server until they ask about it', async () => {
     const r = await rig(chat);
     r.steps.push({ parts: [toolCall('remember', '{"note":"landlord is evicting me"}'), usage(10, 2)] });
-    await send(r, 2, OWNER, 'remember that my landlord is evicting me');
-    await send(r, 3, OWNER, 'hello again');
-    expect(said(r.llmBodies[2])).toContain('landlord is evicting me');
-    expect(said(r.llmBodies[2])).toContain('use it naturally');
-    await send(r, 4, OWNER, `<@${BOT}> any weekend ideas`, GUILD);
-    expect(said(r.llmBodies[3])).not.toContain('evicting');
-    await send(r, 5, OWNER, `<@${BOT}> what's my landlord up to`, GUILD);
-    expect(said(r.llmBodies[4])).toContain('landlord is evicting me');
-    expect(said(r.llmBodies[4])).toContain('Other people can hear or read your answer here');
+    // The note says itself ("Got it."): one model call.
+    await send(r, 1, OWNER, 'remember that my landlord is evicting me');
+    await send(r, 2, OWNER, 'hello again');
+    expect(said(r.llmBodies[1])).toContain('landlord is evicting me');
+    expect(said(r.llmBodies[1])).toContain('use it naturally');
+    await send(r, 3, OWNER, `<@${BOT}> any weekend ideas`, GUILD);
+    expect(said(r.llmBodies[2])).not.toContain('evicting');
+    await send(r, 4, OWNER, `<@${BOT}> what's my landlord up to`, GUILD);
+    expect(said(r.llmBodies[3])).toContain('landlord is evicting me');
+    expect(said(r.llmBodies[3])).toContain('Other people can hear or read your answer here');
     await r.stack.stop();
   });
 
@@ -2204,7 +2205,8 @@ describe('a hold and the listening window', () => {
 
 describe('what forget says', () => {
   const told = async (r: Rig) => {
-    r.steps.push({ parts: [toolCall('remember', '{"note":"likes green tea"}'), usage(10, 2)] }, { parts: [text('Got it.'), usage(10, 2)] });
+    // Saved, it says itself: no second step.
+    r.steps.push({ parts: [toolCall('remember', '{"note":"likes green tea"}'), usage(10, 2)] });
     r.heard(r.discordPipe, SAM, 'hey adrian remember i like green tea', 'remember i like green tea');
     await until(() => r.stack.answers().length === 1, 'the note');
     r.steps.push({ parts: [toolCall('forget', '{"what":"tea"}'), usage(10, 2)] });
