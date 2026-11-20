@@ -37,7 +37,7 @@ const metrics = new Metrics({ file: join(stateDir, 'dashboard.json'), timezone, 
 const log = createLogger(process.env.LOG_LEVEL === 'debug' ? 'debug' : 'info', undefined, metrics.observe);
 onCall(metrics.noteCall);
 metrics.begin();
-process.on('uncaughtExceptionMonitor', (e) => metrics.crashed(e.message));
+process.on('uncaughtExceptionMonitor', (e: unknown) => metrics.crashed(e));
 const limitsRaw = (raw.limits ?? {}) as { usageFile?: string };
 
 const secrets = new SecretsFile(secretsFile);

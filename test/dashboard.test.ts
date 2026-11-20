@@ -1,18 +1,31 @@
 // The dashboard's counters (src/web/metrics.ts) and what it makes of them
 // (src/web/dashboard.ts): fed log lines exactly as the service writes them.
 
-import { mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { topResultUrl, webYoutubeVideos } from '../src/brain/tools.js';
 import { noteCall, onCall } from '../src/core/calls.js';
 import { createLogger } from '../src/core/logger.js';
 import { UsageLedger } from '../src/limits/usage-ledger.js';
+import { groqTranscribe } from '../src/speech/cloud-stt.js';
 import { attention, buildDashboard, type DashboardInput, newer, ReleaseCheck, type SystemInfo } from '../src/web/dashboard.js';
 import { BINS, binOf, binValue, Metrics, PC_DROP_MS, WATCHED } from '../src/web/metrics.js';
 
 const H = 3_600_000;
 const T0 = Date.UTC(2026, 10, 20, 12, 0, 0);
+
+/** Every temp folder this file made; each test's go after it. */
+const made: string[] = [];
+function tmp(prefix: string): string {
+  const d = mkdtempSync(join(tmpdir(), prefix));
+  made.push(d);
+  return d;
+}
+afterEach(() => {
+  for (const d of made) rmSync(d, { recursive: true, force: true, maxRetries: 3 });
+});
 
 /** Metrics on a clock the test moves. */
 function clocked(o: { file?: string; version?: string } = {}) {
@@ -219,7 +232,7 @@ describe('errors and restarts', () => {
   });
 
   it('says why the service restarted: a clean stop, an update, a crash, or no clean stop at all', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'adrian-metrics-'));
+    const dir = tmp('adrian-metrics-');
     const file = join(dir, 'dashboard.json');
     const run = (version: string) => {
       const c = clocked({ file, version });
@@ -240,9 +253,9 @@ describe('errors and restarts', () => {
     c = run('0.18.0');
     expect(c.m.snapshot().restarts[0]!.why).toMatch(/did not shut down cleanly/);
     expect(c.m.snapshot().day.counts.unclean).toBe(1);
-    c.m.crashed('Cannot read properties of undefined (reading "x")');
+    c.m.crashed(new TypeError('Cannot read properties of undefined (reading "x")'));
     c = run('0.18.0');
-    expect(c.m.snapshot().restarts[0]!.why).toBe('crashed: Cannot read properties of undefined (reading "x")');
+    expect(c.m.snapshot().restarts[0]!.why).toBe('crashed: Cannot read properties of undefined (reading "…")');
     c.m.flush();
     expect(readdirSync(dir)).toEqual(['dashboard.json']);
   });
@@ -257,7 +270,7 @@ describe('errors and restarts', () => {
   });
 
   it('starts over from a damaged or foreign file', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'adrian-metrics-'));
+    const dir = tmp('adrian-metrics-');
     const file = join(dir, 'dashboard.json');
     for (const bad of ['not json', '{"version":1,"hourly":{"keys":[1],"hist":"AAAA","counts":[]},"errors":[{"msg":5}],"days":{"x":[1]}}', 'null']) {
       writeFileSync(file, bad);
@@ -266,6 +279,81 @@ describe('errors and restarts', () => {
       expect(m.snapshot().day.speed.total.n).toBe(0);
       m.flush();
     }
+  });
+
+  it('keeps what failed and its code, but no address, host, link, ID, email, key or quoted words', () => {
+    const file = join(tmp('adrian-metrics-'), 'dashboard.json');
+    const c = clocked({ file });
+    const cases: [msg: string, error: string, want: string][] = [
+      ['admin UI failed to start', 'listen EADDRINUSE: address already in use 192.0.2.50:8787', 'listen EADDRINUSE: address already in use [address]:8787'],
+      ['satellite server error', 'listen EADDRINUSE: address already in use [2001:db8::50]:8788', 'listen EADDRINUSE: address already in use [address]:8788'],
+      ['satellite server error', 'listen EADDRINUSE: address already in use :::8789', 'listen EADDRINUSE: address already in use [address]:8789'],
+      ['lights failed', 'connect ECONNREFUSED 2001:db8:0:0:0:0:0:7', 'connect ECONNREFUSED [address]'],
+      ['lights failed', 'connect ECONNREFUSED ::ffff:192.0.2.7', 'connect ECONNREFUSED [address]'],
+      ['lights failed', 'connect ECONNREFUSED ::1:8123', 'connect ECONNREFUSED [address]'],
+      ['lights failed', 'connect ETIMEDOUT hass.example.lan:8123', 'connect ETIMEDOUT [host]:8123'],
+      ['lights failed', 'connect ETIMEDOUT nas-box:8124', 'connect ETIMEDOUT [host]:8124'],
+      ['webhook failed', 'request to https://hooks.example.com/hook/abc?id=5 failed, reason: getaddrinfo ENOTFOUND hooks.example.com', 'request to https://[host] failed, reason: getaddrinfo ENOTFOUND [host]'],
+      ['reminder DM failed', 'Cannot send messages to user_100000000000000002', 'Cannot send messages to user_[id]'],
+      ['mail failed', 'rejected recipient sam.sample+x@example.com', 'rejected recipient [email]'],
+      ['sound failed', 'no "my made-up sound words" sound found', 'no "…" sound found'],
+      ['sound failed', "couldn't find 'another made-up phrase' anywhere, isn't that odd", `couldn't find "…" anywhere, isn't that odd`],
+      ['sound failed', 'no sound called “a curly phrase” here', 'no sound called "…" here'],
+      ['sound failed', "the line was cut: 'and then it never clos", 'the line was cut: "…"'],
+      ['answer failed', 'HTTP 401 for key gsk_abcdefghijklmnopqrstuvwxyz123456', 'HTTP 401 for key [redacted]'],
+      ['token failed', 'refused eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abcdefghij0123456789xyz', 'refused [redacted]'],
+      ['file failed', "ENOENT: no such file or directory, open 'C:\\Users\\Sam\\x.json'", 'ENOENT: no such file or directory, open "…"'],
+      ['file failed', 'EACCES: permission denied, mkdir /home/sam/.adrian', 'EACCES: permission denied, mkdir /home/[user]/.adrian'],
+      ['clock failed', 'skipped 12:30:45 and status 503', 'skipped 12:30:45 and status 503'],
+      ['answer timed out', 'This operation was aborted', 'This operation was aborted'],
+    ];
+    for (const [msg, error] of cases) c.log(msg, { error }, 'warn');
+    const got = new Map(c.m.snapshot().errors.map((e) => [e.detail, e.msg]));
+    for (const [msg, , want] of cases) expect(got.get(want), want).toBe(msg);
+    c.m.flush();
+    const saved = readFileSync(file, 'utf8');
+    for (const leak of ['192.0.2', '2001:db8', 'ffff', 'example', 'nas-box', '100000000000000002', 'sam', 'Sam', 'made-up', 'curly', 'never clos', 'gsk_', 'eyJ']) {
+      expect(saved, leak).not.toContain(leak);
+      expect(JSON.stringify(c.m.snapshot()), leak).not.toContain(leak);
+    }
+  });
+
+  it('masks a file written before this, crash and restart reasons included', () => {
+    const file = join(tmp('adrian-metrics-'), 'dashboard.json');
+    const c = clocked({ file, version: '0.17.1' });
+    c.m.begin();
+    c.m.flush();
+    const f = JSON.parse(readFileSync(file, 'utf8'));
+    f.running = true;
+    f.crash = 'listen EADDRINUSE: address already in use 192.0.2.60:8787';
+    f.errors = [{ t: T0, level: 'error', msg: 'admin UI failed to start', detail: 'connect ECONNREFUSED 192.0.2.61:8123', n: 1 }];
+    f.restarts = [{ t: T0, kind: 'failed', why: 'no "old made-up words" here 192.0.2.62' }];
+    writeFileSync(file, JSON.stringify(f));
+    const d = clocked({ file, version: '0.17.1' });
+    d.m.begin();
+    const s = d.m.snapshot();
+    expect(s.restarts.map((r) => r.why)).toEqual(['crashed: listen EADDRINUSE: address already in use [address]:8787', 'no "…" here [address]']);
+    expect(s.errors[0]!.detail).toBe('connect ECONNREFUSED [address]:8123');
+    d.m.flush();
+    expect(readFileSync(file, 'utf8')).not.toMatch(/192\.0\.2|made-up/);
+  });
+
+  it('records a crash from whatever was thrown, even null', () => {
+    const file = join(tmp('adrian-metrics-'), 'dashboard.json');
+    const crash = (thrown: unknown) => {
+      const c = clocked({ file });
+      expect(() => c.m.crashed(thrown)).not.toThrow();
+      const next = clocked({ file });
+      next.m.begin();
+      const why = next.m.snapshot().restarts[0]!.why;
+      next.m.flush();
+      return why;
+    };
+    expect(crash(new RangeError('Invalid array length'))).toBe('crashed: Invalid array length');
+    expect(crash(null)).toBe('crashed: threw null');
+    expect(crash(undefined)).toBe('crashed: threw undefined');
+    expect(crash('plain words')).toBe('crashed: plain words');
+    expect(crash(Object.create(null))).toBe('crashed: unknown error');
   });
 });
 
@@ -286,6 +374,33 @@ describe('paid calls the dollar ledger misses', () => {
       expect(k.today).toEqual({ tavily: 1, tavilyFailed: 1, groq: 1, groqFailed: 0 });
       expect(k.month).toEqual({ tavily: 1, tavilyFailed: 1, groq: 2, groqFailed: 0 });
     } finally {
+      onCall(undefined);
+    }
+  });
+
+  it('counts a call that got no answer at all as failed, but not one she called off', async () => {
+    const c = clocked();
+    onCall(c.m.noteCall);
+    const fail = (e: unknown) => vi.fn(async () => Promise.reject(e));
+    const timeout = new DOMException('The operation was aborted due to timeout', 'TimeoutError');
+    const abort = new DOMException('This operation was aborted', 'AbortError');
+    const sig = new AbortController().signal;
+    try {
+      vi.stubGlobal('fetch', fail(new TypeError('fetch failed')));
+      await expect(topResultUrl('k', 'q', sig)).rejects.toThrow('fetch failed');
+      await expect(webYoutubeVideos('k', 'q', sig)).rejects.toThrow('fetch failed');
+      await expect(groqTranscribe('k', new Float32Array(160), 16_000)).rejects.toThrow('fetch failed');
+      vi.stubGlobal('fetch', fail(timeout));
+      await expect(groqTranscribe('k', new Float32Array(160), 16_000)).rejects.toBe(timeout);
+      vi.stubGlobal('fetch', fail(abort));
+      await expect(groqTranscribe('k', new Float32Array(160), 16_000)).rejects.toBe(abort);
+      await expect(topResultUrl('k', 'q', sig)).rejects.toBe(abort);
+      vi.stubGlobal('fetch', vi.fn(async () => new Response('{"text":"hi"}', { status: 200 })));
+      await expect(groqTranscribe('k', new Float32Array(160), 16_000)).resolves.toBe('hi');
+      // Only answered calls count against the quota; the ones that never got an answer are failures.
+      expect(c.m.snapshot().calls.today).toEqual({ tavily: 0, tavilyFailed: 2, groq: 1, groqFailed: 2 });
+    } finally {
+      vi.unstubAllGlobals();
       onCall(undefined);
     }
   });
@@ -314,17 +429,25 @@ describe('the logger feeding it', () => {
     expect(lines).toHaveLength(2);
   });
 
-  it('counts on log lines that still exist in the code', () => {
+  it('counts on log lines that the service itself still writes', () => {
     const src = join(import.meta.dirname, '..', 'src');
-    const files = (dir: string): string[] => readdirSync(dir).flatMap((f) => (statSync(join(dir, f)).isDirectory() ? files(join(dir, f)) : f.endsWith('.ts') && f !== 'metrics.ts' ? [join(dir, f)] : []));
+    // The proof of concept and the benches aren't the service: a copy of a line there proves nothing.
+    const notService = new Set([join(src, 'poc'), join(src, 'bench'), join(src, 'web', 'metrics.ts')]);
+    const files = (dir: string): string[] =>
+      readdirSync(dir).flatMap((f) => {
+        const p = join(dir, f);
+        if (notService.has(p)) return [];
+        return statSync(p).isDirectory() ? files(p) : f.endsWith('.ts') ? [p] : [];
+      });
     const code = files(src).map((f) => readFileSync(f, 'utf8')).join('\n');
-    for (const msg of Object.values(WATCHED)) expect(code, msg).toContain(`'${msg}'`);
+    const esc = (m: string) => m.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
+    for (const msg of Object.values(WATCHED)) expect(code, msg).toMatch(new RegExp(`\\.(?:debug|info|warn|error)\\(\\s*'${esc(msg)}'`));
   });
 });
 
 describe('memory', () => {
   it('stays the same size whatever it is fed', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'adrian-metrics-'));
+    const dir = tmp('adrian-metrics-');
     const file = join(dir, 'dashboard.json');
     const c = clocked({ file, version: '1.0.0' });
     const before = c.m.bytes();
@@ -369,7 +492,7 @@ function input(over: Partial<DashboardInput> = {}, feed?: (c: ReturnType<typeof 
     spend: ledger.summary(),
     config: undefined,
     secretNames: [],
-    stateDir: mkdtempSync(join(tmpdir(), 'adrian-dash-')),
+    stateDir: tmp('adrian-dash-'),
     timezone: 'UTC',
     version: '0.17.1',
     stackState: 'running',
@@ -442,7 +565,7 @@ describe('needs attention', () => {
   });
 
   it('names an available, failed or cut-off update', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'adrian-upd-'));
+    const dir = tmp('adrian-upd-');
     const updatePaths = { failed: join(dir, 'failed'), inProgress: join(dir, 'mark'), timer: join(dir, 'timer') };
     const release = { latest: '0.18.0', checkedAt: 'now', error: null };
     expect(texts(input({ release, updatePaths }))).toEqual(['warn: Version 0.18.0 is available (this is 0.17.1). To install it, run: sudo adrian update.']);
@@ -498,5 +621,12 @@ describe('the release check', () => {
     expect(newer('0.17.1', '0.17.1')).toBe(false);
     expect(newer('0.17.0', '0.17.1')).toBe(false);
     expect(newer('v1.0.0', '0.99.99')).toBe(true);
+  });
+});
+
+describe('temp folders', () => {
+  it('leaves none of the ones made above behind', () => {
+    expect(made.length).toBeGreaterThan(4);
+    expect(made.filter((d) => existsSync(d))).toEqual([]);
   });
 });

@@ -182,7 +182,7 @@ The admin page's Status tab shows, without reading logs:
 - **Reliability:** voice and PC link drops and how long each took to come back, restarts and why (a stop, an update, a crash, or no clean shutdown), and the latest errors with how often each happened.
 - **This server:** free disk, available memory, her own memory, and whether an update is available.
 
-The numbers come from her own log lines as they are written, are kept in `dashboard.json` in the state folder (so a restart or update keeps the week), and never leave the server. They hold no user IDs, PC names, addresses or words. The one outside request is the newest-release lookup on GitHub that `adrian update` also makes, done only while the page is open and at most every 6 hours.
+The numbers come from her own log lines as they are written, are kept in `dashboard.json` in the state folder (so a restart or update keeps the week), and never leave the server. They hold no user IDs or PC names. The latest errors keep what failed and its error code; addresses, host names, links, emails, home folders, long IDs, keys and anything quoted are masked before they are kept. The one outside request is the newest-release lookup on GitHub that `adrian update` also makes, done only while the page is open and at most every 6 hours.
 
 ## The `adrian` command
 
