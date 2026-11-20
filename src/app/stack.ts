@@ -66,6 +66,7 @@ import { MusicTaste } from '../features/taste.js';
 import { deezerTopTracks, describe as trackName, ffmpegDecoder, MusicPlayer, musicRules, musicState, musicTools, PlexMusicSource, type MusicSource, whoAsked, YoutubeSource, YTM_API } from '../features/music.js';
 import { modelJudge, type QuizRoom, Quizzes } from '../features/quiz.js';
 import { linksLine, PLAY_THAT_LINK, RecentLinks } from '../features/links.js';
+import { CloudBudget } from '../speech/cloud-budget.js';
 import { ParakeetStt } from '../speech/sherpa.js';
 import { prepareLocalVoice } from './local-voice.js';
 import { rssMb } from './memory.js';
@@ -1404,24 +1405,26 @@ export async function startVoiceStack(
   const cs = config.cloudStt;
   const csKey = cs.enabled ? secrets.get(cs.apiKeySecret) : undefined;
   if (cs.enabled) log.info(csKey ? 'cloud speech-to-text' : 'cloud speech-to-text key missing; local only', { model: cs.model, rooms: cs.rooms });
-  let csPausedUntil = 0;
+  // Every call counts against Groq's minute limit; early ones only go out with room to spare.
+  const csBudget = new CloudBudget();
   // Names it should expect: her creator, people's nicknames.
   const csPrompt = sttPrompt([creator, ...Object.values(config.nicknames)].filter(Boolean));
   // PC rooms, and PC owners in the call (their PC hands the call their requests).
   const hasPc = (userId: UserId) => (satServer?.connections() ?? []).some((c) => c.owner === userId);
-  const cloudSttFor = (rm: Room, userId: UserId) => !!csKey && (cs.rooms === 'all' || !!rm.ui || hasPc(userId)) && performance.now() > csPausedUntil;
+  const cloudSttFor = (rm: Room, userId: UserId) => !!csKey && (cs.rooms === 'all' || !!rm.ui || hasPc(userId)) && csBudget.usable();
   /** The cloud's words for a segment, or undefined (slow, failed, rate-limited: use the local ones). */
   async function cloudListen(samples: Float32Array, dropped?: AbortSignal): Promise<string | undefined> {
     const limit = AbortSignal.timeout(cs.timeoutMs);
+    csBudget.sent(dropped);
     try {
       return (await groqTranscribe(csKey!, samples, 16_000, { model: cs.model, prompt: csPrompt, signal: dropped ? AbortSignal.any([limit, dropped]) : limit })) || undefined;
     } catch (err) {
       // Started early for audio that then went on: nobody will read this.
       if (dropped?.aborted) return undefined;
       const msg = (err as Error).message;
-      // Rate limit or outage: give it a minute.
-      if (/HTTP (429|5\d\d)/.test(msg)) csPausedUntil = performance.now() + 60_000;
-      log.warn('cloud speech-to-text failed; using local words', { error: msg.slice(0, 120) });
+      // Rate limit or outage: give it a minute (early listens ten, after a rate limit).
+      const paused = csBudget.failed(msg);
+      log.warn('cloud speech-to-text failed; using local words', { error: msg.slice(0, 120), ...(paused ? csBudget.stats() : {}) });
       return undefined;
     }
   }
@@ -1477,6 +1480,7 @@ export async function startVoiceStack(
     const forHer = m.woke || ctl.listeningTo(userId, startedAt) || !!pttOpen?.();
     if (!forHer || !said.trim() || kind === 'stop' || kind === 'name' || !cloudSttFor(rm, userId) || inHerCall(userId)) return;
     if (o.unlessDangling && endsDangling(said)) return;
+    if (!csBudget.earlyOk()) return;
     early.set(samples, cloudListen(samples, o.dropped));
   }
   // Discord keeps the snappier default.
