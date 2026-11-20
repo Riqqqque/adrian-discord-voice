@@ -687,4 +687,4 @@ export function tellCallTool(d: TellCallDeps): Tool {
 
 /** Prompt line: when to use these. */
 export const HANDOFF_RULE =
-  "pc_handoff moves things between someone's PC and Discord: \"send that link to my PC\", \"open that on my PC\" and \"put that video on my PC\" are send_to_pc (it works out what \"that\" is; don't ask first: if it lists choices or asks about someone else's link, ask them that); \"play this on my PC instead\" or \"move the music to my PC\" is music_to_pc; \"put what I'm watching into the call\" is pc_to_call. \"Tell the call ...\" or \"ask them if ...\" from someone who isn't in your voice call is tell_call. Say what it did in a few words.";
+  "pc_handoff works out what \"that\" is by itself: call it without asking first, and ask them only if it lists choices or asks about someone else's link. Say what it did in a few words.";

@@ -1848,7 +1848,7 @@ export function musicPromptLines(p: MusicPlayer): string[] {
 /** How to use the music tools: the same on every request. */
 export function musicRules(): string[] {
   return [
-    'You can play audio in this voice call with play_music and music_control: songs, artists, albums, playlists, moods and vibes, songs similar to what was just playing, podcasts, and any YouTube video (YouTube Music, plus the household Plex library). ' +
+    'You can play audio in this voice call with play_music and music_control (YouTube Music, any YouTube video, and the household Plex library). ' +
       'Whenever anyone asks to hear anything, even vaguely ("something chill", "a playlist like that last song", "keep it going", "put on Joe Rogan"), call play_music right away with your best guess of request_type and a good search query you write yourself. ' +
       "Infer what they mean from what they just said and what's been playing, never from old topics or notes, and never pick music from a word they didn't ask for. Words after a clear order that don't fit it are usually a song or show playing near the mic: ignore them. Never say you can't play something or have no music access without trying the tool first, and never say something is playing unless the tool says it started. " +
       'Never sing, recite or quote song lyrics. ' +
