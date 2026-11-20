@@ -348,6 +348,7 @@ sudo adrian restart
 | `music.autoplay` | boolean | `true` | When the queue runs out, keep playing similar songs | `false` |
 | `music.prefix` | up to 3 symbols; no letters, digits, spaces, `_` or backtick | `"!"` | Typed music commands start with this (`!play x`, `!skip`, `!join`). Empty turns them off. Without the Message Content intent they work only after an @mention (`@A.D.R.I.A.N. !play x`) | `"?"` |
 | `music.topSongs` | boolean | `true` | Artist requests shuffle the artist's top songs, ranked by Deezer's free public API. Deezer gets the artist's name, and X from a plain "play X", to find out whether it's an artist. Off: their top song, then similar ones | `false` |
+| `music.directSearch` | boolean | `true` | Video searches ask YouTube's search page directly (one request, about 0.5 s) instead of starting yt-dlp. It isn't a documented API, so it has limits: each search waits at most 2 s and one lookup's searches share 3 s; after 3 failures in a row it rests for 5 minutes (logged once as `direct video search resting`) and yt-dlp searches. Off: yt-dlp searches every time | `false` |
 | `music.quiz.enabled` | boolean | `true` | "Start a music quiz" | `false` |
 | `music.quiz.rounds` | integer 1-20 | `8` | Rounds when none are asked for | `5` |
 | `music.quiz.clipSeconds` | integer 8-45 | `20` | How long each clip plays | `25` |
