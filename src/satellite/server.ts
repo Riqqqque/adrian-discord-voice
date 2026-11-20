@@ -20,6 +20,8 @@ export interface SatelliteServerOptions {
   heartbeatMs?: number;
   /** How often live connections are checked against the pairings, ms (tests). */
   recheckMs?: number;
+  /** On close, how long a PC gets to answer before its socket is dropped, ms. */
+  closeGraceMs?: number;
 }
 
 const HELLO_MS = 5_000;
@@ -157,7 +159,12 @@ export function startSatelliteServer(o: SatelliteServerOptions): { close(): Prom
         clearInterval(beat);
         clearInterval(recheck);
         for (const c of live) void c.disconnect('shutdown');
-        wss.close(() => resolve());
+        // A PC whose link died without a word (asleep, Wi-Fi gone) never answers
+        // the close, and ws would wait 30 s for it: longer than a stop may take.
+        const grace = setTimeout(() => {
+          for (const ws of wss.clients) ws.terminate();
+        }, o.closeGraceMs ?? 2_000);
+        wss.close(() => (clearTimeout(grace), resolve()));
       }),
   };
 }

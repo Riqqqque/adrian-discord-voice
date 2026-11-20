@@ -138,12 +138,26 @@ describe('the manager waiting for memory', () => {
     expect(r.m.state).toBe('running');
   }, 30_000); // 30 looks at memory, each a start attempt that reads the config
 
+  /** The recognizer this config loads. */
+  const asrOf = (r: ReturnType<typeof rig>) => (r.m as unknown as { config(): { listen: { asrModelDir: string; asrThreads: number } } }).config().listen;
+
   it('a restart with the speech models already loaded does not wait', async () => {
     vi.spyOn(ParakeetStt, 'load').mockResolvedValue({} as ParakeetStt);
     const r = rig(() => starved);
-    await r.m.models.sttFor('/models/asr', 4);
+    const asr = asrOf(r);
+    await r.m.models.sttFor(asr.asrModelDir, asr.asrThreads);
     await expect(r.m.restart()).resolves.toBe('running');
     expect(r.lines.some((l) => l.m === 'voice stack starting')).toBe(false);
+  });
+
+  it('a restart that loads another recognizer (threads, folder) checks memory first', async () => {
+    vi.spyOn(ParakeetStt, 'load').mockResolvedValue({} as ParakeetStt);
+    const r = rig(() => starved);
+    const asr = asrOf(r);
+    await r.m.models.sttFor(asr.asrModelDir, asr.asrThreads + 1);
+    await expect(r.m.restart()).resolves.toBe('starting');
+    expect(r.m.waitingFor).toBe('memory');
+    await r.m.stop();
   });
 
   it('does not check without a memory reader (tests, Windows)', async () => {

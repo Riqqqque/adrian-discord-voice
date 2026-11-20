@@ -32,9 +32,10 @@ export class SpeechModels {
     return this.stt.p;
   }
 
-  /** Parakeet is loaded, or loading: a restart adds no more of it. */
-  get sttHeld(): boolean {
-    return this.stt !== undefined;
+  /** This Parakeet is loaded, or loading: a restart adds no more of it. Another
+   *  model folder or thread count loads a second one beside it until GC. */
+  sttHeldFor(modelDir: string, threads: number): boolean {
+    return this.stt?.key === `${modelDir}|${threads}`;
   }
 
   ttsFor(modelDir: string, threads: number): KokoroTts {
@@ -105,6 +106,8 @@ export class StackManager {
   /** When the current wait for memory began. */
   private lowMemorySince: number | undefined;
   private _waitingFor: 'memory' | undefined;
+  /** stop() was called: a restart still in the chain starts nothing new. */
+  private stopping = false;
   readonly models = new SpeechModels();
 
   constructor(
@@ -174,6 +177,8 @@ export class StackManager {
           this.log.warn('stop failed', { error: (e as Error).message });
         }
       }
+      // Shutting down: a whole new start (login, Smart Turn, the PC server) would only be stopped again.
+      if (this.stopping) return (this._state = 'stopped');
       try {
         const problems = this.problems(); // throws on a config file that can't be read
         if (problems.length) {
@@ -223,7 +228,8 @@ export class StackManager {
 
   /** A first start loads the speech models: only when they fit (see memory.ts). */
   private roomToStart(config: PocConfig, secrets: Map<string, string>): void {
-    if (this.models.sttHeld) {
+    const asr = config.listen;
+    if (asr && this.models.sttHeldFor(asr.asrModelDir, asr.asrThreads)) {
       this.lowMemorySince = undefined;
       return; // a restart: the big models are already here
     }
@@ -245,7 +251,12 @@ export class StackManager {
   }
 
   async stop(): Promise<void> {
-    await this.chain; // a start still running can leave a retry behind
+    this.stopping = true;
+    try {
+      await this.chain; // a start still running can leave a retry behind
+    } finally {
+      this.stopping = false; // a later restart() starts again
+    }
     clearTimeout(this.retryTimer);
     const s = this.stack;
     this.stack = undefined;

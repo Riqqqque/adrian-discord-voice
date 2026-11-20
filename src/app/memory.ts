@@ -49,8 +49,11 @@ export function memoryFields(info: MemInfo | undefined): Record<string, number> 
  *  Parakeet with its first long decodes ~900, Smart Turn ~80, the rest ~50, and
  *  the local voice ~520 when it loads at start. */
 export function startNeedMb(localVoiceAtStart: boolean): number {
-  return 900 + 80 + 50 + (localVoiceAtStart ? 520 : 0);
+  return 900 + 80 + 50 + (localVoiceAtStart ? LOCAL_VOICE_MB : 0);
 }
+
+/** The local voice (Kokoro), MB, when it loads later as the cloud voice's stand-in. */
+export const LOCAL_VOICE_MB = 520;
 
 /** Room left after the load: available memory, plus swap above the guard's own
  *  floor, must stay above this share of the machine's memory. */

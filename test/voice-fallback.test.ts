@@ -48,7 +48,7 @@ function api(o: { status?: number; firstMs?: number; pieces?: { afterMs: number;
   return { f, calls };
 }
 
-function rig(f: typeof fetch, o: { monthlyChars?: number; used?: number; prepareFails?: boolean } = {}) {
+function rig(f: typeof fetch, o: { monthlyChars?: number; used?: number; prepareFails?: boolean; memoryShort?: () => string | undefined; roomSpeed?: number } = {}) {
   const lines: string[] = [];
   const log = { info: (m: string) => void lines.push(m), warn: (m: string) => void lines.push(m) };
   const prepared: [string, number][] = [];
@@ -65,7 +65,7 @@ function rig(f: typeof fetch, o: { monthlyChars?: number; used?: number; prepare
   };
   const budget = new CharBudget(undefined, o.monthlyChars ?? 0, 'UTC');
   if (o.used) budget.add(o.used);
-  const tts = new SpeechifyTts({ apiKey: 'k', voiceId: 'sabrina', model: 'simba-3.5', timeoutMs: 4000, budget, log, fetch: f, now: () => performance.now() }, local, 'af_heart');
+  const tts = new SpeechifyTts({ apiKey: 'k', voiceId: 'sabrina', model: 'simba-3.5', timeoutMs: 4000, budget, log, fetch: f, now: () => performance.now(), ...(o.memoryShort ? { memoryShort: o.memoryShort } : {}), ...(o.roomSpeed ? { roomSpeed: o.roomSpeed } : {}) }, local, 'af_heart');
   return { tts, local, prepared, lines };
 }
 
@@ -109,6 +109,22 @@ describe('the local voice loads at the first sign of trouble', () => {
     await drain(r.tts.stream(`${LONG} Again.`, { voice: 'cloud:en', speed: 1.1 }));
     expect(r.prepared).toEqual([['af_heart', 1.1]]);
     expect(r.local.said).toHaveLength(2);
+  });
+
+  it('not ahead of need while memory is short: it still stands in when a sentence needs it', async () => {
+    const r = rig(api({ status: 503 }).f, { memoryShort: () => 'Too little free memory' });
+    await r.tts.warmIfIdle();
+    expect(r.prepared).toEqual([]);
+    await drain(r.tts.stream(LONG, { voice: 'cloud:en', speed: 1 }));
+    expect(r.prepared).toEqual([]);
+    expect(r.local.said).toHaveLength(1); // loaded on need, by the sentence itself
+    expect(r.lines).toContain('not loading the local voice ahead of need: memory is short');
+  });
+
+  it('a failed warm-up before any sentence prepares the speed the rooms talk at', async () => {
+    const r = rig(api({ status: 429 }).f, { roomSpeed: 1.1 });
+    await r.tts.warmIfIdle();
+    expect(r.prepared).toEqual([['af_heart', 1.1]]);
   });
 
   it('when a warm-up fails: someone is talking, before any answer', async () => {

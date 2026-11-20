@@ -3,6 +3,7 @@ import { gainAndLimit, StreamLimiter } from '../src/audio/loudness.js';
 import { StreamTrimmer, trimSilence } from '../src/audio/pauses.js';
 import type { PlaybackHandle, SpeechPiece, TextToSpeech } from '../src/core/interfaces.js';
 import { VoiceRouter } from '../src/speech/piper.js';
+import { forSpeech } from '../src/brain/speech-text.js';
 import { CharBudget, SpeechifyTts, type SpeechifyOptions } from '../src/speech/speechify.js';
 import { Speaker } from '../src/voice/speaker.js';
 
@@ -146,6 +147,20 @@ describe('speechify streaming', () => {
     expect(got.every((p) => p.sampleRate === RATE)).toBe(true);
     // synthesize() also caps a hot short line; a 1.5 s sentence at the calibration level isn't capped.
     expect(join(got.map((p) => p.samples))).toEqual(whole.samples);
+  });
+
+  it('checks the month against the words it will send, which can be longer than the text', async () => {
+    const text = 'It is 72°F now and the ticket costs €20 at 7:00 tonight.';
+    const said = forSpeech(text);
+    expect(said.length).toBeGreaterThan(text.length);
+    const budget = new CharBudget(undefined, text.length, 'UTC'); // room for the text, not for what is said
+    const { f, calls } = streamingFetch(pcm(speechy(1)));
+    const { tts } = voice(f, { budget });
+    local.calls.length = 0;
+    await collect(tts.stream(text, { voice: 'cloud:en', speed: 1 }));
+    expect(calls).not.toContain(said);
+    expect(local.calls).toHaveLength(1);
+    expect(budget.used()).toBeLessThanOrEqual(text.length);
   });
 
   it('short lines come whole and cached', async () => {

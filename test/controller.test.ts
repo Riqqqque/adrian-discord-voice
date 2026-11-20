@@ -1233,3 +1233,93 @@ describe('quiet while they play (name only)', () => {
     expect(r.answers.at(-1)!.command).toBe('and the date');
   });
 });
+
+describe('a push-to-talk press, part by part (REVIEW-11)', () => {
+  const more = (r: ReturnType<typeof rig>, user: string, text: string) => r.c.heard({ userId: user, text, woke: false, command: '', more: true });
+
+  it('a later part joins the answer being worked on, even once she is talking', async () => {
+    const r = rig();
+    r.wake('a', 'tell me about tokyo');
+    await r.tick();
+    r.c.speaking('a');
+    more(r, 'a', 'and its weather');
+    await r.tick();
+    expect(r.answers[0]!.signal.aborted).toBe(true);
+    expect(r.answers.map((x) => x.command)).toEqual(['tell me about tokyo', 'tell me about tokyo and its weather']);
+  });
+
+  it('a later part never touches an order she is carrying out: it comes after it', async () => {
+    const r = rig();
+    r.wake('a', 'play drake');
+    await r.tick();
+    r.c.working('a', true);
+    more(r, 'a', 'and turn it up');
+    await r.tick();
+    expect(r.answers[0]!.signal.aborted).toBe(false);
+    r.c.working('a', false);
+    r.answers[0]!.finish('done');
+    await r.tick();
+    expect(r.answers.map((x) => x.command)).toEqual(['play drake', 'and turn it up']);
+  });
+
+  it('with nothing going on, a later part is a request of its own', async () => {
+    const r = rig();
+    more(r, 'a', 'and turn it up');
+    await r.tick();
+    expect(r.answers.map((x) => x.command)).toEqual(['and turn it up']);
+  });
+});
+
+describe('a loose wake while an answer runs (REVIEW-11)', () => {
+  const loose = (r: ReturnType<typeof rig>, user: string, text: string) => r.c.heard({ userId: user, text, woke: true, command: text, loose: true });
+
+  it("doesn't cut off the asker's own answer: it is judged after it", async () => {
+    const r = rig();
+    r.wake('a', 'who won the game last night');
+    await r.tick();
+    loose(r, 'a', 'can you revive Adrian');
+    await r.tick();
+    expect(r.answers[0]!.signal.aborted).toBe(false);
+    expect(r.log).not.toContain('replaced by newer request');
+    r.answers[0]!.finish();
+    await r.tick();
+    expect(r.answers.map((x) => x.command)).toEqual(['who won the game last night', 'can you revive Adrian']);
+  });
+
+  it("an owner's maybe doesn't cut someone else off", async () => {
+    const r = rig([], { preempts: (u) => u === 'o' });
+    r.wake('g', 'tell me a story');
+    await r.tick();
+    loose(r, 'o', 'nice shot Adrian');
+    await r.tick();
+    expect(r.answers[0]!.signal.aborted).toBe(false);
+    expect(r.log).not.toContain('owner first');
+    r.wake('o', 'what time is it'); // a clear wake still does
+    await r.tick();
+    expect(r.answers[0]!.signal.aborted).toBe(true);
+  });
+
+  it('a maybe that waited behind a long answer is still judged, not apologized for', async () => {
+    const r = rig();
+    r.wake('a', 'tell me a story');
+    await r.tick();
+    loose(r, 'a', 'can you turn it down Adrian');
+    await r.tick(DEFAULT_CONTROLLER_OPTIONS.maxWaitMs + 1);
+    r.answers[0]!.finish();
+    await r.tick();
+    expect(r.said).not.toContain('Sorry, I missed that.');
+    expect(r.answers.map((x) => x.command)).toEqual(['tell me a story', 'can you turn it down Adrian']);
+  });
+
+  it('a clear request from them afterwards drops their waiting maybe', async () => {
+    const r = rig();
+    r.wake('a', 'tell me a story');
+    await r.tick();
+    loose(r, 'a', 'can you revive Adrian');
+    r.wake('a', 'what time is it');
+    await r.tick();
+    r.answers[1]!.finish();
+    await r.tick();
+    expect(r.answers.map((x) => x.command)).toEqual(['tell me a story', 'what time is it']);
+  });
+});

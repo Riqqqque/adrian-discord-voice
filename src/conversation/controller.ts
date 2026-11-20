@@ -70,6 +70,8 @@ export interface HeardInput {
   startedAt?: number;
   /** Woken loosely (bare name / mid-sentence): the model decides, from `text`. */
   loose?: boolean;
+  /** A later part of the same push-to-talk press: more of their request, never dropped. */
+  more?: boolean;
 }
 
 interface Request {
@@ -274,6 +276,26 @@ export class ConversationController {
       if (!e.woke) return;
     }
 
+    // More of a push-to-talk press: what is said until the key goes up is one
+    // request. It joins the answer being worked on, even once she's talking
+    // (they're still holding the key), but never an order she's carrying out
+    // or has carried out: then it's a request of its own, after it.
+    if (e.more && !e.woke && text) {
+      const a = this.active;
+      if (a && a.userId === e.userId && !a.announce && a.command && !a.working && !a.acted) {
+        this.d.log?.('continued', { user: e.userId, press: true });
+        this.queue.unshift({ userId: e.userId, command: `${a.command} ${text}`, at: now, ...(a.followUp ? { followUp: true } : {}), ...(a.loose ? { loose: true } : {}) });
+        a.ctl.abort();
+        return;
+      }
+      if (a && a.userId === e.userId && !a.announce && (a.working || a.acted)) {
+        this.d.log?.('queued', { user: e.userId, press: true });
+        this.queue.unshift({ userId: e.userId, command: text, at: now });
+        return;
+      }
+      e = { ...e, woke: true, command: text };
+    }
+
     // Still talking while she works on the answer (a pause mid-sentence):
     // it's the rest of the same request, not a new one.
     const a = this.active;
@@ -311,14 +333,26 @@ export class ConversationController {
     const req: Request = { userId: e.userId, command, at: now, ...(judge ? { followUp: true } : {}), ...(e.woke && e.loose ? { loose: true } : {}) };
     if (!this.active) {
       void this.run(req);
+    } else if (this.active.userId === e.userId && e.woke && e.loose) {
+      // Maybe not to her ("can you revive Adrian?" to a friend): her answer to
+      // them goes on, and this is judged once it's done. If it was for her, a
+      // stop or talking over her still cuts in sooner.
+      if (!this.queue.some((r) => r.userId === e.userId)) {
+        this.queue.unshift(req);
+        this.d.log?.('queued', { user: e.userId, loose: true });
+      } else this.d.log?.('dropped (queue full)', { user: e.userId });
     } else if (this.active.userId === e.userId) {
-      // The asker spoke again: their newest request replaces what's running.
+      // The asker spoke again: their newest request replaces what's running,
+      // and a maybe of theirs still waiting with it.
       this.d.log?.('replaced by newer request', { user: e.userId });
+      for (let q = this.queue.length - 1; q >= 0; q--) if (this.queue[q]!.userId === e.userId && this.queue[q]!.loose) this.queue.splice(q, 1);
       this.queue.unshift(req);
       this.active.ctl.abort();
-    } else if (e.woke && this.d.preempts?.(e.userId)) {
+    } else if (e.woke && !e.loose && this.d.preempts?.(e.userId)) {
       // An owner who says the name cuts the line. Their side talk during a
-      // follow-up doesn't, and whoever was cut off is answered right after.
+      // follow-up doesn't, nor a maybe ("nice shot, Adrian"), which would cut
+      // someone off and restart their answer only to be judged SILENT.
+      // Whoever was cut off is answered right after.
       const bumped = this.active;
       this.d.log?.('owner first', { user: e.userId, over: bumped.userId });
       const i = this.queue.findIndex((r) => r.userId === e.userId);
@@ -357,7 +391,9 @@ export class ConversationController {
   }
 
   private async run(req: Request): Promise<void> {
-    if (!req.announce && this.d.now() - req.at > this.o.maxWaitMs) {
+    // A maybe (loose wake) never expires: it waits behind an answer instead of
+    // cutting it off, and the judge still decides it, however late.
+    if (!req.announce && !req.loose && this.d.now() - req.at > this.o.maxWaitMs) {
       this.d.log?.('expired in queue', { user: req.userId });
       const ctl = new AbortController();
       this.active = { ...req, ctl, started: this.d.now() };
