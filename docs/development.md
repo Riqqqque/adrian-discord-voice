@@ -44,10 +44,11 @@ TypeScript is strict, with `noUncheckedIndexedAccess`, `exactOptionalPropertyTyp
 ## Tests
 
 - There is no CI: nothing runs typecheck or tests on push (the repository has no `.github` folder). Run them yourself; `packaging/package.sh` is the only automatic gate, at release time.
-- 76 files in `test/`, all vitest. Run `npm test` for the current count; counting `it(` lines undercounts because `it.each` rows expand.
+- 90 files in `test/`, all vitest. Run `npm test` for the current count; counting `it(` lines undercounts because `it.each` rows expand.
+- `test/latency-harness.test.ts` is skipped unless `LATENCY_HARNESS=1`. It drives the real stack with stand-in models at production-like delays and reports end of speech to first audio per scenario: `LATENCY_HARNESS=1 LATENCY_RUNS=3 LATENCY_STT_MS=300 npx vitest run test/latency-harness.test.ts` (about 20 minutes, mostly real-time audio; needs Silero and Kokoro from `ADRIAN_MODELS`; `LATENCY_TABLE`, `LATENCY_OUT` and `LATENCY_DEBUG=1` write more).
 - They need no network, no speech models and no keys. Some open local sockets (real `ws` servers, a local HTTPS server in `test/packaging.test.ts`).
 - `test/stack.test.ts` drives the real `startVoiceStack` with a fake Discord client, a mocked listening pipeline, a mocked satellite server and stubbed HTTP. It is the place for behavior that crosses modules (rooms, costs, stops, follow-ups, PC requests, alarms ringing).
-- `test/packaging.test.ts` runs the real shell scripts (`packaging/adrian` restore and update, the `downloads.sh` helpers, `package.sh`) in bash with stubbed `id`, `systemctl` and friends, and checks `install.sh` and the unit files as text.
+- `test/packaging.test.ts` runs the real shell scripts (`packaging/adrian` restore and update, the `downloads.sh` helpers, `package.sh`) in bash with stubbed `id`, `systemctl` and friends, and checks `install.sh` and the unit files as text. `test/install.test.ts`, `test/get.test.ts` and `test/update-safety.test.ts` run `install.sh`, `get.sh` and `adrian update` the same way (stand-ins for systemctl, curl, df and so on in `test/install-stubs.sh`); `ADRIAN_PACKAGING_UNDER_TEST=dir` points them at another copy of `packaging/`. Three update-safety cases (flock, setsid) run only on Linux.
 - `test/web-ui.test.ts` runs the real `web/app.js` in a fake DOM (`node:vm`) against a fake API.
 - Skips: the bash suites skip without bash, tar and gzip; "the Node runtime" suite also needs `xz`; `test/config-file.test.ts` skips its umask test on Windows; "stop with an error when the server goes silent" in `test/packaging.test.ts` runs only with `ADRIAN_SLOW_TESTS=1` (it waits out curl's 60 s stall limit).
 
@@ -137,20 +138,22 @@ Most `adrian` commands need root (all but `logs`, `version` and `help`). Paths i
 
   Logs with either `logTranscripts` switch on contain what people said. Turn them off when you're done. Some words are logged with both off: music search and request queries (`music search`, `music request`) and up to 120 characters of a request that sounded like music but played nothing (`music asked but not played`, with the user ID). Treat production logs as personal data either way. Recordings of PC requests (`satellite.recordDays`) are separate; see [CONTRIBUTING.md](../CONTRIBUTING.md#privacy-rules-for-code-tests-and-logs).
 - **Lines worth knowing.** Listening: `wake`, `waiting for the rest`, `quick continuation`, `second pass`, `language`, `cloud speech-to-text failed; using local words`, `stopped before it started`, `pc deferred to discord`. Controller: `queued`, `dropped (queue full)`, `wake ignored (duplicate)`, `continued`, `replaced by newer request`, `owner first`, `cancelled`, `interrupted`, `expired in queue`, `not for me`, `dequeued`. Answers: `answered`, with `sttLatencyMs`, `groqMs`, `closedBy`, `turnCheckMs`, `holdMs`, `llmFirstChunkMs`, `ttsFirstMs`, `speechEndToAudioMs`, tokens and `costUsd`. Startup logs which Opus encoder loaded (`opus`: native or WebAssembly).
-- **Timing fields.** `speechEndToAudioMs` runs from the VAD close to her first audio, plus the room's end silence. At a PC it also includes the end-of-turn check and any hold, so it reads about 1 s higher there than older versions reported. `sttLatencyMs` starts when the clip is released (after any hold). `groqMs` counts only the part of the cloud wait not already covered by a hold.
+- **More lines.** Start: `voice stack starting`, `asr loaded`, `tts loaded and calibrated` or `local voice loads on first use`, `smart turn loaded`, `voice stack ready`, each with memory figures (`rssMb`, `availMb`, `swapFreeMb`); `shutting down` with the signal, state, uptime and memory. Voice link: `voice disconnected` with `reason` (`voice link resuming`, `voice link rejoining`, `voice connection dropped`), `rejoining voice`, `voice back` (`ms`, `via`, `attempts`). PC link: `satellite disconnected` with `by`, `code`, `reason`, `linkS`, `quietS`. Voice: `cloud voice broke off mid-sentence; local voice for a minute`. Music: `direct video search failed`, `direct search answer unreadable`. `pc heard` carries `early: true` when the words came from the early listen.
+- **Timing fields.** `speechEndToAudioMs` runs from the VAD close to her first audio, plus the room's end silence. At a PC it also includes the end-of-turn check and any hold, so it reads about 1 s higher there than older versions reported. `sttLatencyMs` starts when the clip is released (after any hold). `groqMs` counts only the part of the cloud wait still awaited after the words were ready (not covered by a hold or the early listen), so it reads lower since the early listen without Groq being faster. `ttsFirstMs` is the time to the first sentence's first audio, measured in the Speaker; for a streamed cloud sentence that is its first piece, so compare `speechEndToAudioMs` across versions rather than `ttsFirstMs`.
 - **Dashboard.** The Status tab shows state, problems, warnings, p50/p95 latency for speech recognition, model first sentence, voice first sentence and end of speech to first audio, the last answers with their cost, and spend against the caps.
 - **`/api/health`.** `{ok, state, voiceReady, busy, version}`; HTTP 503 when the state is `failed`. `ok` is true in `running` and `setup`. Health proves she started and logged in, not that voice works end to end.
-- **`adrian doctor`.** Checks Node, the service, health, the last failed update, `secrets.env` mode and owner, the five models, yt-dlp, ffmpeg, config completeness, free disk, service memory and errors in the last 15 minutes. Exits 1 on any failure.
+- **`adrian doctor`.** Checks Node, the service, health (a failed start is explained with what to do, through `node dist/cli/tool.js explain-log`), an update under way or cut off, the last failed update, `secrets.env` mode and owner, files owned by root in the service's folders (with the `chown` that fixes them), the five models, yt-dlp, ffmpeg, config completeness, free disk, service memory, whether discord.com and github.com answer, and errors in the last 15 minutes. Exits 1 on any failure.
 
 ## Benches (`bench/`)
 
-Benches run against real models and services, by hand, and are not part of `npm test`. The `bench/` scripts are not in the release bundle; the two compiled benches from `src/bench/` are (as `dist/bench/`), but nothing runs them.
+Benches run against real models and services, by hand, and are not part of `npm test`. The `bench/` scripts are not in the release bundle; the compiled benches from `src/bench/` are (as `dist/bench/`), but nothing runs them.
 
 Common rules:
 
 - Run `npm run build` first: they import from `../dist/`.
 - `<bot.json>` is a normal `config.json`; keys are read from its `secretsFile`. Some take a `secrets.env` path, a models folder, or a yt-dlp path instead.
-- Anything that loads the local speech models (marked "Linux" below) needs Linux x86_64 and `LD_LIBRARY_PATH=node_modules/sherpa-onnx-linux-x64`.
+- Anything that loads the local speech models (marked "Linux" below) needs Linux x86_64 and `LD_LIBRARY_PATH=node_modules/sherpa-onnx-linux-x64`. The benches marked "local models" also run on Windows. On Windows, onnxruntime-node (Smart Turn) can't load in a process that already loaded sherpa-onnx (both ship an `onnxruntime.dll`), so those benches measure Smart Turn in a separate process.
+- Many model benches can report tokens, cost and first-text time per call with `METER_OUT=run.json node --import ./bench/meter.mjs bench/<bench>.mjs <bot.json>`.
 - Model benches use `claude-haiku-5-5` with `ANTHROPIC_API_KEY` (effort low), hard-coded, not your configured `brain`. `lang-e2e.mjs`, `llm-check.mjs` and `ttft-survey.mjs` use the configured OpenAI-compatible endpoint (`brain.baseUrl`, `brain.model` and its key) and don't support `brain.provider: "anthropic"`; `lang-e2e.mjs` also replaces `extraBody` with Groq-style reasoning fields; `claude-vs.mjs` compares several Claude models with Groq.
 - **They cost money.** Only `claude-vs.mjs` and `llm-check.mjs` print an estimated cost. A run of a model bench is usually cents; a larger Claude model in `claude-vs.mjs` costs more. Speechify benches spend characters from your monthly plan.
 - yt-dlp benches hit YouTube (and Deezer or Tavily where noted) from your address. Heavy use can trigger YouTube's bot check, which also affects a live bot on the same address.
@@ -160,9 +163,15 @@ Rerun the bench that matches a change before shipping it:
 
 | Changed | Rerun |
 |---|---|
-| prompt rules, PC tools, PC confirmations | `pc-orders.mjs`, `desk-followup.mjs`, `answer-length.mjs --real` |
+| prompt rules, PC tools, PC confirmations | `pc-orders.mjs`, `desk-followup.mjs`, `answer-length.mjs --real`, `everyday.mjs` (and `--holdout`, `--long`, `--keep`), `home-pc.mjs` |
+| tool confirmation lines, notes, search wording | `alarm-orders.mjs`, `taste-orders.mjs`, `knows.mjs` |
+| prompt size | `prompt-size.mjs` (free) |
+| listening, thread counts, side talk | `node dist/bench/sidetalk-bench.js` and `bench/sidetalk-score.mjs`; the latency harness (`LATENCY_HARNESS=1`) |
+| text for speech, the splitter | `speech-words.mjs`; for the cloud voice `speech-changed.mjs`, `sabrina-render.mjs`, `speech-wavs.mjs` |
+| streaming voice, cloud voice timing | `speak-first.mjs`, `stream-level.mjs` |
+| start-up memory | `mem-start.mjs` (with and without `--cloud`) |
 | alarm tools or wording | `alarm-orders.mjs`; stop and snooze words: `alarm-words.mjs` |
-| music tools, routing, search | `music-intent.mjs`, `music-follow-up.mjs`, `taste-orders.mjs`, `music-search.mjs`, `music-e2e.mjs` |
+| music tools, routing, search | `music-corpus.mjs` or `music-paired.mjs`, `music-intent.mjs`, `music-follow-up.mjs`, `taste-orders.mjs`, `music-search.mjs`, `music-e2e.mjs` |
 | mixer, music filters | `mixer-stall.mjs`, `music-check.mjs`, `level-check.mjs` |
 | memory or notes | `memory-update.mjs`, `memory-check.mjs` |
 | text chat follow-ups | `text-followup.mjs` |
@@ -178,13 +187,13 @@ All bench files:
 | `alarm-ring.mjs` | real mixer and `ringIn` on the wall clock: frames keep pace, memory stays flat | `node bench/alarm-ring.mjs [seconds]` | nothing |
 | `alarm-tones.mjs` | renders each built-in tone (20 s) to WAV for listening and loudness | `node bench/alarm-tones.mjs <out folder>` | nothing |
 | `alarm-words.mjs` | stop, snooze and "I'm up" heard over every tone; tones alone give no words | `node bench/alarm-words.mjs <models dir>` | Linux |
-| `answer-length.mjs` | sentences, words and seconds of real answers; `--real` uses production-like prompt and tools | `node bench/answer-length.mjs <bot.json> [--real]` | Anthropic key. The `--real` tool list lags `stack.ts` (no alarm tools). |
-| `asr-corpus.mjs` | builds the speech recognition shootout corpus | `node bench/asr-corpus.mjs <models dir> <bot.json> <out dir>` | Linux, Speechify key for one voice, ffmpeg, public corpora downloaded separately |
-| `asr-shootout.mjs` | one recognizer over the corpus, results to JSONL | `node bench/asr-shootout.mjs <bench dir> <model> [bot.json]` | Linux; Groq key for `groq-*` models |
-| `asr-score.mjs` | word error rate per set, key-word hit rate, latency | `node bench/asr-score.mjs <bench dir> [--errors model]` | nothing |
+| `answer-length.mjs` | sentences, words and seconds of real answers; `--real` uses the production prompt and tools from `prod-kit.mjs` | `node bench/answer-length.mjs <bot.json> [--real]` | Anthropic key |
 | `asr-bark.py` | Bark ASR (ONNX) over the corpus | `venv/bin/python -I bench/asr-bark.py <bench dir> [name]` | Python venv |
+| `asr-corpus.mjs` | builds the speech recognition shootout corpus | `node bench/asr-corpus.mjs <models dir> <bot.json> <out dir>` | Linux, Speechify key for one voice, ffmpeg, public corpora downloaded separately |
 | `asr-granite.py` | Granite Speech over the corpus (CPU) | `venv/bin/python -I bench/asr-granite.py <bench dir> [threads]` | Python venv with torch |
 | `asr-hotwords.py` | writes a hotwords file for sherpa biasing | `venv/bin/python -I bench/asr-hotwords.py <bench dir>` | Python |
+| `asr-score.mjs` | word error rate per set, key-word hit rate, latency | `node bench/asr-score.mjs <bench dir> [--errors model]` | nothing |
+| `asr-shootout.mjs` | one recognizer over the corpus, results to JSONL | `node bench/asr-shootout.mjs <bench dir> <model> [bot.json]` | Linux; Groq key for `groq-*` models |
 | `asr-speed.mjs` | Parakeet speed and memory | `node bench/asr-speed.mjs <model_dir> <threads> <wav...>` | Linux |
 | `cache-check.mjs` | prompt-cache reads and writes over a conversation | `node bench/cache-check.mjs <bot.json> [stablePrefix=1]` | Anthropic key |
 | `claude-vs.mjs` | Claude models vs Groq on the real prompt: first chunk, total, tokens, estimated cost | `node bench/claude-vs.mjs <bot.json>` | Anthropic and Groq keys |
@@ -192,28 +201,49 @@ All bench files:
 | `creator-check.mjs` | the model knows the creator's account and refuses impostors | `node bench/creator-check.mjs <bot.json>` | Anthropic key |
 | `desk-followup.mjs` | follow-ups at a PC without her name get answered; show and game audio stays `SILENT` | `node bench/desk-followup.mjs <bot.json>` | Anthropic key |
 | `english-check.mjs` | which utterances trigger the Whisper second pass | `node bench/english-check.mjs <models dir>` | Linux |
+| `everyday.mjs` | household voice questions on the production prompt: right tool or none, content, length, no "Sure!" openers; `--holdout` (19 kept apart from tuning), `--long` (where short is wrong), `--keep` (safety warnings, lists asked for) | `node bench/everyday.mjs <bot.json> [--holdout \| --long \| --keep]` | Anthropic key |
 | `first-audio.mjs` | time to first audio, whole first sentence vs first clause | `node bench/first-audio.mjs <bot.json>` | Anthropic and Speechify keys |
+| `home-pc.mjs` | house orders never reach the PC, at the desk and in the call; PC orders with house words still do | `node bench/home-pc.mjs <bot.json>` | Anthropic key; stub PC |
+| `knows.mjs` | notes asked about in a call, remember, search answers | `node bench/knows.mjs <bot.json>` | Anthropic key |
 | `lang-e2e.mjs` | per-language path: Parakeet, English check, Whisper, reply, that language's voice | `node bench/lang-e2e.mjs <bot.json> <models dir> <out dir>` | Linux, configured OpenAI-compatible model key |
 | `level-check.mjs` | writes exactly what goes to Discord per sentence, for an ffmpeg loudness check | `node bench/level-check.mjs <kokoro_dir> <voice> <out_dir>` | Linux |
 | `link-check.mjs` | what pasted links would play | `node bench/link-check.mjs <yt-dlp>` | network |
 | `llm-check.mjs` | time to first token, first speakable chunk, total, tool use, estimated cost | `node bench/llm-check.mjs <bot.json>` | configured OpenAI-compatible model key; Tavily key optional (adds web search) |
+| `mem-start.mjs` | memory at start, per component (`--cloud`: the cloud voice primary) | `node --expose-gc bench/mem-start.mjs <models dir> [--cloud] [--json file] [--dist dir]` | local models; sets its own low priority |
 | `memory-check.mjs` | roster, room talk, automatic memory, note privacy | `node bench/memory-check.mjs <bot.json>` | Anthropic key |
 | `memory-update.mjs` | automatic memory rewrites contradicted notes and ignores chatter and other people's news | `node bench/memory-update.mjs <secrets.env> [runs]` | Anthropic key |
+| `meter.mjs` | helper: per-call tokens, cost and first-text time, per-answer words and model calls, for any bench | `METER_OUT=x.json node --import ./bench/meter.mjs bench/<bench>.mjs ...` | - |
 | `mixer-stall.mjs` | music through the mixer into a Discord-like player under event-loop stalls | `node bench/mixer-stall.mjs <mixer.js> <music.js> <yt-dlp> [seconds]` | network |
 | `multilang.mjs` | speech per language, then Whisper small vs turbo accuracy and speed | `node bench/multilang.mjs <models dir> <out dir>` | Linux |
 | `music-check.mjs` | real YouTube through ffmpeg and the mixer, with a fake voice in the middle | `node bench/music-check.mjs <yt-dlp> "<query>" [out.wav]` | network, ffmpeg |
+| `music-compare.mjs` | compares two `music-corpus.mjs` runs by class | `node bench/music-compare.mjs <before.jsonl> <after.jsonl>` | nothing |
+| `music-corpus.json` | the music corpus: 63 requests with their expected answers, `paired` marks the 16-request subset | - | - |
+| `music-corpus.mjs` | 63 judged song requests (`music-corpus.json`) through the real routing: hit rate, time to stream URL and first audio, lookups | `node bench/music-corpus.mjs --ytdlp <yt-dlp> [--dist dist] [--out run.json] [--routes] [--record f \| --replay f]` | network, ffmpeg (`--routes` needs neither) |
 | `music-e2e.mjs` | model, `play_music` and real lookups with production options | `node bench/music-e2e.mjs <bot.json> <yt-dlp>` | Anthropic key, network |
 | `music-follow-up.mjs` | follow-ups without her name that start like music orders | `node bench/music-follow-up.mjs <bot.json>` | Linux (imports the stack), Anthropic key |
 | `music-intent.mjs` | indirect music requests reach the music tools | `node bench/music-intent.mjs <bot.json> ["request" ...]` | Anthropic key |
 | `music-kinds.mjs` | every request kind against real YouTube | `node bench/music-kinds.mjs <yt-dlp>` | network |
+| `music-paired.mjs` | two builds alternating on the 16-request paired subset | `node bench/music-paired.mjs --ytdlp <yt-dlp> --a <dist> --b <dist> --out <prefix>` | network, ffmpeg |
 | `music-search.mjs` | what YouTube search picks | `node bench/music-search.mjs <yt-dlp> ["query" ...]` | network |
 | `natural-samples.mjs` | one answer rendered several ways across Kokoro voices | `node bench/natural-samples.mjs <kokoro model dir> <out dir>` | Linux |
 | `pc-orders.mjs` | PC orders and chat reach the right PC tool and arguments with short confirmations; power actions take two turns | `node bench/pc-orders.mjs <bot.json>` | Anthropic key; stub PC, nothing runs on a real PC |
+| `prod-kit.mjs` | helper: the live bot's tools and rule lines with stubs, for the brain benches | imported | - |
+| `prompt-size.mjs` | the cached prompt prefix in tokens, `--each` per tool and rule | `node bench/prompt-size.mjs <bot.json> [--each]` | Anthropic key (`count_tokens` is free) |
+| `sabrina-render.mjs` | renders changed lines in the cloud voice, 0.7 s apart | `node bench/sabrina-render.mjs <secrets.env> <changed.json> <out dir>` | Speechify key (spends characters) |
 | `server-info-check.mjs` | `server_info` read-only against a real Discord server, then tool choice | `node bench/server-info-check.mjs <bot.json>` | Linux (imports the stack), Anthropic key and a Discord token; logs in a second gateway session beside a running bot (sends nothing) |
+| `sidetalk-score.mjs` | scores `dist/bench/sidetalk-bench.js` runs: recall, false wakes, CPU, differing transcripts and decisions | `node bench/sidetalk-score.mjs <run.jsonl> [run2.jsonl ...]` | nothing |
 | `slow-speaker.mjs` | a long answer with a slow voice: does it get cut off? | `node bench/slow-speaker.mjs <bot.json>` | Anthropic key |
 | `sound-check.mjs` | sound-effect search, and the model calling `play_sound` | `node bench/sound-check.mjs <bot.json> <yt-dlp>` | Anthropic key, network |
+| `speak-first-lines.json` | the 12 lines for `speak-first.mjs` | - | - |
+| `speak-first.mjs` | time to first heard audio in the cloud voice, 12 lines over 40 characters | `node bench/speak-first.mjs <dist dir> <secrets.env> [runs] [lines.json]` | Speechify key (about 920 characters a run) |
+| `speech-changed.mjs` | lines whose spoken text differs between two builds | `node bench/speech-changed.mjs <old dist> <new dist> > changed.json` | nothing |
+| `speech-lines.json` | 80 lines with reference words for `speech-words.mjs` (every 4th held out) | - | - |
+| `speech-score.mjs` | helper: word error rate for the speech benches | imported | - |
+| `speech-wavs.mjs` | Parakeet over rendered before/after WAVs | `node bench/speech-wavs.mjs <dir> <parakeet dir> <dist dir>` | local models |
+| `speech-words.mjs` | Kokoro says each of 80 lines (`speech-lines.json`), Parakeet hears it: word error rate of the spoken text | `node bench/speech-words.mjs <dist dir> <kokoro dir> <parakeet dir> [--oracle] [--json out.json]` | local models |
+| `stream-level.mjs` | loudness of streamed cloud-voice sentences | `node bench/stream-level.mjs <dist dir> <secrets.env> [lines.json]` | Speechify key (spends characters) |
 | `stt-compare.mjs` | local Parakeet vs Groq re-transcription on PC phrases with noise | `node bench/stt-compare.mjs <models dir> <bot.json>` | Linux, Groq key (free-tier rate limits apply) |
-| `taste-orders.mjs` | "play some music" uses her own taste; artist requests; saved opinions | `node bench/taste-orders.mjs <bot.json> [yt-dlp]` | Anthropic key, network |
+| `taste-orders.mjs` | "play some music" uses her own taste; artist requests; saved opinions | `node bench/taste-orders.mjs <bot.json> [--live [yt-dlp]]` | Anthropic key; network only with `--live` |
 | `text-followup.mjs` | text chat uses history, answers follow-ups, stays `SILENT` for side talk | `node bench/text-followup.mjs <bot.json>` | Anthropic key |
 | `ttft-survey.mjs` | time to first token across models on one OpenAI-compatible endpoint (`EXTRA='{...}'` adds body fields) | `node bench/ttft-survey.mjs <bot.json> <runs> <model> [model...]` | endpoint key |
 | `tts-speed.mjs` | Kokoro speed and memory | `node bench/tts-speed.mjs <model_dir> <model_file> <threads> [sid]` | Linux |
@@ -221,10 +251,13 @@ All bench files:
 | `turn-parity.py`, `turn-parity.mjs` | the TypeScript Smart Turn features and probabilities vs the reference Python | `node bench/turn-parity.mjs <model.onnx> <python results.json> <wav>...` | onnxruntime, Python venv |
 | `corpus/phrases.json` | wake and not-wake phrase lists (data; not read by any script in the repo) | - | - |
 
-Compiled benches in `src/bench/` (run from `dist/bench/` after a build, Linux):
+Compiled benches in `src/bench/` (run from `dist/bench/` after a build; `e2e-bench` and `wake-bench` on Linux, the side-talk ones on Linux or Windows):
 
 - `node dist/bench/e2e-bench.js <bench.json>`: end of speech to first audio without Discord. Wake clips are played in real time in 20 ms frames through VAD, Parakeet, the wake check, the orchestrator and Kokoro, against a local mock model with a configurable time to first token (or a real OpenAI-compatible model when `bench.json` has `realLlm`, which costs tokens).
 - `node dist/bench/wake-bench.js <corpus_dir> <vad.onnx> <asr_dir> <threads> [gainDb ...]`: wake and false-wake rates and recognition timing over a labelled clip corpus (`PREROLL` env, default 0.25). The corpus generator is not in the repository.
+
+- `node dist/bench/sidetalk-bench.js <corpus> <models dir> <out.jsonl>`: what each heard segment costs (VAD, Smart Turn, Parakeet CPU and wall time) and whether it wakes her, with the PC room's settings. `THREADS=N` sets Parakeet's threads; `TURN=only` measures Smart Turn alone (on Windows it can't share a process with sherpa-onnx). Score with `bench/sidetalk-score.mjs`. A corpus run takes 4-6 minutes.
+- `node dist/bench/sidetalk-pipeline.js <corpus> <models dir> <out.jsonl>`: the PC room's real `ListeningPipeline` fed clips back to back in real time, holds and joins included (Smart Turn in a child process, `turn-child.js`); `THREADS`, `MINUTES`.
 
 Past results and what they decided are in [decisions.md](decisions.md) and [costs.md](costs.md).
 

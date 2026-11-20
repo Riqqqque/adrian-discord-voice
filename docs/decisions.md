@@ -64,6 +64,22 @@ If you have new data that contradicts an entry, change the code and this page in
 - **Why**: free per request, private by default, and no cloud round trip before the wake decision. Parakeet takes about 0.1-0.3 s per phrase, median 170 ms, on the test server (4 threads, decodes serialized; maintainer measurement, 2026-10-21, see [costs.md](costs.md)).
 - **Where**: `src/speech/sherpa.ts`, `src/listen/pipeline.ts`, `src/wake/text-wake.ts`.
 
+### Parakeet runs on 2 threads
+
+- **Chosen**: `listen.asrThreads` defaults to 2 (it was 4); Whisper keeps 4 through its own `listen.whisperThreads` (next release).
+- **Instead of**: 4 threads (to match the service's 4-core quota) or 1.
+- **Why**: every segment anyone says is decoded, so side talk is most of the bot's CPU, and onnxruntime's worker threads spin while they wait (sherpa-onnx-node exposes no switch for that). On 889 clips (`src/bench/sidetalk-bench.ts`, a desktop PC, 2026-11-20): Parakeet CPU per segment 703 ms on 4 threads, 360 ms on 2 (an independent re-run: 391 ms), about 188 ms on 1. The words were identical in all 890 segments, and wake recall (250/257) and false wakes (17/608) didn't change. The cost is decode time: 10-50 ms more per decode in one run, about 100 ms more (median) in a re-run on a busy machine. 1 thread adds about 90-140 ms more again.
+- **Where**: `src/config.ts` (`listen.asrThreads`, `listen.whisperThreads`).
+- **Before changing**: `src/bench/sidetalk-bench.ts` with `THREADS=N`, scored by `bench/sidetalk-score.mjs`; on the server, compare `sttLatencyMs` before and after.
+
+### At a PC, recognition starts during the silence wait
+
+- **Chosen**: PC rooms run a second Silero VAD with a 0.32 s wait. Its clip is decoded at once, and the Groq listen starts if the speech would go to Groq anyway; the words are used only when the full 0.8 s wait then closes exactly the same samples (`satellite.earlyListen`, on by default; next release).
+- **Instead of**: a shorter silence wait (more cut-off sentences), or speculating the model on the local words while Groq runs (needs orchestrator changes: `ask()` writes memory and can run tools).
+- **Why**: in the latency harness (`test/latency-harness.test.ts`, stand-in models at prod delays), a PC request said in one go went from 3,425 to 2,945 ms end to end at a 300 ms decode, the same at 150 and 450 ms; speech with a 0.32-0.8 s pause falls back to today's timing exactly. With 0.32 s and 0.8 s both whole Silero windows, the two VADs cut at the same sample: all 240 synthetic PC commands and 5 real PC recordings matched. Cost: about 20% more decoding on conversation-like side talk (AMI corpora), none on PC commands, and an aborted Groq request when someone goes on talking.
+- **Where**: `EarlyOptions` in `src/listen/pipeline.ts`, `listenEarly` in `src/app/stack.ts`.
+- **Before changing**: the latency harness, `test/early-listen.test.ts`.
+
 ### The wake word comes from the transcript, not from a keyword spotter
 
 - **Chosen**: every segment is transcribed, and `TextWakeDetector` decides whether it was meant for her ("Hey Adrian ...", "Adrian, ..."). On a PC, the app only runs a loudness gate with 300 ms of pre-roll (`PREROLL_FRAMES` in `crates/desktop/src/audio.rs`). The server finds the words and the name.
@@ -188,16 +204,16 @@ If you have new data that contradicts an entry, change the code and this page in
   - **She talked her reasoning aloud** on up to 30% of tool rounds.
 - **Before changing**: `bench/pc-orders.mjs`, `bench/answer-length.mjs`, `bench/llm-check.mjs`.
 
-### Answer length is held by a word rule in the prompt
+### Answer length is held by a word rule in the prompt, repeated in every spoken turn
 
-- **Chosen**: the stable prompt asks for answers "under twenty words", at most forty (`src/brain/orchestrator.ts`; 0.15.2).
-- **Instead of**: sentence-count rules, which didn't move the length. `brain.maxTokens` can't do it either: with Claude it isn't a real cap.
-- **Why**: `bench/answer-length.mjs` median went from 54 to 36 words with the word rule (0.15.2, without tools). On the real prompt (2026-11-01) the median was 34 words, with 73% of answers over 20. The target is still not met ([roadmap.md](roadmap.md#known-limitations)).
-- **Before changing**: `bench/answer-length.mjs --real`. Note that its tool list lags behind `src/app/stack.ts`.
+- **Chosen**: the stable prompt asks for answers "under twenty words", at most forty (`src/brain/orchestrator.ts`; 0.15.2). From the next release it also says what short means (one sentence; two short sentences for how, why and what-should-I; no caveats, offers or questions back; a decline in a few words), and `SPOKEN_TURN` repeats the rule last in every spoken turn. A safety warning that matters and every item of a requested list are exempt.
+- **Instead of**: sentence-count rules, which didn't move the length. `brain.maxTokens` can't do it either: with Claude it isn't a real cap. Trimming rule text the tool descriptions repeat was tried and reverted: "go to reddit" then opened a Google search (3 of 3).
+- **Why**: `bench/answer-length.mjs` median went from 54 to 36 words with the word rule (0.15.2, without tools). On the real prompt (2026-11-01) the median was 34 words, with 73% of answers over 20. With the defined rule repeated per turn (2026-11-20, independent re-run, 3 runs each): `answer-length.mjs --real` within its limit 60.6% to 93.9%, median 34 to 22 words; `everyday.mjs --holdout` 68.4% to 86.0%. The safety and list exception (`everyday.mjs --keep`) kept every warning and list item; it made answers a few words longer on `answer-length` (median about 25-30), not on `everyday`.
+- **Before changing**: `bench/answer-length.mjs --real`, `bench/everyday.mjs` (with `--holdout`, `--long`, `--keep`).
 
 ### A tool can say its own line and skip the second model call
 
-- **Chosen**: `Tool.speak(args, result)` (0.14.3). When every tool in a round returns a line, the orchestrator says it and makes no second call. PC tools use short confirmations. Errors and information go back to the model.
+- **Chosen**: `Tool.speak(args, result)` (0.14.3). When every tool in a round returns a line, the orchestrator says it and makes no second call. PC tools use short confirmations. Errors and information go back to the model. From the next release alarm edits and settings, game-night join and leave, music likes and `remember` speak too (12 bench turns: 2 calls to 1, first chunk median 1,235 to 816 ms), unless the person's words also ask something (`asksMore`). A sent message stays the model's to describe, on purpose.
 - **Why**: a tool round normally costs a second full model call, and its latency, just to say "Done." Skipping it saves a call and the time to its first word.
 
 ### A filler line before a slow tool
@@ -253,6 +269,18 @@ If you have new data that contradicts an entry, change the code and this page in
 
 - **Chosen**: speech starts at the end of the first sentence, not at the first comma.
 - **Why**: `bench/first-audio.mjs` (2026-10-16) measured a median first audio of 1.26 s with whole sentences against 1.39 s when cutting at the first clause. Clause cuts also sounded robotic. The early mode still exists through `SentenceSplitter({ firstChunkMinChars, firstChunkMaxChars })`.
+
+### Long cloud-voice sentences stream
+
+- **Chosen**: Speechify sentences over 40 characters play as their audio arrives; shorter ones come whole (they are cached and keep the hot-sentence level cap). A failure before the first audio falls back to Kokoro; a break mid-sentence ends that sentence (next release).
+- **Why**: first heard audio median 382 to 253 ms, p90 425 to 306 ms (`bench/speak-first.mjs`, 12 lines, 3 runs each), with no silent frames inside a line. Trade-off: streamed sentences skip `levelChunk`'s cap for hot sentences, so 2 of 12 measured lines played up to 0.45 LU louder (`bench/stream-level.mjs`).
+- **Where**: `SpeechifyTts.stream`, `VoiceRouter.stream`, `src/voice/speaker.ts`, `StreamLimiter` and `StreamTrimmer` in `src/audio/`.
+
+### The local voice loads on first use when the cloud voice is primary
+
+- **Chosen**: with the cloud voice speaking English, Kokoro is loaded and calibrated the first time it stands in, not at start (next release).
+- **Why**: Kokoro was about 0.5 GB of a 1.6 GB start, and the server's memory guard kills node first: on 2026-11-12 it killed the bot 40 times in 22 minutes during start-up. `bench/mem-start.mjs --cloud` (Windows): steady and peak memory 1.59 to 1.10 GB. In a month of prod logs the cloud voice never failed, so Kokoro would never have loaded. Trade-off: the first stand-in sentence after a start waits for the load (about 5 s once).
+- **Where**: `src/app/local-voice.ts`; the first-start memory wait is `src/app/memory.ts`.
 
 ### Kokoro fp32 locally; int8 is slower
 
@@ -382,6 +410,12 @@ If you have new data that contradicts an entry, change the code and this page in
 - **Why**: a misheard "shut down" must not end someone's evening.
 - **Before changing**: never test with `confirmed:true` on a real PC; the Rust tests carry that warning.
 
+### House orders never reach the PC
+
+- **Chosen**: `houseOrder` in `src/satellite/tools.ts` refuses a PC power, volume, media or app action when the person's own words pair an order with a house thing (door, garage, lights, TV, heat ...) and don't name the PC (next release). The prompt says the same.
+- **Why**: "lock the front door" locked the PC once in a bench, and `bench/home-pc.mjs` (48 house orders a run) had 21 wrong PC actions in 288 on the old prompt ("turn the tv down" changed the PC's volume, "kill the lights" turned its screens off), 0 in 144 with the guard. With the guard alone on the old prompt the model still tried a PC tool 19 times, and all were refused before the PC. PC orders that mention the house ("lock my PC, I'm heading out the front door") still work, 15 of 15.
+- **Before changing**: `test/pc-house.test.ts`, `bench/home-pc.mjs`, `bench/pc-orders.mjs`.
+
 ### A PC tool only reaches the asker's own PC, and only public web pages open
 
 - **Chosen**: the server picks the PC by owner (`pcFor`). No argument can select another one. `pc_open` takes only http and https. The server refuses local and private-looking names (`webUrl` in `src/satellite/tools.ts`), and the PC checks again and resolves the name, refusing loopback, private and CGNAT answers (PC app 0.15.4). Raw IP addresses are always refused. The two checks must change together.
@@ -454,6 +488,18 @@ If you have new data that contradicts an entry, change the code and this page in
 - **Chosen**: `packaging/adrian-voice.service` uses `Restart=always`, `RestartSec=20` (0.15.4, commit 43b548a).
 - **Instead of**: `Restart=on-failure`.
 - **Why**: a memory guard (earlyoom) sent SIGTERM when swap ran out, and the bot shut down cleanly with exit code 0. `on-failure` then left her offline for hours. `systemctl stop` still stops it.
+
+### One-step install, and an installer that is safe to run again
+
+- **Chosen**: `packaging/get.sh` installs from two commands; `install.sh` checks everything first and lists every problem at once, keeps the config, port and LAN setting on a re-run and restarts the service, and refuses an older bundle (next release).
+- **Why**: a person followed 25 steps to a working bot, 18 now (7 server commands to 2). Re-running the old installer over a live install moved the admin page to the next port, reset `--lan`, and then reported "the service did not come up". The wizard's voice-channel list was always empty in a real browser.
+- **Before changing**: `test/install.test.ts`, `test/get.test.ts`, `test/setup-checks.test.ts`, `test/web-ui.test.ts`, `test-env/clean-install-test.sh`.
+
+### `adrian update` can't be stopped halfway
+
+- **Chosen**: a manual update at a terminal runs in its own session and the terminal only follows its log (`ADRIAN_DETACH=0` turns that off); `flock` keeps updates apart; it needs 500 MB free first; a note left while it runs lets the next update, rollback or hourly check finish or undo one that was cut off (next release).
+- **Why**: a dropped SSH connection sent SIGHUP mid-update, possibly between the switch and the health checks, leaving an unchecked version with nothing to notice it.
+- **Before changing**: `test/update-safety.test.ts` (on Linux), `test-env/update-test.sh`.
 
 ### Auto-update is opt-in and waits for a quiet moment
 

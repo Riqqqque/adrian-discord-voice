@@ -21,7 +21,7 @@ How to read the numbers:
 | Cloud second listen, Groq Whisper (optional, off by default) | $0.04 per hour of audio, at least 10 s billed per request (Groq's docs, checked 2026-11-20), so about $0.0001 per request. Only speech already judged to be for her is sent. | No |
 | Web search, Tavily (optional) | 1 credit per search. Free plan: 1,000 searches a month (admin UI text, `web/app.js`). | No |
 | Everything else | Free: local speech recognition and voices, local phrases, music from YouTube and Deezer, weather, news, calendars, Steam, Plex, Sonarr, Radarr, Home Assistant, Helix, Discord, GitHub updates. | — |
-| Server machine | About 1.5-1.6 GB of RAM after start, about 1.3 GB more once someone speaks a language other than English. Service capped at 4 cores, `MemoryHigh=4G`, `MemoryMax=5G`. About 2.1 GB of models on disk. | — |
+| Server machine | About 1.5-1.6 GB of RAM after start (about 0.5 GB less with the cloud voice on, from the next release), about 1.3 GB more once someone speaks a language other than English. Service capped at 4 cores, `MemoryHigh=4G`, `MemoryMax=5G`. About 2.1 GB of models on disk. | — |
 | PC app | About 5 MB of private memory and 0.01% CPU in the tray. No AI runs on the PC; all paid calls happen on the server. | — |
 
 Default caps: `limits.dailyUsd` $1, `limits.monthlyUsd` $10, `limits.perUserPerHour` 30 requests. At $0.0011 an answer, $10 covers about 9,000 answers (arithmetic).
@@ -55,9 +55,9 @@ A spoken or typed question that the local phrase matcher can't handle goes to th
 | Per-request context: who is asking, nickname, call roster (up to 25 people), language, mature mode, the asker's notes, music state, PC lines, game lines | varies; the 0.12.x cache bench left 130-210 uncached tokens a call | No |
 | Room talk: what was said aloud in the call in the last 5 minutes | up to 24 lines of 200 characters (`src/conversation/room.ts`), so up to about 1,200 tokens | No |
 | History: up to 16 messages per person (her answers and theirs, so about 8 exchanges), forgotten after 60 idle minutes (`SessionMemory(16, 60 min)`) | grows with the conversation | Up to the last assistant turn, yes |
-| Output: the spoken answer plus thinking (`brain.effort` `low`) | answers are asked to stay under twenty words, forty at most (`orchestrator.ts`) | — |
+| Output: the spoken answer plus thinking (`brain.effort` `low`) | answers are asked to be one sentence under twenty words, two short sentences (forty words) at most for how and why questions, and the rule is repeated at the end of every spoken turn (`SPOKEN_TURN`, about 60 uncached tokens a call). In the maintainer's benches that cut the median spoken answer from about 35 to about 23 words (`bench/answer-length.mjs --real`), so output tokens fell by 10-30 per call | — |
 
-One request can make up to **4 model calls**: the first call plus up to `maxToolRounds: 3` tool rounds (hard-coded in `stack.ts`). Each round re-sends everything above plus the tool results. When every tool in a round returns a `speak` line (alarms, timers, reminders, notes, music, Steam, server control, PC confirmations and others), the orchestrator says those lines and skips the second call. For a simple PC order that is about half the calls.
+One request can make up to **4 model calls**: the first call plus up to `maxToolRounds: 3` tool rounds (hard-coded in `stack.ts`). Each round re-sends everything above plus the tool results. When every tool in a round returns a `speak` line (alarms, timers, reminders, notes, music, Steam, server control, PC confirmations and others), the orchestrator says those lines and skips the second call. For a simple PC order that is about half the calls. Since the next release, alarm edits and alarm settings, game-night sign-ups, music likes and "remember ..." also speak for themselves: in the maintainer's benches those confirmations went from 2 model calls to 1, and their first audio about 0.4 s sooner (median 1,235 to 816 ms on 12 turns); alarm-orders went from 189 to 169 micro-dollars a turn.
 
 Tool results that add input tokens:
 - `pc_screen`: one picture, long side at most 1568 px. The code counts a picture as 1,600 input tokens when it has to estimate (`IMAGE_TOKENS`, `src/brain/images.ts`); the provider's real count depends on the size. Only the Claude adapter sends the picture. OpenAI-compatible models, as primary or fallback, get a note that the picture can't be read instead, so the picture costs nothing there.
@@ -104,6 +104,8 @@ Measured:
 | Sonnet and Opus in the same bench | about 20x and 40x Haiku's cost; first chunk 1.3 s and 2.1 s | 2026-10-15, priced with the bench's own table ($2/$10 and $4/$20 per million) |
 | A 942-call A/B bench (thinking on vs off) on Haiku | $0.12 in total | 2026-11-01 |
 | Wizard estimate shown at setup (`checkLlm`, `src/web/checks.ts`) | 900 input + 60 output tokens x price, about $0.00012 on Haiku | code. It ignores the tool specs and caching, so it reads low. |
+
+The cached prefix was measured with `bench/prompt-size.mjs` (free `count_tokens`): 13,481 tokens at 0.17.1 (10,598 of them tool specs), about 13,990 with the next release's prompt changes. A cold answer (the whole prefix written) then costs about $0.0018 on Haiku and a warm one about $0.0003; the 2026-11 prod logs had 29 of 52 answers cold.
 
 Worked out (arithmetic, Haiku preset prices, a 9,000-token stable prefix from the 2026-11-01 audit plus the alarm tools, 300 uncached tokens, 150 output tokens including thinking):
 
@@ -170,6 +172,7 @@ Every speech segment, from everyone in a call or at a PC, is transcribed on the 
 | `cloudStt.timeoutMs` | 1500 | Longest wait before the local words are used. |
 
 - Side talk never leaves the server (`test/stack.test.ts` "speech not meant for her never reaches the cloud").
+- With the early listen at a PC (`satellite.earlyListen`, on by default), the Groq request starts during the pause at the end of a request. When the person goes on talking within 0.8 s, that request is aborted and a second one is made for the whole clip. Groq may still bill the aborted one (at least 10 s each, below), so a request said with a short pause can cost two Groq requests. Stops, her name alone, side talk and speech in her call never go early.
 - HTTP 429 or 5xx pauses the cloud listen for 60 s; a timeout, error or empty text keeps the local words.
 - Price (Groq's speech-to-text docs, https://console.groq.com/docs/speech-to-text, checked 2026-11-20): $0.04 per hour of audio for `whisper-large-v3-turbo`, with at least 10 seconds billed per request. Her segments are mostly shorter than 10 s, so count about $0.00011 per request: 1,000 requests cost about $0.11. No price is in the code.
 - Rate limits: Groq's rate-limits page (https://console.groq.com/docs/rate-limits, checked 2026-11-20) lists 20 requests a minute, 2,000 a day, 7,200 audio seconds an hour and 28,800 a day for this model; your account's limits page shows your own tier. The maintainer's speech comparison bench of 2026-10-21 spaces its requests 3.2 s apart for the same reason ("Groq free tier: ~20 a minute", `bench/stt-compare.mjs`). Past the limit Groq answers 429, which pauses the cloud listen for 60 s.
@@ -312,12 +315,15 @@ With prices at 0 the dollar caps count nothing, but `limits.perUserPerHour` stil
 | Whisper small plus the non-English voices | about 1.3 GB more, loaded the first time someone speaks another language | comment in `src/app/stack.ts` |
 | Everything loaded at start, before lazy loading (0.14.7, October 2026) | 3.45 GB anonymous plus 0.85 GB page cache | maintainer measurement |
 | Milestone 7 (0.2.0), idle | about 1.4 GiB | 2026-10-15 |
-| Per component (Parakeet, Kokoro, Silero, Smart Turn) | not measured separately | — |
+| Per component, Windows (`bench/mem-start.mjs`, 2026-11-20) | Parakeet about 690 MB at load plus about 190 MB after its first long decode (its onnxruntime arena, never given back); Kokoro load and calibration about 490 MB; Smart Turn about 74 MB; Node, the app code, VAD and the rest under 100 MB | maintainer measurement |
+| Whole bot with the cloud voice primary, next release | about 1.10 GB steady and peak on Windows, against 1.59 GB before (median of 4 and 5 runs): Kokoro loads only when it stands in. Not measured on a server yet | `bench/mem-start.mjs --cloud` |
 | Whole bot after another language has loaded, since lazy loading | not measured | — |
 
 - Each Kokoro language engine holds its own copy of the model, so every extra language adds memory.
 - The int8 Kokoro model is not used: it ran slower than real time on the test server.
 - `languages` `false` keeps Whisper and the other voices from ever loading.
+- With the cloud voice primary, Kokoro loads the first time the cloud voice can't speak and then stays loaded, so an outage brings the 0.5 GB back.
+- On a first start with too little memory free, the bot waits (up to 15 minutes) instead of loading its models into an out-of-memory kill.
 - The installer warns below 4 GB of RAM. Its warning text and [troubleshooting.md](troubleshooting.md) still give the older 3.5 GB "languages on" figure from before lazy loading.
 - Caps: systemd `MemoryHigh=4G`, `MemoryMax=5G` (`packaging/adrian-voice.service`); Docker `mem_limit: 4g` (`packaging/docker/compose.yaml`).
 
@@ -325,7 +331,8 @@ With prices at 0 the dollar caps count nothing, but `limits.perUserPerHour` stil
 
 | Work | Cost | Source |
 |---|---|---|
-| Parakeet decode, every segment from everyone | about 0.1-0.3 s per phrase, median 170 ms on 4 threads; one decode at a time across all rooms | maintainer measurement, 2026-10-21 |
+| Parakeet decode, every segment from everyone | about 0.1-0.3 s per phrase, median 170 ms on 4 threads; one decode at a time across all rooms. CPU per segment on a desktop PC over 890 segments: 703 ms on 4 threads, 360-391 ms on 2 (the default since the next release), about 188 ms on 1; the words were the same in every case. The decode itself took 10-100 ms longer on 2 threads | maintainer measurements, 2026-10-21 and `src/bench/sidetalk-bench.ts` 2026-11-20 |
+| Early listen at a PC | a second Silero VAD (about 0.47 s CPU per minute of audio), and one extra decode when someone pauses 0.32-0.8 s and goes on: no extra decoding on PC commands, about 20% more on conversation-like side talk | `src/listen/pipeline.ts`, 2026-11-20 measurement |
 | Silero VAD | one thread per speaking user stream | code |
 | Smart Turn end-of-turn check (PC rooms) | about 50-250 ms per PC segment on a worker thread | `src/speech/smart-turn-worker.ts` header |
 | Whisper second pass (non-English) | about 1 s per clip | `src/speech/whisper.ts` header |
@@ -333,7 +340,7 @@ With prices at 0 the dollar caps count nothing, but `limits.perUserPerHour` stil
 | Calendar expansion | about 0.5 s for a busy calendar, in a worker stopped after 5 idle minutes | `src/features/calendar-worker.ts` header |
 | ffmpeg, yt-dlp | one ffmpeg process per playing track, clip or sound; one yt-dlp process per lookup | code |
 
-Because every segment is transcribed to hear the wake word, side talk dominates CPU. In a maintainer measurement on 2026-11-08, PC side talk alone was about two thirds of the bot's CPU. Thread counts: `listen.asrThreads` 4 (Parakeet and Whisper), `voice.threads` 4 (Kokoro and Piper). Caps: systemd `CPUQuota=400%`, `CPUWeight=50`, `IOWeight=50`, `Nice=5`, `TasksMax=256`; Docker `cpus: 4`, `cpu_shares: 512`.
+Because every segment is transcribed to hear the wake word, side talk dominates CPU. In a maintainer measurement on 2026-11-08, PC side talk alone was about two thirds of the bot's CPU. For side talk, Parakeet was about 90% of that CPU, Smart Turn 8% and the VAD 2% (2026-11-20). Thread counts: `listen.asrThreads` 2 (Parakeet; 4 before the next release), `listen.whisperThreads` 4, `voice.threads` 4 (Kokoro and Piper). Caps: systemd `CPUQuota=400%`, `CPUWeight=50`, `IOWeight=50`, `Nice=5`, `TasksMax=256`; Docker `cpus: 4`, `cpu_shares: 512`.
 
 ### 7.3 Disk
 
@@ -341,7 +348,7 @@ Because every segment is transcribed to hear the wake word, side talk dominates 
 |---|---|
 | Install download (Node.js runtime plus speech models) | about 1.5 GB ([install.md](install.md)) |
 | Models unpacked (`silero_vad.onnx`, Parakeet v3 int8, Kokoro multi-lang, Whisper small, Piper vi, Smart Turn v3.2, yt-dlp) | about 2.1 GB (2026-11-19). Leave them out of data backups; `packaging/downloads.sh` fetches them again, pinned by SHA-256. |
-| Free space the installer requires under `/opt` | 3 GB (`packaging/install.sh`) |
+| Free space the installer requires | about 1 GB under `/opt` and 2 GB under `/var/lib`, 3 GB together on one disk (`packaging/install.sh`); an update needs about 500 MB under `/opt` |
 | Release bundle | about 40-41 MB (grew from 24 MB when onnxruntime-node arrived in 0.14.7). `adrian update` keeps the three newest releases under `/opt/adrian/releases`. |
 | State files | small JSON files. Saved alarm sounds are at most 30 s of 24 kHz mono 16-bit, about 1.4 MB each. |
 | `pc-recordings/` | only when `satellite.recordDays` > 0 (at most 14 days kept). Real voices: treat as private. |

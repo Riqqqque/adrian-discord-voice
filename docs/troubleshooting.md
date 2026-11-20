@@ -14,8 +14,32 @@ In Docker, use `docker compose exec adrian node dist/cli/tool.js check` (also
 `docker compose logs -f adrian`; `doctor`, `update`, `rollback` and `backup`
 are native only.
 
+`adrian doctor` explains a failed start in words, with what to do (the same
+"What to do" line is on the admin page's Status tab and after Start in the
+wizard). It also checks that the service's files belong to it, and prints the
+`chown` that fixes them when something run by hand as root left files behind,
+and that discord.com and github.com can be reached.
+
 The admin page's status tab shows the state, problems, the last answers with
 their timing and cost, and today's spend.
+
+## The installer stops
+
+- **It lists several problems:** it checks everything first and changes
+  nothing until all of them are fixed. Fix them in any order and run the same
+  command again. `bash packaging/install.sh --check` (no sudo) runs only the
+  checks.
+- **"downloading X stopped":** the connection dropped. Run the same command
+  again: every file that already finished is kept.
+- **"Can't reach HOST":** the server is offline, can't look up names, or is
+  behind a proxy. Behind a proxy: `sudo https_proxy=http://PROXY:PORT bash get.sh`.
+- **ARM (a Raspberry Pi) or no systemd (WSL, a container):** only 64-bit
+  Intel/AMD with systemd is supported natively. On WSL, add `[boot]` and
+  `systemd=true` to `/etc/wsl.conf` and run `wsl --shutdown` in Windows; in a
+  container, use the Docker install.
+- **"older than the installed version":** a downgrade is refused. Use
+  `sudo adrian rollback`, or add `--allow-downgrade` if you mean it.
+- **"Port N is taken by another program":** pick another one with `--port`, or leave `--port` out to get the first free one.
 
 ## It won't start, or keeps restarting
 
@@ -32,12 +56,31 @@ their timing and cost, and today's spend.
 - **Two copies on one bot token** (a development copy and the service) fight
   over the voice session. Stop the service before running another copy.
 - **Out of memory:** see [High memory use](#high-memory-use).
+- **Status `failed` with "Too little free memory to load the speech models" on a first start:** the machine
+  is short of memory, so she waits instead of loading her speech models and
+  being killed. She retries by herself (30 seconds, doubling to 5 minutes) and
+  loads anyway after 15 minutes. Free some memory, or wait. An update that
+  lands during such a wait can roll back, because the new version isn't
+  healthy in time.
+- **It stopped with no reason in the log:** the `shutting down` line names
+  the signal, the state (a stop while `starting` exits at once) and the memory
+  at that moment; a signal from an out-of-memory guard such as earlyoom shows
+  up there.
 
 ## The bot doesn't join the voice channel
 
 - **Permissions.** The bot's role needs View Channel, Connect and Speak on that
-  channel. Check per-channel permission overrides, which often block bots in
-  private channels.
+  channel. The setup wizard checks this when you pick the channel, and the
+  dashboard says so when it's the reason she isn't in voice. Check per-channel
+  permission overrides, which often block bots in private channels.
+- **The voice channel list in the setup wizard was empty:** fixed in the next
+  release (the page dropped the list in a real browser). Until then, set the
+  server and channel IDs with `sudo adrian config guildId ID` and
+  `sudo adrian config channelId ID`.
+- **She left voice for a few seconds and came back:** `voice disconnected`
+  with `reason: "voice link resuming"` is Discord moving the voice connection,
+  usually back within a second. A resume that hangs is rebuilt after 5 seconds
+  (it used to take 30); `voice back` logs how long each recovery took.
 - **Bad token.** The logs say `logged in` with the bot's name when the token is
   good.
 - **`/join` refused:** she's in one call at a time across all servers. People
@@ -55,7 +98,9 @@ their timing and cost, and today's spend.
   - The bot must not be server-deafened.
 - **`answered` with `outcome: "timed out"` or `answer failed`:** the model is
   slow, out of credit, or rate-limited. Check the key and provider, and add a
-  fallback model.
+  fallback model. **"No credit left"** (Anthropic): add credit at
+  console.anthropic.com under Plans & Billing (a claude.ai subscription doesn't
+  cover the API), or pick Groq's free tier.
 - **`limited`:** a spend cap or the per-person hourly limit was hit ("You've
   asked a lot this hour", "paused for the rest of today/month"). See
   `limits.*`; owners skip only the hourly limit. The status tab shows today's
@@ -91,7 +136,8 @@ their timing and cost, and today's spend.
 - **`adrian doctor` says ffmpeg is missing:** run `sudo apt install ffmpeg` and restart.
 - **`music search failed` in the logs for every song:** YouTube changed something and the pinned yt-dlp is out of date. Update to the newest release.
 - **"Sign in to confirm you're not a bot":** YouTube is blocking your server's IP address. She pauses YouTube for 30 minutes; there's no fix without an account, so use Plex music (`"play X from Plex"`) in the meantime.
-- **Wrong song:** the logs show `music search` (what it searched for) and `music playing` (what it picked). If speech recognition misheard the title, say the artist too ("play Humble by Kendrick Lamar").
+- **Wrong song:** the logs show `music search` (what it searched for) and `music playing` (what it picked). If speech recognition misheard the title, say the artist too ("play Humble by Kendrick Lamar"). A version said by name ("tiny desk", "live", "remix") must appear in what she picks, so ask for it in words. A bare genre ("play jazz") plays a playlist; to get a song titled like a genre, name its artist.
+- **`direct video search failed` or `direct search answer unreadable`:** YouTube's search answered with something she couldn't read. That search falls back to yt-dlp by itself, a second or two slower.
 - **Choppy:** each song logs `music ended` with `musicGaps` and `longestStallMs`. Large stalls mean the CPU is overloaded; lower `listen.asrThreads` and `voice.threads`, or check other load on the machine.
 - **"You've asked for a lot in the last hour":** music requests count toward the hourly limit too.
 
@@ -105,6 +151,14 @@ their timing and cost, and today's spend.
   the start of the month in your time zone.
 - **A key saved but no cloud voice:** a fresh config has no `cloudVoice`
   section until you set one (see [configuration.md](configuration.md)).
+- **The first answer in the local voice after a start is slow:** with the
+  cloud voice on, the local voice loads only the first time it's needed, which
+  takes a few seconds once. `cloud voice broke off mid-sentence` means the cloud
+  voice stopped in the middle of a sentence: the rest of that sentence is
+  dropped and the local voice speaks for a minute.
+- **`local voice model not found; nothing stands in if the cloud voice
+  fails`:** the Kokoro model is missing. She starts and talks with the cloud
+  voice; reinstall (`sudo bash get.sh --reinstall`) to get the model back.
 
 ## The admin page won't open
 
@@ -123,7 +177,9 @@ their timing and cost, and today's spend.
 
 ## High memory use
 
-About 1.5 GB right after start. The Whisper model (the second listen for
+About 1.5 GB right after start, or about 0.5 GB less when the cloud voice is
+on (the local voice then loads only when the cloud voice can't speak, and
+stays loaded after). The Whisper model (the second listen for
 languages other than English and Spanish) and the other languages' voices load
 the first time someone speaks one of those languages, and hold about 1.3 GB
 between them once loaded. Before they loaded on first use (0.14.7, everything
@@ -138,6 +194,11 @@ The PC app sends every sound loud enough to open its gate: shows, music,
 games, people talking in the room. The server runs speech detection and
 recognition on each one to find out whether it was for her, so a noisy room
 costs server CPU even when she never answers.
+Recognition runs on `listen.asrThreads` threads (2 by default; 4 costs about
+twice the CPU for slightly quicker words). At a PC, the early listen
+(`satellite.earlyListen`) also decodes when someone pauses briefly mid-speech,
+about 20% more decoding on conversation-like side talk; turn it off if CPU is
+tight.
 In the PC app's settings, move Sensitivity off Automatic to a higher value
 (the meter shows what opens it), use headphones, or close the app when it
 isn't wanted. All rooms share one speech recognizer, so a busy PC can slow
@@ -155,6 +216,7 @@ The status line in the app's settings and the tray tooltip say what's wrong.
 | "The server refused this PC (too many failed attempts)..." | Five failed tries from that address in a row locked it out for 10 minutes | A correct token still gets in. Fix the token; the app retries every 5 minutes, or at once when you save |
 | "Disconnected. Reconnecting..." over and over | Two PCs using one token replace each other; or the network drops | Pair each PC separately. The app backs off up to 10 seconds between tries |
 | Server log `satellite rejected` with `reason` | Seen on the server for every refusal, with the address | `bad token`, `no hello` (the PC didn't speak within 5 seconds), `frame too big` |
+| Server log `satellite disconnected` | Every PC link that ends | `by` says who ended it: `pc` (the app closed it), `heartbeat` (the PC stopped answering pings for 30-60 s), `replaced` (the same PC connected again), `shutdown` or `server`; `quietS` is how long the PC had been silent |
 
 Other problems:
 
@@ -252,6 +314,15 @@ Other problems:
 - **Auto-update didn't run:** it waits while someone is in her call, music plays, or an alarm rings, is snoozed or is due within 5 minutes, and while `config.json` can't be loaded. `journalctl -u adrian-update` shows each run.
 - **Very old installs (0.14.9 and older)** can't fetch from GitHub: update once with a downloaded bundle (`sudo adrian update adrian-voice-<v>-linux-x64.tar.gz`).
 - **Something went wrong after an update:** `sudo adrian rollback` switches back to the previous release.
+- **The SSH connection dropped during `sudo adrian update`:** it carries on in
+  the background (from the release after the one that brought this). Check
+  with `sudo adrian status`, or read `/opt/adrian/update.log`.
+- **"another update is already running":** only one runs at a time. Wait for it; the
+  hourly auto-update skips while one runs.
+- **"only N MB free under /opt, and the update needs about 500 MB":** Nothing was changed; free space and run it again (auto-update waits).
+- **`status` or `doctor` says an update was cut off:** a power cut or kill
+  stopped one halfway. The next `sudo adrian update` (or the hourly check)
+  finishes it: it keeps a healthy new version and goes back otherwise.
 
 PC app updates:
 
