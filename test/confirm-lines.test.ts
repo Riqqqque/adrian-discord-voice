@@ -116,3 +116,34 @@ describe('a whole turn', () => {
     expect(llm.calls).toBe(2);
   });
 });
+
+describe('another order with it (review S4)', () => {
+  it('sees a second order after a break, but not a "don\'t" about the same thing', () => {
+    for (const s of ['I love Frank Ocean, play something of his', 'remember I am vegetarian and find me a recipe', 'remember I parked on level 3 and text Sam that', 'I hate country, skip this', 'ping me for game night and tell Sam', 'set an alarm for 7 and then play some jazz'])
+      expect(asksMore(s), s).toBe(true);
+    for (const s of ["I can't stand country music, don't ever play that", 'remember I take my coffee black', 'change my 6:30 alarm to 6:45', "make it so i have to say i'm up to turn it off", 'ping me for game night', 'i want snooze to be 15 minutes'])
+      expect(asksMore(s), s).toBe(false);
+  });
+
+  it('leaves taste, remember, alarm and game-night lines to the model then', async () => {
+    const taste = new MusicTaste(undefined).tools()[0]!;
+    expect(await say(taste, { who: 'them', what: 'like', name: 'Frank Ocean' }, 'I love Frank Ocean, play something of his')).toBeUndefined();
+    expect(await say(taste, { who: 'them', what: 'dislike', name: 'country' }, 'I hate country, skip this')).toBeUndefined();
+    const remember = new UserNotes(undefined).tools()[0]!;
+    expect(await say(remember, { note: 'is vegetarian' }, 'remember I am vegetarian and find me a recipe')).toBeUndefined();
+    const deps = { guild: () => undefined, allowedGuilds: [], presences: false, signups: new GameNightSignups(undefined), lastText: () => undefined, voiceChannel: () => undefined, cooldownMs: 1, maxMentions: 10, perUserPerHour: 4 };
+    expect(gameNightTool(deps).speak?.({ action: 'join' }, 'Signed them up for game-night pings, every game.', ctx('ping me for game night and tell Sam'))).toBeUndefined();
+  });
+
+  it('sends an alarm edit with a question or another order back to the model', async () => {
+    const clock = new AlarmClock(undefined, 'UTC', { placeFor: () => 'discord', ring: () => ({ stop() {}, alive: () => true }), dm: async () => true });
+    const tools = alarmTools({ clock, reminders: new Reminders(undefined, 'UTC', () => {}), english: () => true, reach: () => 'call', preview: async () => true, musicOk: true });
+    const tool = (n: string) => tools.find((t) => t.spec.name === n)!;
+    clock.add({ userId: 'u1', speaker: 'Sean', kind: 'timer', label: 'pizza', at: Date.now() + 12 * 60_000, durationMs: 12 * 60_000, tz: 'UTC' });
+    expect(await say(tool('edit_alarm'), { which: 'pizza', add_minutes: 5 }, 'add five minutes to the pizza timer and play some music')).toBeUndefined();
+    expect(await say(tool('edit_alarm'), { which: 'pizza', add_minutes: 5 }, 'add five minutes to the pizza timer')).toMatch(/minutes left on the pizza timer/);
+    expect(await say(tool('alarm_options'), { action: 'set', snooze_minutes: 15 }, 'make snooze 15 minutes, how long is it now?')).toBeUndefined();
+    expect(await say(tool('set_timer'), { minutes: 5 }, 'start a five minute timer and text Sam I am cooking')).toBeUndefined();
+    expect(await say(tool('set_timer'), { minutes: 5 }, 'start a five minute timer')).toBe('Timer set for 5 minutes.');
+  });
+});

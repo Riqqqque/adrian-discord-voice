@@ -12,7 +12,7 @@
 
 import { readFileSync } from 'node:fs';
 import { ActivityType, escapeMarkdown, type Guild, type GuildMember } from 'discord.js';
-import { PendingYes } from '../brain/tools.js';
+import { asksMore, PendingYes } from '../brain/tools.js';
 import type { Tool, ToolContext, UserId } from '../core/interfaces.js';
 import { writeJsonFile } from '../web/secrets-file.js';
 import { canSee, pickTextChannel, plainText } from './textchannel.js';
@@ -424,7 +424,7 @@ export function gameNightTool(d: GameNightDeps): Tool {
     timeoutMs: 12_000,
     // "Which game?" is a question back: their answer must still be heard.
     acts: (a) => (a.action === 'ping' && !!String(a.game ?? '').trim()) || a.action === 'join' || a.action === 'leave',
-    speak: (a, raw, ctx) => (raw.startsWith('Ping ') && raw.endsWith('?') ? raw : a.action === 'ping' && raw.startsWith('Pinged ') && !raw.includes('(') ? 'Pinged them.' : (d.english?.(ctx.userId) ?? true) ? signupLine(raw) : undefined),
+    speak: (a, raw, ctx) => (raw.startsWith('Ping ') && raw.endsWith('?') ? raw : a.action === 'ping' && raw.startsWith('Pinged ') && !raw.includes('(') ? 'Pinged them.' : (d.english?.(ctx.userId) ?? true) && !asksMore(ctx.said) ? signupLine(raw) : undefined),
     asks: (raw) => raw.startsWith('Ping ') && raw.endsWith('?'),
     run: async (a, _signal, ctx) => {
       const action = String(a.action ?? '');

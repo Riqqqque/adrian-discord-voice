@@ -2,7 +2,7 @@
 // cover reminders.
 
 import type { Tool, ToolContext, UserId } from '../core/interfaces.js';
-import { PendingYes } from '../brain/tools.js';
+import { asksMore, PendingYes } from '../brain/tools.js';
 import { localToEpoch, spokenDuration, type Reminders } from './reminders.js';
 import { TONES, isTone } from './alarm-tones.js';
 import {
@@ -64,7 +64,8 @@ export function alarmTools(d: AlarmToolDeps): Tool[] {
   const lineFor = (raw: string, ctx: ToolContext): string | undefined => {
     const line = lines.get(raw);
     lines.delete(raw);
-    return line && d.english(ctx.userId) ? line : undefined;
+    // They also asked or ordered something else: the model answers the whole of it.
+    return line && d.english(ctx.userId) && !asksMore(ctx.said) ? line : undefined;
   };
   const sentence = (parts: string[]) => `${parts.join(', ').replace(/^./, (x) => x.toUpperCase())}.`;
   /** A sound as she'd name it out loud. */
@@ -212,7 +213,7 @@ export function alarmTools(d: AlarmToolDeps): Tool[] {
       return `Alarm set: ${describe(r)}.${where(ctx.userId, 'alarm')}${saveNote()}`;
     },
     speak: (_a, raw, ctx) => {
-      if (!d.english(ctx.userId) || !raw.startsWith('Alarm set:') || raw.includes('(Note:')) return undefined;
+      if (!d.english(ctx.userId) || asksMore(ctx.said) || !raw.startsWith('Alarm set:') || raw.includes('(Note:')) return undefined;
       const r = c.forUser(ctx.userId, 'alarm').find((x) => raw.includes(`[id ${x.id}]`));
       if (!r) return undefined;
       const when = r.days?.length ? `${clockText(r.base, r.tz)} ${daysText(r.days)}` : `${clockText(r.base, r.tz)} ${dayText(r.base, r.tz, now())}`;
@@ -259,7 +260,7 @@ export function alarmTools(d: AlarmToolDeps): Tool[] {
       return `Timer set: ${describe(r)}.${saveNote()}`;
     },
     speak: (a, raw, ctx) => {
-      if (!d.english(ctx.userId) || !raw.startsWith('Timer set:') || raw.includes('(Note:')) return undefined;
+      if (!d.english(ctx.userId) || asksMore(ctx.said) || !raw.startsWith('Timer set:') || raw.includes('(Note:')) return undefined;
       const ms = Math.round((num(a.hours) * 3600 + num(a.minutes) * 60 + num(a.seconds)) * 1000);
       return `Timer set for ${spokenDuration(ms)}.`;
     },
