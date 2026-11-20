@@ -50,7 +50,8 @@ function toneFor(sound: string, d: RingerDeps, userId: UserId): { pattern: Float
   const kind = soundKind(sound);
   if (kind === 'clip') {
     const p = d.clip(userId, sound.slice(5));
-    if (p) return { pattern: p, gap: 1 };
+    // An empty one would ring as silence.
+    if (p?.length) return { pattern: p, gap: 1 };
     d.log('alarm clip missing; using the classic tone', { user: userId, sound });
   }
   const name = kind === 'tone' ? sound : sound === 'voice' ? 'chime' : DEFAULT_TONE;

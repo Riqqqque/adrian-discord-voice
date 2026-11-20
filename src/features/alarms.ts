@@ -357,8 +357,10 @@ export interface AlarmDeps {
   needsButtons?(userId: UserId): boolean;
   /** Start ringing there. */
   ring(place: string, plan: RingPlan): RingHandle | undefined;
-  /** A Discord message to them. `buttons`: Stop / Snooze on the message. */
-  dm(userId: UserId, text: string, buttons?: { alarmId: string }): Promise<boolean>;
+  /** A Discord message to them. `buttons`: Stop / Snooze on the message, for that ring of that alarm. */
+  dm(userId: UserId, text: string, buttons?: { alarmId: string; base: number }): Promise<boolean>;
+  /** A saved sound's file is no longer used (replaced or deleted): delete it. */
+  soundGone?(file: string): void;
   /** Something changed (set, ringing, stopped): for the PC copies and windows. */
   changed?(userId: UserId): void;
   log?(event: string, fields: Record<string, unknown>): void;
@@ -513,9 +515,11 @@ export class AlarmClock {
   }
 
   addSound(s: SavedSound): void {
-    this.data.sounds = this.data.sounds.filter((x) => !(x.owner === s.owner && x.name.toLowerCase() === s.name.toLowerCase()));
+    const old = this.savedSound(s.owner, s.name);
+    this.data.sounds = this.data.sounds.filter((x) => x !== old);
     this.data.sounds.push(s);
     this.save();
+    if (old && old.file !== s.file) this.soundGone(old.file);
   }
 
   removeSound(userId: UserId, name: string): SavedSound | undefined {
@@ -528,7 +532,16 @@ export class AlarmClock {
     if (p?.sound === `clip:${s.name}`) delete p.sound;
     if (p?.timerSound === `clip:${s.name}`) delete p.timerSound;
     this.save();
+    this.soundGone(s.file);
     return s;
+  }
+
+  private soundGone(file: string): void {
+    try {
+      this.deps.soundGone?.(file);
+    } catch (e) {
+      this.deps.log?.('alarm sound file not deleted', { error: (e as Error).message });
+    }
   }
 
   setPrefs(userId: UserId, change: AlarmPrefs): void {
@@ -584,6 +597,10 @@ export class AlarmClock {
       const next = nextAt(a.time, a.days, a.tz, Math.max(now, a.base));
       if (next !== undefined) {
         a.at = a.base = next;
+        // Skipped days already behind it are done with.
+        const day = localDate(next, a.tz);
+        if (a.skip) a.skip = a.skip.filter((x) => x >= day);
+        if (!a.skip?.length) delete a.skip;
         return;
       }
     }
@@ -730,7 +747,7 @@ export class AlarmClock {
           this.save();
           const line = a.kind === 'timer' ? `⏰ Your ${timerName(a)} is done.` : `⏰ ${clockText(a.base, a.tz)} alarm${a.label ? `: ${a.label}` : ''}.`;
           const why = s.handle ? "It's ringing in the call, and you're muted there." : "I couldn't ring it anywhere you are, so this is it.";
-          void this.deps.dm(u, `${line} ${why}`, { alarmId: a.id }).catch(() => false);
+          void this.deps.dm(u, `${line} ${why}`, { alarmId: a.id, base: a.base }).catch(() => false);
         }
       }
     }
@@ -738,12 +755,31 @@ export class AlarmClock {
 
   // --- turning it off --------------------------------------------------------------
 
-  /** Stop or snooze what's ringing for `userId`. */
-  control(userId: UserId, action: 'stop' | 'snooze', minutes?: number): ControlResult {
+  /** Stop or snooze what's ringing for `userId`.
+   *  `only`: a button on the message for one ring of one alarm (id and its `base`);
+   *  it does nothing to anything else that rings now.
+   *  `typed`: /alarm or a button, which stop a snoozed alarm too (a spoken stop
+   *  between snoozes isn't one: firm mode would be skipped). */
+  control(userId: UserId, action: 'stop' | 'snooze', minutes?: number, o: { only?: { id: string; base?: number }; typed?: boolean } = {}): ControlResult {
     const now = this.now();
     const list = this.ringingFor(userId);
+    const only = o.only;
+    const same = (a: Alarm) => !!only && a.id === only.id && (only.base === undefined || a.base === only.base);
+    const snoozed = () => this.data.alarms.filter((a) => a.userId === userId && a.enabled && a.snoozed && a.ringingSince === undefined && (!only || same(a)));
+    if (only && !list.some(same)) {
+      const waiting = snoozed();
+      if (waiting.length) return action === 'stop' ? this.offSnoozed(userId, waiting, now) : { done: false, say: `It's snoozed until ${clockText(waiting[0]!.at, waiting[0]!.tz)}.` };
+      // Snooze just after a stop: the same "put it back" as saying it.
+      if (action === 'snooze' && this.lastOff.get(userId)?.alarms.some(same)) {
+        const r = this.putBack(userId, minutes);
+        if (r) return r;
+      }
+      return { done: false, say: "That one isn't ringing any more." };
+    }
     if (!list.length) {
       if (action === 'snooze') return this.putBack(userId, minutes) ?? { done: false, say: 'Nothing is ringing.' };
+      const waiting = o.typed ? snoozed() : [];
+      if (waiting.length) return this.offSnoozed(userId, waiting, now);
       return { done: false, say: 'Nothing is ringing.' };
     }
     const s = this.sessions.get(userId);
@@ -772,6 +808,18 @@ export class AlarmClock {
     this.drive(now);
     this.deps.changed?.(userId);
     this.deps.log?.('alarm stopped', { user: userId, alarms: list.length });
+    return { done: true, say };
+  }
+
+  /** Turn off alarms waiting out a snooze, as if they were ringing. */
+  private offSnoozed(userId: UserId, list: Alarm[], now: number): ControlResult {
+    this.firmSnooze.delete(userId);
+    this.lastOff.set(userId, { at: now, alarms: list.map((a) => ({ ...a })) });
+    const say = offLine(list, now, (a) => this.nextLine(a, now));
+    for (const a of list) this.finish(a, now);
+    this.save();
+    this.deps.changed?.(userId);
+    this.deps.log?.('alarm stopped', { user: userId, alarms: list.length, after: 'snooze' });
     return { done: true, say };
   }
 

@@ -229,7 +229,7 @@ Alarms and timers ring with a sound until you stop them, the way an alarm clock 
   - Only you can stop your alarm by voice. An owner can stop anyone's, but only with the name ("Adrian, stop the alarm").
   - Only whole sentences count: "stop by the store later" or a song called *Stop* does nothing to it, and neither do music commands or "stop listening".
   - "Wait, I'm not up" or "turn it back on" within 3 minutes of a stop puts it back, snoozed.
-  - Also from the Stop and Snooze buttons in the PC app's window and tray, the DM buttons, or `/alarm stop`.
+  - Also from the Stop and Snooze buttons in the PC app's window and tray, the DM buttons, or `/alarm stop`. A DM's buttons work only for the ring they were sent for: an older message's Stop leaves a newer alarm ringing.
 - **Nobody answers:** an alarm rings for 10 minutes, snoozes itself, and rings again, 3 times in all. After that you get a DM saying you missed it. A timer rings for 5 minutes, then sends the DM.
 - **Restarts and updates:**
   - Alarms are saved to disk. A restart while one rings picks the ring up again.
@@ -564,7 +564,7 @@ Hard limits stay in every mode: no sexual roleplay or explicit sexual content, n
 | `set time [repeat] [days] [date] [label] [sound]` | An alarm. `repeat` is once, daily, weekdays or weekends; `date` is YYYY-MM-DD. |
 | `timer minutes [label] [sound]` | A timer, 0.1 to 10,080 minutes. |
 | `list` | Your alarms, timers and reminders. |
-| `stop`, `snooze [minutes]` | What's ringing for you. Typed stops always stop, whatever your dismiss mode. |
+| `stop`, `snooze [minutes]` | What's ringing for you. Typed stops always stop, whatever your dismiss mode, and also turn off one that is waiting out a snooze. |
 | `delete which` | Deletes one (with autocomplete). |
 | `off which [on]` | Turns one off, or back on. |
 | `skip which` | Skips its next ring only. |
