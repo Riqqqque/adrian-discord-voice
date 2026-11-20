@@ -3,7 +3,7 @@
 // only when it's needed, stay short enough to listen to, and admit what she
 // can't do? Web searches get canned results (no network); timers and notes run
 // for real on stubs. Each case is a fresh conversation unless it's a follow-up.
-//   node bench/everyday.mjs <bot.json>
+//   node bench/everyday.mjs <bot.json> [--holdout]
 import { AnthropicLlm } from '../dist/brain/anthropic.js';
 import { ConversationOrchestrator } from '../dist/brain/orchestrator.js';
 import { SessionMemory } from '../dist/brain/sessions.js';
@@ -27,7 +27,7 @@ const answers = {
   briefing: () => 'Good morning. Partly cloudy today, high of forty eight. No reminders left today. In the news: the Senate passed a spending bill.',
   headlines: () => 'NPR: Senate passes spending bill; Winter storm heads for the Northeast; Rocket launch delayed to Monday.',
 };
-const kit = prodKit(c, { record: (name, args) => calls.push({ name, args }), answers, pc: false });
+const kit = prodKit(c, { record: (name, args) => calls.push({ name, args }), answers, pc: 'absent' });
 const memory = new SessionMemory(16, 3_600_000);
 const o = new ConversationOrchestrator(llm, memory, kit.tools, {
   ...kit.options,
@@ -35,7 +35,18 @@ const o = new ConversationOrchestrator(llm, memory, kit.tools, {
 });
 
 const words = (t) => t.split(/\s+/).filter(Boolean).length;
-const OPENERS = /^(great question|sure[,!.]|absolutely|of course|certainly|as an ai)/i;
+const OPENERS = /^(great question|sure( thing)?[,!.]|absolutely|of course|certainly|as an ai)/i;
+// Dates from today in her timezone, so the bench holds on any day.
+const today = new Date(new Date().toLocaleString('en-US', { timeZone: c.timezone }));
+const y = today.getFullYear();
+const christmas = new Date(today.getMonth() === 11 && today.getDate() > 25 ? y + 1 : y, 11, 25);
+const untilXmas = Math.round((christmas - new Date(y, today.getMonth(), today.getDate())) / 86_400_000);
+const nov1 = new Date(y, 10, 1).getDay();
+const thanksgiving = 1 + ((4 - nov1 + 7) % 7) + 21;
+const ONES = ['', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine'];
+const TENS = ['', '', 'twenty', 'thirty', 'forty', 'fifty', 'sixty', 'seventy', 'eighty', 'ninety'];
+const spoken = (n) => (n < 10 ? ONES[n] : n < 20 ? ['ten', 'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen', 'seventeen', 'eighteen', 'nineteen'][n - 10] : `${TENS[Math.floor(n / 10)]}.?${ONES[n % 10]}`);
+const number = (n) => new RegExp(`\\b${n}(st|nd|rd|th)?\\b|${spoken(n)}`, 'i');
 let ok = 0;
 let total = 0;
 const fails = [];
@@ -56,14 +67,43 @@ async function ask(text, { tool = null, args = () => true, says, max = 20, user 
   console.log(`${pass ? 'ok ' : 'BAD'} "${text}"${why ? `  [${why}]` : ''}\n    tools: ${calls.map((k) => `${k.name}${JSON.stringify(k.args)}`).join(' ') || '-'}\n    says (${words(out)} words): ${out.slice(0, 300)}`);
 }
 
+if (process.argv.includes('--holdout')) await holdout();
+else await main();
+console.log(`\n${ok}/${total} right${fails.length ? `; failed: ${fails.map((f) => JSON.stringify(f)).join(', ')}` : ''}`);
+
+// Held out: written with the main set, run only for the before and after
+// numbers, never while changing the prompt, so a fix can't be fitted to them.
+async function holdout() {
+  await ask('how many cups in a quart', { says: /\b4\b|four/i, max: 12 });
+  await ask("what's twenty times eighteen", { says: /360|three hundred (and )?sixty/i, max: 12 });
+  await ask('how many feet in a mile', { says: /5,?280|fifty.?two hundred (and )?eighty|five thousand,? two hundred (and )?eighty/i, max: 15 });
+  await ask("what's three fifty fahrenheit in celsius", { says: /17[5-7]|one (hundred )?seventy.?(five|six|seven)/i, max: 15 });
+  await ask('how do I unclog a drain without chemicals', { says: /baking soda|vinegar|plunger|plunge|boiling water|snake|hot water/i, max: 40 });
+  await ask('why is my homemade bread so dense', { max: 40 });
+  await ask('how often should I water a succulent', { says: /week|dry/i, max: 30 });
+  await ask('is an air fryer actually worth it', { max: 35 });
+  await ask('how long does it take to roast a whole chicken', { says: /hour|ninety|90|minutes/i, max: 25, user: 'roast' });
+  await ask('and what temperature', { says: /425|400|375|350|four (hundred )?(and )?twenty.?five|four hundred|three (hundred )?(and )?(seventy.?five|fifty)/i, max: 20, user: 'roast' });
+  await ask("what's gas going for around here", { tool: 'web_search', says: /2\.89|two (dollars )?(and )?eighty.?nine/i, max: 25 });
+  await ask('is it going to snow this weekend', { tool: 'web_search', max: 25 });
+  await ask('set an alarm for six thirty tomorrow morning', { tool: 'set_alarm', max: 15 });
+  await ask('start a five minute timer', { tool: 'set_timer', args: (a) => Number(a.minutes) === 5 || Number(a.seconds) === 300, max: 15 });
+  await ask('lock the front door', { says: /can't|cannot|can not|don't have|not able|no way to|(isn't|not) something I can/i, max: 25 });
+  await ask('turn the thermostat up to seventy', { says: /can't|cannot|can not|don't have|not able|no way to|(isn't|not) something I can/i, max: 25 });
+  await ask('we just got a new puppy', { max: 25, user: 'puppy' });
+  await ask('what should we name him', { max: 30, user: 'puppy' });
+  await ask('ugh my back hurts', { max: 30 });
+}
+
+async function main() {
 // Quick facts: just the fact.
 await ask('how many tablespoons are in a cup', { says: /16|sixteen/i, max: 15 });
 await ask("what's fifteen percent of eighty", { says: /12|twelve/i, max: 15 });
 await ask('how many grams in an ounce', { says: /28|twenty.?eight/i, max: 15 });
 await ask('what temperature does chicken need to be cooked to', { says: /165|one sixty.?five|one hundred (and )?sixty.?five/i, max: 20 });
 await ask('how do you spell necessary', { says: /n.?e.?c.?e.?s.?s.?a.?r.?y/i, max: 25 });
-await ask('how many days until christmas', { says: /3[45]|thirty.?(four|five)/i, max: 15 });
-await ask('what day is thanksgiving this year', { says: /26|twenty.?sixth/i, max: 15 });
+await ask('how many days until christmas', { says: number(untilXmas), max: 15 });
+await ask('what day is thanksgiving this year', { says: number(thanksgiving), max: 15 });
 await ask("what's the capital of canada", { says: /ottawa/i, max: 10 });
 await ask('how long do I boil an egg for a soft yolk', { says: /\b(6|7|six|seven)\b/i, max: 20 });
 // How and why: a real answer, still short enough to hear.
@@ -93,5 +133,4 @@ await ask('tell me a joke', { max: 35 });
 await ask("how's your day going", { max: 20 });
 // The morning briefing is said by the tool itself.
 await ask('good morning adrian', { tool: 'briefing', max: 40 });
-
-console.log(`\n${ok}/${total} right${fails.length ? `; failed: ${fails.map((f) => JSON.stringify(f)).join(', ')}` : ''}`);
+}
