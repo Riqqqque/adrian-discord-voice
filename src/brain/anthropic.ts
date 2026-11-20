@@ -3,7 +3,8 @@
 // token usage. The orchestrator keeps running the tool loop.
 
 import Anthropic from '@anthropic-ai/sdk';
-import type { ChatMessage, LlmEvent, LlmProvider, ToolCall, ToolSpec } from '../core/interfaces.js';
+import type { ChatMessage, LlmEvent, LlmProvider, ToolCall, ToolSpec, WarmUsage } from '../core/interfaces.js';
+import { cloud } from '../core/http.js';
 import { LlmHttpError } from './openai-compatible.js';
 
 export interface AnthropicOptions {
@@ -11,6 +12,8 @@ export interface AnthropicOptions {
   apiKey: string;
   /** low | medium | high | xhigh | max. Lower is faster; voice wants low. */
   effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+  /** Default: the shared provider connections (core/http.ts). */
+  fetch?: typeof fetch;
 }
 
 /** ChatMessage[] → Claude's system + messages. Tool results go back in one
@@ -83,33 +86,61 @@ export class AnthropicLlm implements LlmProvider {
   private readonly client: Anthropic;
 
   constructor(private readonly o: AnthropicOptions) {
-    this.client = new Anthropic({ apiKey: o.apiKey, maxRetries: 0, timeout: 20_000 });
+    this.client = new Anthropic({ apiKey: o.apiKey, maxRetries: 0, timeout: 20_000, fetch: o.fetch ?? cloud.fetch });
+    if (!o.fetch) cloud.register(this.client.baseURL);
   }
 
   get model(): string {
     return this.o.model;
   }
 
-  async *stream(messages: ChatMessage[], opts: { tools?: ToolSpec[]; toolChoice?: 'none'; signal?: AbortSignal; maxTokens?: number }): AsyncIterable<LlmEvent> {
+  /** The request body every call shares: model, system, tools and effort
+   *  render the cached prefix, so a cache warm-up must send them exactly as
+   *  an answer does (`warm`). */
+  private params(messages: ChatMessage[], opts: { tools?: ToolSpec[]; toolChoice?: 'none'; maxTokens?: number }): Anthropic.MessageCreateParamsNonStreaming {
     const { system, messages: msgs } = toClaude(messages);
     const tools: Anthropic.Tool[] | undefined = opts.tools?.length
       ? opts.tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.parameters as Anthropic.Tool.InputSchema }))
       : undefined;
+    return {
+      model: this.o.model,
+      // Thinking tokens count against max_tokens, so leave room beyond the spoken answer.
+      max_tokens: Math.max(2048, (opts.maxTokens ?? 500) * 4),
+      ...(system.length ? { system } : {}),
+      messages: msgs,
+      ...(tools ? { tools, ...(opts.toolChoice === 'none' ? { tool_choice: { type: 'none' as const } } : {}) } : {}),
+      output_config: { effort: this.o.effort ?? 'low' },
+    };
+  }
+
+  /** Write (or refresh) the cache for this prefix without an answer:
+   *  `max_tokens: 0` runs only the prefill and bills no output. It can't be
+   *  streamed. `messages` ends with a placeholder user turn after the cached
+   *  system blocks; it is read, never answered. */
+  async warm(messages: ChatMessage[], opts: { tools?: ToolSpec[]; signal?: AbortSignal }): Promise<WarmUsage> {
+    try {
+      const r = await this.client.messages.create({ ...this.params(messages, opts.tools ? { tools: opts.tools } : {}), max_tokens: 0 }, { signal: opts.signal });
+      const u = r.usage;
+      return {
+        inputTokens: u.input_tokens + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0),
+        cachedTokens: u.cache_read_input_tokens ?? 0,
+        cacheWriteTokens: u.cache_creation_input_tokens ?? 0,
+        outputTokens: u.output_tokens,
+      };
+    } catch (e) {
+      if (e instanceof Anthropic.APIError && !(e instanceof Anthropic.APIUserAbortError) && !(e instanceof Anthropic.APIConnectionError)) {
+        const status = e.status ?? 0;
+        throw new LlmHttpError(status || 503, `Claude API ${status}: ${e.message.slice(0, 200)}`);
+      }
+      throw e;
+    }
+  }
+
+  async *stream(messages: ChatMessage[], opts: { tools?: ToolSpec[]; toolChoice?: 'none'; signal?: AbortSignal; maxTokens?: number }): AsyncIterable<LlmEvent> {
     let stream;
     let final: Anthropic.Message;
     try {
-      stream = this.client.messages.stream(
-        {
-          model: this.o.model,
-          // Thinking tokens count against max_tokens, so leave room beyond the spoken answer.
-          max_tokens: Math.max(2048, (opts.maxTokens ?? 500) * 4),
-          ...(system.length ? { system } : {}),
-          messages: msgs,
-          ...(tools ? { tools, ...(opts.toolChoice === 'none' ? { tool_choice: { type: 'none' as const } } : {}) } : {}),
-          output_config: { effort: this.o.effort ?? 'low' },
-        },
-        { signal: opts.signal },
-      );
+      stream = this.client.messages.stream(this.params(messages, opts), { signal: opts.signal });
       for await (const ev of stream) {
         if (ev.type === 'content_block_delta' && ev.delta.type === 'text_delta') yield { type: 'text', delta: ev.delta.text };
       }

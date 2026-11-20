@@ -20,6 +20,7 @@ import type { SpeechPiece, TextToSpeech } from '../core/interfaces.js';
 import { integratedLoudness, StreamCap } from '../audio/loudness.js';
 import { CEILING_DB, levelChunk, MAX_OVER_LU, TARGET_LUFS } from './kokoro.js';
 import { forSpeech } from '../brain/speech-text.js';
+import { cloud } from '../core/http.js';
 
 const API = 'https://api.speechify.ai/v1/audio/stream';
 const RATE = 24_000;
@@ -149,6 +150,7 @@ export interface SpeechifyOptions {
   speed?: number;
   budget: CharBudget;
   log: { info(m: string, f?: object): void; warn(m: string, f?: object): void };
+  /** Default: the shared provider connections (core/http.ts). */
   fetch?: typeof fetch;
   now?: () => number;
 }
@@ -171,7 +173,9 @@ export class SpeechifyTts implements TextToSpeech {
     /** Local engine and voice used whenever the cloud voice can't be. */
     private readonly fallback: TextToSpeech,
     private readonly fallbackVoice: string,
-  ) {}
+  ) {
+    if (!o.fetch) cloud.register(API);
+  }
 
   private now(): number {
     return (this.o.now ?? Date.now)();
@@ -226,7 +230,8 @@ export class SpeechifyTts implements TextToSpeech {
 
   /** The API's answer, once its headers are in (the audio follows). */
   private async request(text: string, speed: number, signal: AbortSignal): Promise<Response> {
-    const r = await (this.o.fetch ?? fetch)(API, {
+    // fetchOnce: raw()/rawStream() have their own single retry, so a sentence goes out at most twice.
+    const r = await (this.o.fetch ?? cloud.fetchOnce)(API, {
       method: 'POST',
       headers: { Authorization: `Bearer ${this.o.apiKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
