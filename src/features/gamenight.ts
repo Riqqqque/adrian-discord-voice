@@ -463,4 +463,4 @@ export function gameNightTool(d: GameNightDeps): Tool {
 
 /** Prompt line: when to use it. */
 export const GAME_NIGHT_RULE =
-  "Don't @mention people yourself for game nights: game_night ping does it, only for those who signed up.";
+  "game_night is for who's free or playing in this server, game-night pings, and signing up for them (\"ping me for game night\" is join, \"stop pinging me\" is leave, only ever for the person asking). Don't @mention people yourself for game nights: ping does it, only for those who signed up.";
