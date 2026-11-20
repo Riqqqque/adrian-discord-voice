@@ -348,12 +348,13 @@ export class SpeechifyTts implements TextToSpeech {
    *  again would repeat its start) and the API is paused like any failure. */
   async *stream(text: string, opts: { voice: string; speed: number }, signal?: AbortSignal): AsyncGenerator<SpeechPiece> {
     this.speed = opts.speed;
-    if (text.length <= SHORT || !this.available(text.length)) {
+    // Checked on what is sent and charged: "€2.5m" and "7:00" get longer.
+    const said = forSpeech(text);
+    if (text.length <= SHORT || !this.available(said.length)) {
       const a = await this.synthesize(text, opts, signal);
       yield { samples: a.samples, sampleRate: a.sampleRate };
       return;
     }
-    const said = forSpeech(text);
     let started = false;
     try {
       const gain = await this.gainFor();

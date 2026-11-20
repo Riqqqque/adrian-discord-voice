@@ -32,9 +32,10 @@ export class SpeechModels {
     return this.stt.p;
   }
 
-  /** Parakeet is loaded, or loading: a restart adds no more of it. */
-  get sttHeld(): boolean {
-    return this.stt !== undefined;
+  /** This Parakeet is loaded, or loading: a restart adds no more of it. Another
+   *  model folder or thread count loads a second one beside it until GC. */
+  sttHeldFor(modelDir: string, threads: number): boolean {
+    return this.stt?.key === `${modelDir}|${threads}`;
   }
 
   ttsFor(modelDir: string, threads: number): KokoroTts {
@@ -223,7 +224,7 @@ export class StackManager {
 
   /** A first start loads the speech models: only when they fit (see memory.ts). */
   private roomToStart(config: PocConfig, secrets: Map<string, string>): void {
-    if (this.models.sttHeld) {
+    if (this.models.sttHeldFor(config.listen.asrModelDir, config.listen.asrThreads)) {
       this.lowMemorySince = undefined;
       return; // a restart: the big models are already here
     }
