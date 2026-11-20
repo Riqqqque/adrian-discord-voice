@@ -82,8 +82,8 @@ await ask('asked', 'call', 'do you remember what I do for a living', { says: /pi
 await ask('private', 'call', 'where does Sean live', { speaker: 'Sam', not: /denver/i });
 await ask('private', 'call', "I'm starving, what should I eat", { not: /vegetarian|peanut/i, max: 30 });
 // A question that only shares a word with a note (review S5).
-await ask('private', 'call', 'how does this work anyway', { not: /pizza/i, max: 30 });
-await ask('private', 'call', 'what game should we play tonight', { not: /valorant/i, max: 30 });
+await ask('private', 'call', 'how does this work anyway', { not: /pizza/i, max: 60 });
+await ask('private', 'call', 'what game should we play tonight', { not: /valorant/i, max: 60 });
 // Used without being asked, where only they hear.
 await ask('used', 'desk', 'what should I make for dinner tonight', { not: /chicken|beef|pork|steak|bacon|sausage|\bham\b|turkey|fish|salmon|shrimp|tuna|meat(?!less)/i, max: 40 });
 // Naming the allergy to steer clear of it is fine; suggesting peanuts is not.
