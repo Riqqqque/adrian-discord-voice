@@ -22,6 +22,8 @@ MODELS=(
   # Multilingual (25 European languages) always-on recognizer; replaced v2 in 0.7.0.
   # Upstream re-exported it in place on 2026-11-07 (same checkpoint and tokens, newer
   # export tools, plus a model card): 1495e91b... is that upload, 5793d0fd... the 2025 one.
+  # Same words and wake decisions on our benches; the new export keeps about 0.2-0.3 GB
+  # more memory after a long clip (20-35 s), so a server installed from the 2025 one keeps it.
   "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8|$SHERPA/asr-models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8.tar.bz2|1495e91b59d7fc53ddca91f3431758ec99f8fa253fdb0e1e851be0f72b14b0f9,5793d0fd397c5778d2cf2126994d58e9d56b1be7c04d13c7a15bb1b4eafb16bf|tar.bz2||465:645:645"
   # Second pass for non-English questions (Chinese, Japanese, Vietnamese, ...). Only int8 files are used.
   "sherpa-onnx-whisper-small|$SHERPA/asr-models/sherpa-onnx-whisper-small.tar.bz2|486a46afbb7ba798507190ffe02fea2dd726049af212e774537efac6afb210a6|tar.bz2|small-encoder.onnx small-decoder.onnx test_wavs|610:1285:360"
