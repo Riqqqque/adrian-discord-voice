@@ -4,6 +4,10 @@
 // gets that gain plus a peak limiter, so level doesn't jump between
 // sentences.
 
+import { createHash } from 'node:crypto';
+import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { dirname } from 'node:path';
 import sherpa from 'sherpa-onnx-node';
 import type { TextToSpeech } from '../core/interfaces.js';
 import { gainAndLimit, integratedLoudness } from '../audio/loudness.js';
@@ -50,7 +54,7 @@ export { KOKORO_VOICES };
 export const TARGET_LUFS = -16 - 3.01;
 /** A single chunk may come out at most this far above the target (short
  *  words like "Yes?" read hotter than the calibration sentences). */
-const MAX_OVER_LU = 1.5;
+export const MAX_OVER_LU = 1.5;
 /** Sample-peak ceiling; leaves ~1 dB for inter-sample peaks → < −1 dBTP. */
 export const CEILING_DB = -2;
 const CALIBRATION = [
@@ -62,14 +66,99 @@ export interface KokoroOptions {
   modelDir: string;
   modelFile?: string;
   threads: number;
+  now?: () => number;
+}
+
+/** A model that failed to load is tried again after this long, doubling up to
+ *  LOAD_RETRY_MAX_MS: a fixed install starts working without a restart, and a
+ *  broken one doesn't pay a native load on every sentence. */
+export const LOAD_RETRY_MS = 30_000;
+const LOAD_RETRY_MAX_MS = 10 * 60_000;
+
+/** The files every English Kokoro voice needs (a British voice adds its lexicon). */
+export function kokoroFiles(modelDir: string, modelFile = 'model.onnx', voice = 'af_heart'): string[] {
+  const lex = langOf(voice) === 'gb' ? 'gb' : 'us';
+  return [modelFile, 'voices.bin', 'tokens.txt', 'espeak-ng-data', `lexicon-${lex}-en.txt`].map((f) => `${modelDir}/${f}`);
+}
+
+let sherpaVersion: string | undefined;
+function engineVersion(): string {
+  try {
+    sherpaVersion ??= String((createRequire(import.meta.url)('sherpa-onnx-node/package.json') as { version?: string }).version);
+  } catch {
+    sherpaVersion = 'unknown';
+  }
+  return sherpaVersion;
 }
 
 export class KokoroTts implements TextToSpeech {
   private readonly engines = new Map<SpeechLang, Promise<InstanceType<typeof sherpa.OfflineTts>>>();
   private readonly gains = new Map<string, Promise<number>>();
+  private readonly failedLoads = new Map<SpeechLang, { until: number; waitMs: number; error: unknown }>();
   private queue: Promise<unknown> = Promise.resolve();
+  /** Calibrated gains kept between starts (see keepGainsIn). */
+  private gainFile: string | undefined;
+  private stored: Record<string, number> | undefined;
 
   constructor(private readonly o: KokoroOptions) {}
+
+  private now(): number {
+    return (this.o.now ?? Date.now)();
+  }
+
+  /** Keep calibrated gains in this file, so a start that later needs this voice
+   *  skips the two calibration sentences. Each entry is keyed by everything
+   *  that changes the measurement (model and voice files, engine version,
+   *  calibration text, target, voice, speed), so it can't go stale. */
+  keepGainsIn(file: string): void {
+    if (this.gainFile === file) return;
+    this.gainFile = file;
+    try {
+      const d = JSON.parse(readFileSync(file, 'utf8')) as { version?: number; gains?: Record<string, unknown> };
+      this.stored = {};
+      if (d?.version === 1 && d.gains) for (const [k, v] of Object.entries(d.gains)) if (typeof v === 'number' && Number.isFinite(v)) this.stored[k] = v;
+    } catch {
+      this.stored = {}; // none yet
+    }
+  }
+
+  /** What a gain measured now depends on, or undefined if the files can't be read. */
+  private gainKey(voice: string, speed: number): string | undefined {
+    try {
+      const d = this.o.modelDir;
+      const file = (f: string) => {
+        const st = statSync(`${d}/${f}`);
+        return `${f}:${st.size}:${Math.round(st.mtimeMs)}`;
+      };
+      const cal = createHash('sha256').update(JSON.stringify(CALIBRATION_BY_LANG[langOf(voice)] ?? CALIBRATION)).digest('hex').slice(0, 12);
+      return [voice, speed, file(this.o.modelFile ?? 'model.onnx'), file('voices.bin'), `sherpa:${engineVersion()}`, `cal:${cal}`, `target:${TARGET_LUFS}`].join('|');
+    } catch {
+      return undefined;
+    }
+  }
+
+  private storeGain(key: string, gain: number): void {
+    if (!this.gainFile || !this.stored) return;
+    this.stored[key] = gain;
+    try {
+      mkdirSync(dirname(this.gainFile), { recursive: true });
+      writeFileSync(`${this.gainFile}.tmp`, JSON.stringify({ version: 1, gains: this.stored }), { mode: 0o640 });
+      renameSync(`${this.gainFile}.tmp`, this.gainFile);
+    } catch {
+      /* only costs a calibration next start */
+    }
+  }
+
+  /** Load the engine and calibrate in the background, ahead of a sentence
+   *  that may need it. Nothing is played. */
+  prepare(voice: string, speed: number): Promise<void> {
+    return Promise.all([this.engine(voice), this.gainFor(voice, speed)]).then(() => undefined);
+  }
+
+  /** Whether this voice's engine is loaded (or loading). */
+  loaded(voice: string): boolean {
+    return this.engines.has(langOf(voice));
+  }
 
   static voiceId(name: string): number {
     const i = (KOKORO_VOICES as readonly string[]).indexOf(name);
@@ -84,8 +173,10 @@ export class KokoroTts implements TextToSpeech {
     const lex = langOf(voice);
     let e = this.engines.get(lex);
     if (!e) {
+      const failed = this.failedLoads.get(lex);
+      if (failed && this.now() < failed.until) return Promise.reject(failed.error);
       const d = this.o.modelDir;
-      e = sherpa.OfflineTts.createAsync({
+      const created = Promise.resolve().then(() => sherpa.OfflineTts.createAsync({
         model: {
           kokoro: {
             model: `${d}/${this.o.modelFile ?? 'model.onnx'}`,
@@ -105,8 +196,17 @@ export class KokoroTts implements TextToSpeech {
         // Chinese numbers, dates and phone numbers read out properly.
         ...(lex === 'zh' ? { ruleFsts: `${d}/date-zh.fst,${d}/phone-zh.fst,${d}/number-zh.fst` } : {}),
         maxNumSentences: 1,
-      });
-      this.engines.set(lex, e);
+      }));
+      e = created;
+      this.engines.set(lex, created);
+      created.then(
+        () => this.failedLoads.delete(lex),
+        (error: unknown) => {
+          if (this.engines.get(lex) === created) this.engines.delete(lex);
+          const waitMs = failed ? Math.min(failed.waitMs * 2, LOAD_RETRY_MAX_MS) : LOAD_RETRY_MS;
+          this.failedLoads.set(lex, { until: this.now() + waitMs, waitMs, error });
+        },
+      );
     }
     return e;
   }
@@ -129,7 +229,14 @@ export class KokoroTts implements TextToSpeech {
     const key = `${voice}@${speed}`;
     let g = this.gains.get(key);
     if (!g) {
-      g = (async () => {
+      const id = this.gainFile ? this.gainKey(voice, speed) : undefined;
+      const kept = id !== undefined ? this.stored?.[id] : undefined;
+      if (kept !== undefined) {
+        g = Promise.resolve(kept);
+        this.gains.set(key, g);
+        return g;
+      }
+      const made = (async () => {
         const parts = await Promise.all((CALIBRATION_BY_LANG[langOf(voice)] ?? CALIBRATION).map((t) => this.raw(t, voice, speed)));
         const rate = parts[0]!.sampleRate;
         const all = new Float32Array(parts.reduce((n, p) => n + p.samples.length, 0));
@@ -141,7 +248,16 @@ export class KokoroTts implements TextToSpeech {
         const l = integratedLoudness(all, rate);
         return Number.isFinite(l) ? TARGET_LUFS - l : 0;
       })();
-      this.gains.set(key, g);
+      g = made;
+      this.gains.set(key, made);
+      made.then(
+        (gain) => {
+          if (id !== undefined) this.storeGain(id, gain);
+        },
+        () => {
+          if (this.gains.get(key) === made) this.gains.delete(key); // try again next time
+        },
+      );
     }
     return g;
   }

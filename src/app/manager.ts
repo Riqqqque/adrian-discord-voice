@@ -51,6 +51,8 @@ const MAX_RETRY_MS = 5 * 60_000;
 /** A start put off for memory loads anyway after this long, in case the
  *  estimate is wrong: being killed beats never starting. */
 const MAX_MEMORY_WAIT_MS = 15 * 60_000;
+/** While it waits for memory it looks again this often (reading meminfo is free). */
+const MEMORY_RETRY_MS = 30_000;
 const NETWORK_CODES = new Set([
   'ENOTFOUND', 'EAI_AGAIN', 'ECONNREFUSED', 'ECONNRESET', 'ECONNABORTED', 'EPIPE', 'ETIMEDOUT', 'ENETDOWN', 'ENETUNREACH', 'EHOSTDOWN', 'EHOSTUNREACH',
   'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT', 'UND_ERR_SOCKET',
@@ -102,6 +104,7 @@ export class StackManager {
   private retryMs = FIRST_RETRY_MS;
   /** When the current wait for memory began. */
   private lowMemorySince: number | undefined;
+  private _waitingFor: 'memory' | undefined;
   readonly models = new SpeechModels();
 
   constructor(
@@ -122,6 +125,11 @@ export class StackManager {
   }
   get error(): string | undefined {
     return this._error;
+  }
+  /** Set while a start is put off (state stays 'starting': it isn't a failure,
+   *  so `adrian update` keeps waiting instead of rolling back). */
+  get waitingFor(): 'memory' | undefined {
+    return this._waitingFor;
   }
   get current(): VoiceStack | undefined {
     return this.stack;
@@ -155,6 +163,7 @@ export class StackManager {
       clearTimeout(this.retryTimer);
       const wait = this.retryMs;
       this.retryMs = FIRST_RETRY_MS; // only another failure that can recover moves it on
+      this._waitingFor = undefined;
       if (this.stack) {
         const s = this.stack;
         this.stack = undefined;
@@ -184,6 +193,17 @@ export class StackManager {
         this._state = 'running';
         this.log.info('voice stack ready', { ms: Math.round(performance.now() - t), ...memoryFields(this.memInfo()) });
       } catch (e) {
+        if (e instanceof LowMemoryError) {
+          // Not a failure: nothing was loaded, and it starts by itself once
+          // memory frees up (or after MAX_MEMORY_WAIT_MS regardless).
+          this._state = 'starting';
+          this._waitingFor = 'memory';
+          this._error = e.message.slice(0, 300);
+          this.log.warn('waiting for memory before loading the speech models', { inSeconds: MEMORY_RETRY_MS / 1000 });
+          this.retryTimer = setTimeout(() => void this.restart(), MEMORY_RETRY_MS);
+          this.retryTimer.unref();
+          return this._state;
+        }
         this._state = 'failed';
         this._error = redact((e as Error).message).slice(0, 300);
         this.log.error('voice stack failed to start', { error: this._error });

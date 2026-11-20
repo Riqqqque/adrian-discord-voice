@@ -463,3 +463,29 @@ describe('mixer', () => {
     expect(r.last()).toBe(5000 + 200);
   });
 });
+
+describe('mixer: speech that falls behind mid-sentence', () => {
+  it('waits for a whole frame instead of playing part of one padded with silence', async () => {
+    const r = rig();
+    const s = new PassThrough();
+    r.m.playPcm(s, { volume: 1 });
+    s.write(pcm(12, 1000));
+    s.write(pcm(1, 1000).subarray(0, FRAME_BYTES / 2)); // half a frame, then the stream falls behind
+    await r.run(30);
+    const all = Buffer.concat(r.outs);
+    // No frame mixes sound with zero padding: each is all sound or all silence.
+    for (let f = 0; f * FRAME_BYTES < all.length; f++) {
+      const a = all.readInt16LE(f * FRAME_BYTES);
+      const b = all.readInt16LE(f * FRAME_BYTES + FRAME_BYTES - 2);
+      expect(a === 0).toBe(b === 0);
+    }
+    expect(r.m.takeStats().speechShort).toBeGreaterThan(0);
+    // The rest arrives: the held half plays joined to it, and the end's short tail is padded as before.
+    s.end(Buffer.concat([pcm(1, 1000).subarray(FRAME_BYTES / 2), pcm(2, 1000), pcm(1, 1000).subarray(0, 100)]));
+    await r.run(10);
+    const total = Buffer.concat(r.outs);
+    let loud = 0;
+    for (let i = 0; i < total.length; i += 2) if (total.readInt16LE(i) !== 0) loud += 2;
+    expect(loud).toBe(FRAME_BYTES * 15 + 100);
+  });
+});

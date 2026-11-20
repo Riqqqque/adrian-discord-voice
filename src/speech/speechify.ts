@@ -4,14 +4,21 @@
 // streaming endpoint as raw 24 kHz PCM, then leveled like the local voices.
 // Sentences longer than the cached short lines play as their bytes arrive
 // (first audio ~0.1 s after the request instead of the ~0.3 s the whole
-// sentence takes).
+// sentence takes). A streamed sentence gets the same cap on hot sentences as
+// levelChunk (StreamCap): its first CAP_FREE_S play at once, the rest waits
+// for the whole sentence, which arrives about 30 times faster than it plays.
+//
+// The local voice loads only when needed (see app/local-voice.ts). At the
+// first sign of trouble (a slow or failed request, a failed warm-up, the
+// month's characters nearly spent) it starts loading in the background, so
+// it's ready by the time a sentence has to fall back.
 
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dateFormat } from '../core/time.js';
 import { dirname } from 'node:path';
 import type { SpeechPiece, TextToSpeech } from '../core/interfaces.js';
-import { integratedLoudness, StreamLimiter } from '../audio/loudness.js';
-import { CEILING_DB, levelChunk, TARGET_LUFS } from './kokoro.js';
+import { integratedLoudness, StreamCap } from '../audio/loudness.js';
+import { CEILING_DB, levelChunk, MAX_OVER_LU, TARGET_LUFS } from './kokoro.js';
 import { forSpeech } from '../brain/speech-text.js';
 
 const API = 'https://api.speechify.ai/v1/audio/stream';
@@ -24,6 +31,29 @@ const WARM_IDLE_MS = 30 * 60_000;
 const WARM_TIMEOUT_MS = 4_000;
 /** All a warm-up says: every character counts toward the month. */
 const WARM_TEXT = 'Hi.';
+/** No audio for this long (first bytes, or between pieces): the local voice
+ *  starts loading in case this sentence or the next has to fall back. Each
+ *  load keeps 0.5 GB for good, so this sits above the slowest normal answer:
+ *  in a month of production (119 answers, whole-sentence time before
+ *  streaming) p99 was 1.79 s and the slowest 1.85 s; streamed first audio
+ *  is 0.2-0.3 s. Still 2 s ahead of the 4 s timeout. */
+export const SLOW_MS = 2_000;
+/** Mid-sentence, a gap longer than this ends the sentence: by then the
+ *  listener hears it as broken, and cutting lets the next sentence start
+ *  (in the local voice, which starts loading then if it hasn't yet). The wait for the
+ *  first bytes keeps the full timeoutMs: nothing has been heard yet. */
+export const STALL_MS = 2_000;
+/** Audio of a streamed sentence that plays at once at the calibrated gain, s.
+ *  More than the Speaker's 0.2 s opening plus the ~20 ms of lead silence it
+ *  trims, so first audio is as early as without the cap. */
+export const CAP_FREE_S = 0.6;
+/** When the held rest of a sentence is due, ms after its first audio went out:
+ *  CAP_FREE_S less the mixer's 160 ms lead and a 140 ms margin. Measured, the
+ *  whole sentence is in 105-140 ms after its first piece; if it isn't by
+ *  then, the rest plays uncapped, as streaming did before the cap. */
+export const CAP_DUE_MS = 300;
+/** Fewer characters than this left in the month: load the local voice ahead of the switch. */
+export const LOW_CHARS = 10_000;
 
 export class SpeechifyError extends Error {
   constructor(
@@ -64,6 +94,11 @@ export class CharBudget {
 
   used(): number {
     return this.data.months[this.month()] ?? 0;
+  }
+
+  /** Characters left this month (Infinity when unlimited). */
+  left(): number {
+    return this.monthlyChars === 0 ? Infinity : Math.max(0, this.monthlyChars - this.used());
   }
 
   /** True while this many more characters fit in the month (0 = unlimited). */
@@ -126,6 +161,10 @@ export class SpeechifyTts implements TextToSpeech {
   /** When raw() last went to the API. */
   private lastCall = -Infinity;
   private readonly short = new Map<string, Float32Array>();
+  /** Set once the local voice was asked to load ahead of need. */
+  private fallbackWarming = false;
+  /** The speed sentences were last asked for (the local voice calibrates per speed). */
+  private speed = 1;
 
   constructor(
     private readonly o: SpeechifyOptions,
@@ -138,8 +177,38 @@ export class SpeechifyTts implements TextToSpeech {
     return (this.o.now ?? Date.now)();
   }
 
+  /** Start loading the local voice in the background, once: a sentence may
+   *  soon need it. Costs its memory (about 0.5 GB) from then on. */
+  private warmFallback(why: string): void {
+    const f = this.fallback as TextToSpeech & { prepare?(voice: string, speed: number): Promise<void> };
+    if (this.fallbackWarming || !f.prepare) return;
+    this.fallbackWarming = true;
+    const t = performance.now();
+    this.o.log.info('loading the local voice in case the cloud voice fails', { why });
+    f.prepare(this.fallbackVoice, this.speed).then(
+      () => this.o.log.info('local voice ready', { ms: Math.round(performance.now() - t) }),
+      (e: Error) => {
+        this.fallbackWarming = false; // the next sign of trouble tries again
+        this.o.log.warn('local voice failed to load', { error: e.message });
+      },
+    );
+  }
+
+  /** Calls warmFallback if nothing is heard from the API for SLOW_MS. */
+  private slowWatch(): { progress(): void; done(): void } {
+    let timer: NodeJS.Timeout | undefined;
+    const arm = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => this.warmFallback('slow answer'), SLOW_MS);
+      timer.unref?.();
+    };
+    arm();
+    return { progress: arm, done: () => clearTimeout(timer) };
+  }
+
   /** Whether the next sentence will go to Speechify. */
   available(chars: number): boolean {
+    if (this.o.budget.left() < LOW_CHARS) this.warmFallback('monthly characters nearly spent');
     if (this.now() < this.pausedUntil) return false;
     if (!this.o.budget.allows(chars)) {
       if (!this.budgetNoted) this.o.log.warn('cloud voice budget used up for this month; using the local voice', { usedChars: this.o.budget.used() });
@@ -175,19 +244,22 @@ export class SpeechifyTts implements TextToSpeech {
     return r;
   }
 
-  private async raw(text: string, speed: number, signal?: AbortSignal, timeoutMs = this.o.timeoutMs) {
+  private async raw(text: string, speed: number, signal?: AbortSignal, timeoutMs = this.o.timeoutMs, watchSlow = true) {
     const t0 = performance.now();
     this.lastCall = this.now();
     const timeout = AbortSignal.timeout(timeoutMs);
     const limit = signal ? AbortSignal.any([signal, timeout]) : timeout;
     const rate = speed * (this.o.speed ?? 1);
-    const bytes = await this.post(text, rate, limit).catch((e: Error) => {
-      // A reused socket can die without warning. That says nothing about the
-      // API, so one more try at once; only a second failure pauses the voice.
-      if (limit.aborted || !connectionBroke(e)) throw e;
-      this.o.log.info('cloud voice connection broke; trying again', { error: (e.cause as Error).message });
-      return this.post(text, rate, limit);
-    });
+    const slow = watchSlow ? this.slowWatch() : undefined;
+    const bytes = await this.post(text, rate, limit)
+      .catch((e: Error) => {
+        // A reused socket can die without warning. That says nothing about the
+        // API, so one more try at once; only a second failure pauses the voice.
+        if (limit.aborted || !connectionBroke(e)) throw e;
+        this.o.log.info('cloud voice connection broke; trying again', { error: (e.cause as Error).message });
+        return this.post(text, rate, limit);
+      })
+      .finally(() => slow?.done());
     const samples = pcm16ToFloat(bytes);
     if (!samples.length) throw new Error('speechify returned no audio');
     this.o.budget.add(text.length);
@@ -200,10 +272,13 @@ export class SpeechifyTts implements TextToSpeech {
   async warmIfIdle(): Promise<void> {
     if (this.now() - this.lastCall <= WARM_IDLE_MS || !this.available(WARM_TEXT.length)) return;
     try {
-      const a = await this.raw(WARM_TEXT, 1, undefined, WARM_TIMEOUT_MS);
+      // A slow warm-up is what it's there to soak up: only a failure says trouble.
+      const a = await this.raw(WARM_TEXT, 1, undefined, WARM_TIMEOUT_MS, false);
       this.o.log.info('cloud voice warmed', { ms: a.synthMs });
     } catch (e) {
       this.o.log.info('cloud voice warm-up failed', { error: (e as Error).message });
+      // Someone is talking to her now, so the answer may well need the local voice.
+      this.warmFallback('warm-up failed');
     }
   }
 
@@ -223,6 +298,7 @@ export class SpeechifyTts implements TextToSpeech {
   }
 
   async synthesize(line: string, opts: { voice: string; speed: number }, signal?: AbortSignal) {
+    this.speed = opts.speed;
     const text = forSpeech(line);
     // Short lines repeat ("Yes?", "Okay, louder."): kept so they play at once.
     const key = text.length <= SHORT ? `${opts.speed}|${text}` : undefined;
@@ -251,6 +327,7 @@ export class SpeechifyTts implements TextToSpeech {
   private failed(e: unknown, midSentence = false): void {
     const status = e instanceof SpeechifyError ? e.status : 0;
     const error = (e as Error).message;
+    this.warmFallback('cloud voice failed');
     if (status >= 400 && status < 500 && status !== 401 && status !== 403 && status !== 408 && status !== 429) {
       this.o.log.warn('cloud voice refused a line; local voice for it', { status, error });
     } else {
@@ -265,6 +342,7 @@ export class SpeechifyTts implements TextToSpeech {
    *  partway, the rest of that sentence is dropped (another voice saying it
    *  again would repeat its start) and the API is paused like any failure. */
   async *stream(text: string, opts: { voice: string; speed: number }, signal?: AbortSignal): AsyncGenerator<SpeechPiece> {
+    this.speed = opts.speed;
     if (text.length <= SHORT || !this.available(text.length)) {
       const a = await this.synthesize(text, opts, signal);
       yield { samples: a.samples, sampleRate: a.sampleRate };
@@ -290,17 +368,26 @@ export class SpeechifyTts implements TextToSpeech {
   }
 
   /** Leveled audio pieces as the bytes come in. timeoutMs limits the wait for
-   *  the first bytes and any stall after them. */
+   *  the first bytes, STALL_MS (at most timeoutMs) any gap after them. The
+   *  capped part of the sentence is held until the body ends, or until
+   *  CAP_DUE_MS after the first audio, whichever comes first. */
   private async *rawStream(text: string, speed: number, gainDb: number, signal: AbortSignal | undefined, started: () => boolean): AsyncGenerator<Float32Array> {
     this.lastCall = this.now();
     const stall = new AbortController();
     const stalled = () => stall.abort(new DOMException('speechify stalled', 'TimeoutError'));
     let timer = setTimeout(stalled, this.o.timeoutMs);
+    const slow = this.slowWatch();
     const limit = signal ? AbortSignal.any([signal, stall.signal]) : stall.signal;
     const rate = speed * (this.o.speed ?? 1);
-    let limiter = new StreamLimiter(RATE, gainDb, CEILING_DB);
+    const capper = () => new StreamCap(RATE, gainDb, CEILING_DB, { maxLufs: TARGET_LUFS + MAX_OVER_LU, freeS: CAP_FREE_S });
+    let cap = capper();
     let carry: Buffer | undefined;
     let counted = false;
+    let firstOutAt = 0;
+    let dueTimer: NodeJS.Timeout | undefined;
+    /** Resolves when the held audio has to go out. */
+    let due: Promise<'due'> | undefined;
+    let it: AsyncIterator<Uint8Array> | undefined;
     try {
       for (let attempt = 0; ; attempt++) {
         try {
@@ -308,31 +395,64 @@ export class SpeechifyTts implements TextToSpeech {
           if (!r.body) throw new Error('speechify returned no audio');
           if (!counted) this.o.budget.add(text.length);
           counted = true;
-          for await (const part of r.body as unknown as AsyncIterable<Uint8Array>) {
+          it = (r.body as unknown as AsyncIterable<Uint8Array>)[Symbol.asyncIterator]();
+          for (;;) {
+            const next = it.next();
+            next.catch(() => undefined); // a read left pending when we stop early must not go unhandled
+            let res = due ? await Promise.race([next, due]) : await next;
+            if (res === 'due') {
+              due = undefined;
+              const out = cap.release();
+              if (out.length) yield out;
+              res = await next;
+            }
+            if (res.done) break;
+            const part = res.value;
             clearTimeout(timer);
-            timer = setTimeout(stalled, this.o.timeoutMs);
+            timer = setTimeout(stalled, Math.min(STALL_MS, this.o.timeoutMs));
+            slow.progress();
             let b = Buffer.from(part.buffer, part.byteOffset, part.byteLength);
             if (carry) b = Buffer.concat([carry, b]);
             // A piece can end halfway through a 16-bit sample.
             const even = b.length & ~1;
             carry = even < b.length ? Buffer.from(b.subarray(even)) : undefined;
-            const out = limiter.push(pcm16ToFloat(b.subarray(0, even)));
-            if (out.length) yield out;
+            const out = cap.push(pcm16ToFloat(b.subarray(0, even)));
+            if (out.length) {
+              firstOutAt ||= performance.now();
+              yield out;
+            }
+            if (!due && cap.holding) {
+              const wait = Math.max(0, firstOutAt + CAP_DUE_MS - performance.now());
+              due = new Promise((resolve) => (dueTimer = setTimeout(() => resolve('due'), wait)));
+            }
           }
           break;
         } catch (e) {
           // A reused socket can die without warning: one more try, as raw()
           // does, but only while nothing has been played.
-          if (attempt > 0 || started() || limit.aborted || !connectionBroke(e)) throw e;
+          if (attempt > 0 || started() || limit.aborted || !connectionBroke(e)) {
+            // What arrived before a break still plays (the caller's own abort drops it).
+            if (!signal?.aborted && cap.holding) {
+              const out = cap.release();
+              if (out.length) yield out;
+            }
+            throw e;
+          }
           this.o.log.info('cloud voice connection broke; trying again', { error: ((e as Error).cause as Error).message });
           carry = undefined;
-          limiter = new StreamLimiter(RATE, gainDb, CEILING_DB);
+          cap = capper();
+          clearTimeout(timer);
+          timer = setTimeout(stalled, this.o.timeoutMs);
         }
       }
-      const tail = limiter.end();
+      const tail = cap.end();
       if (tail.length) yield tail;
     } finally {
       clearTimeout(timer);
+      clearTimeout(dueTimer);
+      slow.done();
+      // Stopped early (the caller returned): close the body, as for await did.
+      void it?.return?.().catch(() => undefined);
     }
   }
 }

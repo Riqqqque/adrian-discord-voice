@@ -141,6 +141,21 @@ describe('admin web server', () => {
     expect((await call('GET', '/api/dashboard')).status).toBe(401);
   });
 
+  it('health says when a start waits for memory, as packaging/adrian looks for it', async () => {
+    const s = stack as unknown as { state: string; waitingFor?: string };
+    s.state = 'starting';
+    s.waitingFor = 'memory';
+    try {
+      const h = await call('GET', '/api/health');
+      expect(h.status).toBe(200);
+      expect(JSON.stringify(h.data)).toContain('"waitingFor":"memory"');
+      expect(readFileSync(new URL('../packaging/adrian', import.meta.url), 'utf8')).toContain(`'"waitingFor":"memory"'`);
+    } finally {
+      s.state = 'setup';
+      delete s.waitingFor;
+    }
+  });
+
   it('serves the page but nothing outside web/', async () => {
     expect((await call('GET', '/')).text).toContain('A.D.R.I.A.N.');
     expect((await call('GET', '/../web-evil/x.html')).status).toBe(404);
