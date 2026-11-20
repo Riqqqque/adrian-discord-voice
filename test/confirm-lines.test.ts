@@ -159,6 +159,47 @@ describe('another order with it (review S4)', () => {
     expect(gameNightTool(deps).speak?.({ action: 'join' }, 'Signed them up for game-night pings, every game.', ctx('ping me for game night and tell Sam'))).toBeUndefined();
   });
 
+  it('sees a second request after a sentence end, a new line, or none at all (review 6, A1)', () => {
+    for (const s of [
+      'set a timer for ten minutes. Play some lofi.',
+      'set a timer for 5 minutes.\nPlay lofi.',
+      'set a timer for ten minutes. What is the weather.',
+      'set a timer for ten minutes! Then play some lofi',
+      'set a timer for ten minutes and put some music on',
+      'set a timer for ten minutes and throw on some jazz',
+      'remember I love Frank Ocean, put something of his on',
+      'remember my wifi password is on the fridge. Pull up a good router on my pc',
+      'set a timer for ten minutes Play some lofi',
+      'set a timer for ten minutes What is the weather',
+      'remember I parked on level 3. Lock my pc',
+      'set an alarm for 7, lower the music',
+    ])
+      expect(asksMore(s), s).toBe(true);
+    for (const s of [
+      'Set a timer for ten minutes.',
+      'set an alarm for 7 a.m. tomorrow',
+      'remind me at 5 p.m. to check the oven',
+      'set a timer for 2.5 minutes',
+      'remember I parked on level 3. Thanks.',
+      'remind me to buy milk, eggs, and bread',
+      'set an alarm for seven and label it gym',
+      'remind me to put the trash out',
+      'Okay. Set a timer for ten minutes.',
+    ])
+      expect(asksMore(s), s).toBe(false);
+  });
+
+  it('says "Pinged them." only when the ping was all they asked (review 6, A2)', () => {
+    const deps = { guild: () => undefined, allowedGuilds: [], presences: false, signups: new GameNightSignups(undefined), lastText: () => undefined, voiceChannel: () => undefined, cooldownMs: 1, maxMentions: 10, perUserPerHour: 4 };
+    const raw = 'Pinged 2 people in #general for Valorant.';
+    expect(gameNightTool(deps).speak?.({ action: 'ping' }, raw, ctx('ping the squad for valorant'))).toBe('Pinged them.');
+    expect(gameNightTool(deps).speak?.({ action: 'ping' }, raw, ctx('ping the squad for valorant and what time is it'))).toBeUndefined();
+    expect(gameNightTool(deps).speak?.({ action: 'ping' }, raw, ctx('ping the squad for valorant and play some music'))).toBeUndefined();
+    expect(gameNightTool({ ...deps, english: () => false }).speak?.({ action: 'ping' }, raw, ctx('avisa al grupo para valorant'))).toBeUndefined();
+    // The question back is always hers to ask.
+    expect(gameNightTool(deps).speak?.({ action: 'ping' }, 'Ping 3 people for Valorant?', ctx('ping them and what time is it'))).toBe('Ping 3 people for Valorant?');
+  });
+
   it('sends an alarm edit with a question or another order back to the model', async () => {
     const clock = new AlarmClock(undefined, 'UTC', { placeFor: () => 'discord', ring: () => ({ stop() {}, alive: () => true }), dm: async () => true });
     const tools = alarmTools({ clock, reminders: new Reminders(undefined, 'UTC', () => {}), english: () => true, reach: () => 'call', preview: async () => true, musicOk: true });
