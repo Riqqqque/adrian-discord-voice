@@ -108,10 +108,14 @@ app connects: then she shows as not connected, and the settings say why.
 - **In the bot's Discord call too?** While you're in the same voice channel
   and not muted, the call answers instead of the PC, so music plays for
   everyone. PC orders ("pause Spotify", "open Valorant") still reach your PC.
-  Muted in that call, your speakers still play it and the PC's mic would hear
-  everyone in it, so the PC then takes only Ctrl+Alt+Space (push-to-talk) and
-  typing in the window. Deafen yourself, or leave the call, to talk to the PC
-  hands-free again.
+  Muted in that call, or in any other voice channel the bot can see, your
+  speakers still play it and the PC's mic would hear everyone in it, so the
+  PC then takes only Ctrl+Alt+Space (push-to-talk, for as long as you hold
+  it) and typing in the window. Her name said then gets a soft chime. On
+  headphones or earphones the mic can't hear the call, so hands-free keeps
+  working: Windows says so for most headsets, and for a USB DAC or dock that
+  calls itself speakers, tick "These speakers are headphones" in settings
+  (it's kept per output device). Deafen yourself, or leave the call, also works.
 - **Quiet while gaming:** while a game is in front, she only answers to her
   name (or push-to-talk), keeps answers to one short sentence, and holds
   reminders said at that PC until the game ends. "Quiet while I play" in the

@@ -29,16 +29,30 @@ the call, and PC orders ("pause Spotify", "open Valorant") still reach the
 PC through the PC tools. Their requests in the call get the same cloud
 speech-to-text as the PC (`cloudStt`).
 
-While the owner is in that call and not deafened, their speakers play it, so
-the PC's mic hears everyone in it, and everything a PC hears counts as its
-owner. The PC app's echo gate only knows her own audio, not Discord's. So in
-that case (muted in the call, or her voice link down) the PC takes only
-push-to-talk and typing in the window; spoken words get "Your Discord call
-plays on this PC, so here I only take push-to-talk." A stop still works by
-voice: it stops what she's saying at the PC and calls off a restart counting
-down, and nothing else. Deafened, or out of her call, the PC takes speech as
-usual. A different voice channel or app playing through the speakers can't be
-seen from here, so a headset (or push-to-talk) is the safe setup in calls.
+While the owner is in a voice call and not deafened, their speakers play it,
+so the PC's mic hears everyone in it, and everything a PC hears counts as its
+owner. The PC app's echo gate only knows her own audio, not Discord's. So
+then (muted in her call, in any other voice channel the bot can see in any of
+its servers, or in her call while her voice link is down) the PC takes only
+push-to-talk and typing in the window. Her name or alarm words said there get
+"Your Discord call plays on this PC, so here I only take push-to-talk." in the
+window, and a soft chime from the PC (`notice`, at most every 20 seconds), so
+it's clear with the window closed. A stop still works by voice: it stops what
+she's saying, music and sounds at the PC, and calls off a restart counting
+down, but not an alarm. Deafened, or in no call, the PC takes speech as usual.
+While her voice link is down, only the channel she was last in counts.
+
+Not when the PC plays through headphones: apps from 0.17.2 tell the service
+(`output`), from what Windows says about the default output or the "These
+speakers are headphones" switch in the app's settings (many USB DACs and docks
+say "speakers" whatever is plugged in). An app that doesn't say counts as
+speakers. Calls the bot can't see (servers it isn't in, DM calls, other apps)
+can't be told apart here, so headphones or push-to-talk are the safe setup.
+
+Push-to-talk (apps from 0.17.2) covers everything said from the key going down
+to it going up, pauses included, and nothing before or after: the press and
+the release each cut what's being heard right then. Older apps only send the
+press: the next thing said within 15 seconds is taken.
 
 ## Connection
 
@@ -56,7 +70,8 @@ Text frames are JSON objects with a `type`. Binary frames are audio.
 | `speech_start` | | Someone started talking (local energy gate). |
 | *(binary)* | PCM s16le mono 48 kHz | Microphone audio, only between `speech_start` and `speech_end`. The service finds the exact speech (Silero VAD) and the wake phrase. |
 | `speech_end` | | Talking stopped. |
-| `ptt` | `down: bool` | Push-to-talk: the next thing said is for her, no wake phrase needed (for 15 seconds). |
+| `ptt` | `down: bool`, `hold: bool` | Push-to-talk, no wake phrase needed. `down: true, hold: true` (apps from 0.17.2): what's said until `down: false` is for her. Without `hold` (older apps): the next thing said within 15 seconds. |
+| `output` | `kind` (`headphones`/`speakers`/`unknown`) | What plays sound on this PC: sent after every `welcome` and whenever it changes (apps from 0.17.2). `headphones`: its mic can't hear a call playing there. Anything else, or never sent, counts as speakers. |
 | `text` | `text` | A typed question from the window. |
 | `stop` | | Stop talking (button or hotkey). |
 | `action_result` | `id`, `ok`, `result`, optional `image` | Outcome of an `action`. `result` is text for the model (the server keeps at most 9000 characters). `image` (`pc_screen` only): `{ mime, data }`, `mime` `image/jpeg` or `image/png`, `data` base64 of at most 1.5 MB. See [Pictures](#pictures). |
@@ -74,6 +89,7 @@ Text frames are JSON objects with a `type`. Binary frames are audio.
 | `mode` | `mode` | `thinking` while she works on an answer, `idle` after. |
 | `state` | `speaking`, `listenMs` (either or both) | `speaking`: her voice is audible, as opposed to music only (the PC gets both as one stream, and only turns her voice down when you talk over it). `listenMs`: how much longer she takes words without her name, 0 when she doesn't. |
 | `transcript` | `who` (`you`/`her`), `text`, `final` | What was heard, and what she's saying so far (`final: false` while it grows). |
+| `notice` | `kind` (`ptt_only`) | Her name or alarm words were heard and left alone, because a call plays through this PC's speakers: the app plays a soft chime (apps from 0.17.2; older ones ignore it). |
 | *(binary)* | PCM s16le mono 48 kHz | Her voice, music and sounds, in real time. |
 | `audio_stop` | | Drop any audio still buffered (she was interrupted). |
 | `action` | `id`, `name`, `args` | Do a PC action and answer with `action_result`. |
