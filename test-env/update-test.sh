@@ -2,8 +2,9 @@
 # Update/rollback test, run inside a throwaway systemd container.
 # Makes two extra bundles from the real one: a healthy 0.1.1-test and a
 # broken 0.1.2-bad (its entry point exits at once), then:
-#   install 0.1.0 → update 0.1.1 → update 0.1.2-bad (must roll back to 0.1.1)
-#   → rollback (to 0.1.0) → data kept throughout → uninstall.
+#   install <bundle> → update 0.1.1 → update 0.1.2-bad (must roll back to 0.1.1)
+#   → rollback (to the bundle's version) → data kept throughout → uninstall.
+# Every update here is run by the installed bundle's own `adrian`.
 #
 #   update-test.sh /rel/<bundle>.tar.gz      (download cache at /dl)
 
@@ -17,6 +18,9 @@ ver() { adrian version 2>/dev/null; }
 
 systemctl is-system-running --wait >/dev/null 2>&1 || true
 mkdir -p /tmp/inst /tmp/b && tar -xzf "$BUNDLE" -C /tmp/inst ./packaging
+V0=$(tar -xzOf "$BUNDLE" ./package.json | sed -n 's/^ *"version": *"\([^"]*\)".*/\1/p' | head -n 1)
+# Nothing an update leaves behind once it's over: no note, no temp folders.
+clean_after() { [ ! -e /opt/adrian/update-in-progress ] && ! ls -d /opt/adrian/.update-* /opt/adrian/.prep-* /opt/adrian/.install-* 2>/dev/null | grep -q .; }
 
 # Variant bundles (the version lives in package.json).
 mk() { # mk <version> <break?>
@@ -29,14 +33,16 @@ mk() { # mk <version> <break?>
 mk 0.1.1-test keep
 mk 0.1.2-bad break
 
-ADRIAN_DOWNLOAD_CACHE=/dl bash /tmp/inst/packaging/install.sh --yes --bundle "$BUNDLE" >/tmp/install.log 2>&1 && ok "install 0.1.0" || { bad "install"; tail /tmp/install.log; }
-check "version 0.1.0" bash -c '[ "$(adrian version)" = 0.1.0 ]'
+ADRIAN_DOWNLOAD_CACHE=/dl bash /tmp/inst/packaging/install.sh --yes --bundle "$BUNDLE" >/tmp/install.log 2>&1 && ok "install $V0" || { bad "install"; tail /tmp/install.log; }
+check "version $V0" test "$(adrian version)" = "$V0"
 adrian setup-code >/dev/null   # creates state that must survive updates
 printf 'kept-value-1234567890' | adrian secret set TEST_KEEP >/dev/null
 
 out=$(adrian update /tmp/b/adrian-voice-0.1.1-test-linux-x64.tar.gz 2>&1); echo "$out" | sed 's/^/  | /'
 check "update to 0.1.1-test" bash -c '[ "$(adrian version)" = 0.1.1-test ]'
 check "healthy after update" bash -c 'curl -fsS http://127.0.0.1:8790/api/health | grep -q "\"version\":\"0.1.1-test\""'
+check "nothing left of the update (note, temp folders)" clean_after
+check "update lock in place" test -f /opt/adrian/update.lock
 
 t0=$(date +%s)
 out=$(adrian update /tmp/b/adrian-voice-0.1.2-bad-linux-x64.tar.gz 2>&1); rc=$?; echo "$out" | sed 's/^/  | /'
@@ -45,10 +51,11 @@ check "bad update reports failure" test $rc -ne 0
 check "auto rollback to 0.1.1-test" bash -c '[ "$(adrian version)" = 0.1.1-test ]'
 check "healthy after auto rollback" bash -c 'curl -fsS http://127.0.0.1:8790/api/health | grep -q "\"version\":\"0.1.1-test\""'
 check "broken release removed" bash -c "! test -e /opt/adrian/releases/0.1.2-bad"
+check "nothing left of the failed update either" clean_after
 
 out=$(adrian rollback 2>&1); echo "$out" | sed 's/^/  | /'
-check "manual rollback to 0.1.0" bash -c '[ "$(adrian version)" = 0.1.0 ]'
-check "healthy after rollback" bash -c 'curl -fsS http://127.0.0.1:8790/api/health | grep -q "\"version\":\"0.1.0\""'
+check "manual rollback to $V0" test "$(adrian version)" = "$V0"
+check "healthy after rollback" bash -c "curl -fsS http://127.0.0.1:8790/api/health | grep -q '\"version\":\"$V0\"'"
 
 check "secret kept across updates" bash -c 'adrian secret list | grep -qx TEST_KEEP'
 check "setup code kept across updates" test -f /var/lib/adrian/setup-code

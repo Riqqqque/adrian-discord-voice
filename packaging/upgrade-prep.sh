@@ -19,7 +19,8 @@ UNIT=/etc/systemd/system/adrian-voice.service
 
 # shellcheck source=downloads.sh
 . "$HERE/downloads.sh"
-tmp=$(mktemp -d)
+# On the app's disk: /tmp is often a small RAM disk, too small for model archives.
+tmp=$(mktemp -d "$OPT/.prep-XXXXXX")
 trap 'rm -rf "$tmp"' EXIT
 refuse_symlinks "$VAR" "$VAR/models"
 install -d -m 0750 -o adrian -g adrian "$VAR"

@@ -64,6 +64,9 @@ const fakeFetch = (async (input: string | URL, init?: RequestInit) => {
     if (url.endsWith('/oauth2/applications/@me')) return ok({ id: '100000000000000030', bot_public: false });
     if (url.endsWith('/users/@me/guilds')) return ok([{ id: '100000000000000010', name: 'Test' }]);
     if (url.endsWith('/channels')) return ok([{ id: '100000000000000020', name: 'general', type: 2 }, { id: '2', name: 'text', type: 0 }]);
+    if (url.endsWith('/guilds/100000000000000010')) return ok({ id: '100000000000000010', owner_id: '9', roles: [{ id: '100000000000000010', permissions: '0' }] });
+    if (url.endsWith('/guilds/100000000000000010/members/1')) return ok({ roles: [] });
+    if (url.endsWith('/channels/100000000000000020')) return ok({ id: '100000000000000020', name: 'general', type: 2, permission_overwrites: [] });
   }
   if (url.includes('groq.com')) {
     if (h.get('authorization') !== `Bearer ${FAKE.GROQ_API_KEY}`) return new Response('{}', { status: 401 });
@@ -83,6 +86,7 @@ const server = createAdminServer({
   stack,
   voicePreview: async () => Buffer.from('RIFF'),
   fetch: fakeFetch,
+  docker: false, // the same answers on a build machine that happens to be a container
 });
 let base = '';
 let host = '';
@@ -143,7 +147,11 @@ describe('admin web server', () => {
     auth.ensureSetupCode();
     const code = (JSON.parse(readFileSync(join(stateDir, 'setup-code'), 'utf8')) as { code: string }).code;
     expect((await call('GET', '/api/session')).data.setupNeeded).toBe(true);
-    expect((await call('POST', '/api/setup/claim', { code: 'WRONG-CODE0', username: 'morgan', password: 'correct horse battery' })).status).toBe(403);
+    const wrong = await call('POST', '/api/setup/claim', { code: 'WRONG-CODE0', username: 'morgan', password: 'correct horse battery' });
+    expect(wrong.status).toBe(403);
+    // Says where the right one is: the code is printed once, at install.
+    expect(wrong.data.error).toContain('sudo adrian setup-code');
+    expect((await call('GET', '/api/session')).data.setupCodeCommand).toBe('sudo adrian setup-code');
     // Cross-origin claim refused even with the right code.
     expect((await call('POST', '/api/setup/claim', { code, username: 'morgan', password: 'correct horse battery' }, { origin: 'http://evil.example' })).status).toBe(403);
     expect((await call('POST', '/api/setup/claim', { code, username: 'morgan', password: 'short' })).status).toBe(400);
@@ -190,6 +198,41 @@ describe('admin web server', () => {
     for (const u of upstream) {
       if (u.auth?.includes(FAKE.DISCORD_TOKEN)) expect(u.url.startsWith('https://discord.com/')).toBe(true);
       if (u.auth?.includes(FAKE.GROQ_API_KEY)) expect(u.url.startsWith('https://api.groq.com/')).toBe(true);
+    }
+  });
+
+  it('saves a pasted "Bot ..." token the way Discord wants it', async () => {
+    const r = await call('POST', '/api/check/discord', { token: `Bot ${FAKE.DISCORD_TOKEN}` });
+    expect(r.data.ok).toBe(true);
+    expect(secrets.read().get('DISCORD_TOKEN')).toBe(FAKE.DISCORD_TOKEN);
+  });
+
+  it("says when the bot can't speak in the chosen channel", async () => {
+    const r = await call('GET', '/api/check/voice-access?guild=100000000000000010&channel=100000000000000020');
+    expect(r.data.ok).toBe(false);
+    expect(r.data.missing).toEqual(['View Channel', 'Connect', 'Speak']);
+  });
+
+  it("refuses another service's key without sending it anywhere", async () => {
+    const before = upstream.length;
+    const r = await call('POST', '/api/check/llm', { preset: 'groq', key: 'sk-ant-api03-notreal' });
+    expect(r.data.ok).toBe(false);
+    expect(String(r.data.error)).toContain('looks like an Anthropic (Claude) key');
+    expect(upstream.length).toBe(before);
+    expect(secrets.read().get('GROQ_API_KEY')).not.toBe('sk-ant-api03-notreal');
+  });
+
+  it('puts what to do beside a failed start', async () => {
+    const s = stack as unknown as { state: string; error: string | undefined };
+    s.state = 'failed';
+    s.error = 'An invalid token was provided.';
+    try {
+      const r = await call('GET', '/api/status');
+      expect(r.data.error).toBe('An invalid token was provided.');
+      expect(String(r.data.fix)).toContain('Reset Token');
+    } finally {
+      s.state = 'setup';
+      s.error = undefined;
     }
   });
 
