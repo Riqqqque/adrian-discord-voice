@@ -159,8 +159,6 @@ export async function startVoiceStack(
   const transport = new DiscordVoiceTransport({ client, logger: log, silenceMs: config.silenceMs });
   /** The voice channel the bot is in (or joining); undefined after /leave. */
   let spot: VoiceSpot | undefined = { guildId: config.guildId, channelId: config.channelId };
-  /** Her channel the last time her voice link was up (kept through a kick or /leave): see pcGuarded. */
-  let lastCall: VoiceSpot | undefined = spot;
   /** stop() has run: what was still starting must not carry on. */
   let closing = false;
   /** Who set the bot up (optional): '' when not configured. */
@@ -173,10 +171,7 @@ export async function startVoiceStack(
     mixer.stopAll();
   });
   transport.on('moved', (guildId, channelId) => {
-    if (spot?.guildId === guildId) spot = lastCall = { guildId, channelId };
-  });
-  transport.on('ready', () => {
-    if (spot) lastCall = spot;
+    if (spot?.guildId === guildId) spot = { guildId, channelId };
   });
   transport.on('failed', (r) => log.error('voice failed', { reason: r }));
 
@@ -1501,18 +1496,14 @@ export async function startVoiceStack(
    *  as its owner. The PC app's echo gate only knows her own audio, so it can't
    *  tell; push-to-talk and typing in the window are the only words surely
    *  theirs. Not when the PC says it plays through headphones (apps from 0.17.2;
-   *  older ones, and speakers, count as speakers). While her voice link is
-   *  down, only the channel she was last in counts. Calls the bot can't see
-   *  (other servers, DMs, other apps) are out of sight here: roadmap F1. */
+   *  older ones, and speakers, count as speakers). Her own voice link doesn't
+   *  matter: with it down, someone who disconnected her and then moved the
+   *  owner would otherwise drive the PC from that call. Calls the bot can't
+   *  see (other servers, DMs, other apps) are out of sight here: roadmap F1. */
   function pcGuarded(pc: SatelliteConnection): boolean {
     if (pc.output === 'headphones') return false;
-    if (transport.isReady()) {
-      const vs = inAnyCall(pc.owner);
-      return !!vs && !vs.deaf;
-    }
-    const at = lastCall;
-    const vs = at ? client.guilds.cache.get(at.guildId)?.voiceStates.cache.get(pc.owner) : undefined;
-    return !!vs && vs.channelId === at!.channelId && !vs.deaf;
+    const vs = inAnyCall(pc.owner);
+    return !!vs && !vs.deaf;
   }
   /** How long she takes words without her name at this PC, for its orb: none
    *  while it takes only push-to-talk, or leaves their words to her call. */

@@ -570,11 +570,17 @@ describe('a request at the PC', () => {
     await r.stack.stop();
   });
 
-  it('with her voice link down, only the channel she was last in counts', async () => {
+  it('with her voice link down, any channel they are in still counts (disconnecting her, then moving them, lifts nothing)', async () => {
     const r = await rig();
     r.voiceStates.set(OWNER, { channelId: OTHER_CALL, mute: false, deaf: false });
-    const { pipe } = r.connect();
+    const { conn, pipe } = r.connect();
     r.transport.emit('disconnected', 'dropped');
+    expect(r.stack.voiceReady()).toBe(false);
+    ask(r, pipe);
+    await sleep(100);
+    expect(r.llmBodies).toHaveLength(0);
+    expect(conn.transcripts).toContain(CALL_PLAYS_HERE);
+    conn.emit('ptt');
     ask(r, pipe);
     await until(() => r.llmBodies.length === 1, 'the model');
     await r.stack.stop();
