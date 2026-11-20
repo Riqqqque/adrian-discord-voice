@@ -52,6 +52,25 @@ export function alarmTools(d: AlarmToolDeps): Tool[] {
   const c = d.clock;
   const yes = new PendingYes<string>(now);
   const asked = new Set<string>();
+  /** What she says for a change that went through, by the result it came with:
+   *  a confirmation needs no second model call. Taken once. */
+  const lines = new Map<string, string>();
+  const keep = (raw: string, line: string): string => {
+    lines.set(raw, line);
+    if (lines.size > 20) lines.delete(lines.keys().next().value!);
+    return raw;
+  };
+  /** The line kept for this result, once, in English only (anything else the model says). */
+  const lineFor = (raw: string, ctx: ToolContext): string | undefined => {
+    const line = lines.get(raw);
+    lines.delete(raw);
+    return line && d.english(ctx.userId) ? line : undefined;
+  };
+  const sentence = (parts: string[]) => `${parts.join(', ').replace(/^./, (x) => x.toUpperCase())}.`;
+  /** A sound as she'd name it out loud. */
+  const spokenSound = (s: string) => (s.startsWith('clip:') ? `your ${s.slice(5)} sound` : s.startsWith('music:') ? s.slice(6) : s === 'voice' ? 'my voice' : `the ${s} sound`);
+  /** A time left, said to the minute once it's more than a couple. */
+  const roughly = (ms: number) => spokenDuration(ms > 120_000 ? Math.round(ms / 60_000) * 60_000 : ms);
 
   /** A sound the person named → what's stored, or a reason. */
   const pickSound = (userId: UserId, raw: unknown, play: unknown): string | { error: string } | undefined => {
@@ -271,11 +290,14 @@ export function alarmTools(d: AlarmToolDeps): Tool[] {
       },
     },
     acts: true,
+    speak: (_a, raw, ctx) => lineFor(raw, ctx),
     run: async (a, _s, ctx) => {
       const { hit, many } = pick(ctx.userId, str(a.which));
       if (!hit) return choose(many, 'alarms or timers');
       const t = now();
       const said: string[] = [];
+      // The same, as she says it to them.
+      const spoken: string[] = [];
       // Moving one that rings now: it stops ringing and keeps its new time.
       if (hit.ringingSince !== undefined && (str(a.time) || a.repeat !== undefined || typeof a.add_minutes === 'number')) c.unring(hit);
       if (typeof a.add_minutes === 'number' && a.add_minutes !== 0) {
@@ -284,6 +306,7 @@ export function alarmTools(d: AlarmToolDeps): Tool[] {
         hit.base = hit.at;
         hit.durationMs = (hit.durationMs ?? 0) + a.add_minutes * 60_000;
         said.push(`${spokenDuration(hit.at - t)} left`);
+        spoken.push(`${roughly(hit.at - t)} left on ${hit.label ? `the ${hit.label} timer` : 'it'}`);
       }
       if (hit.kind === 'alarm') {
         let time = hit.time;
@@ -314,6 +337,7 @@ export function alarmTools(d: AlarmToolDeps): Tool[] {
           delete hit.snoozed;
           delete hit.skip;
           said.push(`set for ${clockText(at, hit.tz)} ${days?.length ? daysText(days) : dayText(at, hit.tz, t)}`);
+          spoken.push(`it's set for ${clockText(at, hit.tz)} ${days?.length ? daysText(days) : dayText(at, hit.tz, t)}`);
         }
         const skipDay = a.skip_next === true ? localDate(hit.base, hit.tz) : str(a.skip_date);
         if (skipDay) {
@@ -327,34 +351,47 @@ export function alarmTools(d: AlarmToolDeps): Tool[] {
           let after = hit.base;
           for (let i = 0; i < 14 && hit.skip.includes(localDate(after, hit.tz)); i++) after = nextAt(hit.time!, hit.days, hit.tz, after) ?? after;
           said.push(`it won't ring ${dayText(that, hit.tz, t)}; next it rings ${dayText(after, hit.tz, t)} at ${clockText(after, hit.tz)}`);
+          spoken.push(`it won't ring ${dayText(that, hit.tz, t)}, next it rings ${dayText(after, hit.tz, t)} at ${clockText(after, hit.tz)}`);
         } else if (a.skip_next === false && hit.skip?.length) {
           delete hit.skip;
           said.push('nothing skipped any more');
+          spoken.push("it's not skipping any days now");
         }
       }
-      if (typeof a.label === 'string') hit.label = a.label.trim().slice(0, 80);
-      if (a.sound !== undefined || a.play !== undefined) {
+      // An empty label or sound is the model filling in a field, not a change.
+      if (str(a.label) && str(a.label).slice(0, 80) !== (hit.label ?? '')) {
+        hit.label = str(a.label).slice(0, 80);
+        said.push(`label "${hit.label}"`);
+        spoken.push(`it's called ${hit.label} now`);
+      }
+      if (str(a.sound) || str(a.play)) {
         const s = pickSound(ctx.userId, a.sound, a.play);
         if (s && typeof s === 'object') return s.error;
         if (s) hit.sound = s;
         else delete hit.sound;
         said.push(`sound ${soundName(c.soundOf(hit))}`);
+        spoken.push(`it'll ring with ${spokenSound(c.soundOf(hit))}`);
       }
       if (typeof a.snooze_minutes === 'number') {
         hit.snoozeMin = Math.max(LIMITS.snoozeMin[0], Math.min(LIMITS.snoozeMin[1], Math.round(a.snooze_minutes)));
         said.push(`snooze ${hit.snoozeMin} minutes`);
+        spoken.push(`its snooze is ${hit.snoozeMin} minutes`);
       }
       if (a.on === false && hit.enabled) {
         if (hit.ringingSince !== undefined) return "That one is ringing right now. Tell them to say stop or snooze; it can be turned off after that.";
         hit.enabled = false;
         said.push('turned off');
+        spoken.push('turned it off');
       } else if (a.on === true && !hit.enabled) {
         hit.enabled = true;
         if (hit.kind === 'alarm' && hit.time && !(hit.at > t)) hit.at = hit.base = nextAt(hit.time, hit.days, hit.tz, t) ?? hit.at;
         said.push(`back on, next ${dayText(hit.base, hit.tz, t)} at ${clockText(hit.base, hit.tz)}`);
+        spoken.push(`it's back on, next ${dayText(hit.base, hit.tz, t)} at ${clockText(hit.base, hit.tz)}`);
       }
       c.update(hit);
-      return `Changed: ${said.join(', ') || 'nothing'}. Now: ${describe(hit)}.${saveNote()}`;
+      const raw = `Changed: ${said.join(', ') || 'nothing'}. Now: ${describe(hit)}.${saveNote()}`;
+      // A change that saved says itself; nothing changed, or a failed save, is the model's to explain.
+      return spoken.length && !c.saveFailed ? keep(raw, sentence(spoken)) : raw;
     },
   };
 
@@ -500,11 +537,12 @@ export function alarmTools(d: AlarmToolDeps): Tool[] {
           if (!d.saveClip) return "Saving sounds from YouTube isn't set up here.";
           if (c.sounds(u).length >= 10 && !c.savedSound(u, name)) return 'They have 10 saved sounds; delete one first.';
           const r = await d.saveClip(ctx, q, name, signal);
-          return typeof r === 'string' ? r : `Saved "${r.name}" (${Math.round(r.seconds)} seconds, from "${r.title ?? q}"). It can be used as sound "${r.name}".`;
+          if (typeof r === 'string') return r;
+          return keep(`Saved "${r.name}" (${Math.round(r.seconds)} seconds, from "${r.title ?? q}"). It can be used as sound "${r.name}".`, `Saved it as your ${r.name} sound.`);
         }
         case 'delete_sound': {
           const s = c.removeSound(u, str(a.name) || str(a.sound));
-          return s ? `Deleted the "${s.name}" sound; alarms that used it are back on their default.` : `No saved sound called that. ${soundList(u)}`;
+          return s ? keep(`Deleted the "${s.name}" sound; alarms that used it are back on their default.`, `Deleted your ${s.name} sound.`) : `No saved sound called that. ${soundList(u)}`;
         }
         case 'settings':
           return settingsText(c.prefs(u), u);
@@ -514,7 +552,8 @@ export function alarmTools(d: AlarmToolDeps): Tool[] {
             ['default_sound', 'sound'],
             ['timer_sound', 'timerSound'],
           ] as const) {
-            if (a[k] === undefined) continue;
+            // Empty is the model filling in a field; "default" puts the default back.
+            if (!str(a[k])) continue;
             const s = pickSound(u, a[k], undefined);
             if (s && typeof s === 'object') return s.error;
             change[key] = s;
@@ -529,20 +568,48 @@ export function alarmTools(d: AlarmToolDeps): Tool[] {
           }
           if (a.dismiss === 'stop' || a.dismiss === 'firm' || a.dismiss === 'math') change.dismiss = a.dismiss as DismissMode;
           if (typeof a.voice === 'boolean') change.voice = a.voice;
-          if (a.timezone !== undefined) {
+          if (str(a.timezone)) {
             const tz = str(a.timezone);
             if (!validZone(tz)) return `"${tz}" isn't a time zone name; use one like America/Chicago.`;
             change.timezone = tz;
           }
           if (!Object.keys(change).length) return `Nothing to change. ${settingsText(c.prefs(u), u)}`;
           c.setPrefs(u, change);
-          return `Saved. ${settingsText(c.prefs(u), u)}${change.timezone ? ' Alarms already set keep the time zone they were set in.' : ''}`;
+          const raw = `Saved. ${settingsText(c.prefs(u), u)}${change.timezone ? ' Alarms already set keep the time zone they were set in.' : ''}`;
+          // What they now have, read from what was stored (a 90 minute snooze is kept at the most there is).
+          const p = c.prefs(u);
+          const parts = (Object.keys(change) as (keyof AlarmPrefs)[]).flatMap((k): string[] => {
+            if (change[k] === undefined && k !== 'sound' && k !== 'timerSound') return [];
+            switch (k) {
+              case 'sound':
+                return [`alarms ring with ${spokenSound(p.sound ?? 'classic')}`];
+              case 'timerSound':
+                return [`timers ring with ${spokenSound(p.timerSound ?? 'chime')}`];
+              case 'snoozeMin':
+                return [`snooze is ${p.snoozeMin} minutes`];
+              case 'ringMin':
+                return [`each ring lasts ${p.ringMin} minutes`];
+              case 'fadeIn':
+                return [p.fadeIn ? `they fade in over ${p.fadeIn} seconds` : 'they start at full volume'];
+              case 'volume':
+                return [`alarm volume is ${Math.round(p.volume * 100)} percent`];
+              case 'dismiss':
+                return [p.dismiss === 'firm' ? 'only "I\'m up" turns them off now, stop just snoozes' : p.dismiss === 'math' ? "you'll answer a sum to turn them off" : 'saying stop turns them off'];
+              case 'voice':
+                return [p.voice ? "I'll say the time while they ring" : "I won't talk while they ring"];
+              case 'timezone':
+                return [`your time zone is ${c.zone(u)}, and alarms already set keep theirs`];
+              default:
+                return [];
+            }
+          });
+          return parts.length && !c.saveFailed ? keep(raw, sentence(parts)) : raw;
         }
         default:
           return 'Unknown action.';
       }
     },
-    speak: (a, raw) => (a.action === 'preview' && raw.startsWith('Playing') ? '' : undefined),
+    speak: (a, raw, ctx) => (a.action === 'preview' && raw.startsWith('Playing') ? '' : lineFor(raw, ctx)),
   };
 
   const settingsText = (p: AlarmPrefs & typeof DEFAULTS, u: UserId) =>

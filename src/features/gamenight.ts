@@ -161,6 +161,8 @@ export interface GameNightDeps {
   maxMentions: number;
   perUserPerHour: number;
   now?(): number;
+  /** Does this person speak English to her? Her own short lines are English; for anyone else the model words it. Default: yes. */
+  english?(userId: UserId): boolean;
 }
 
 const NO_PRESENCE = "I can't see who's online or what people are playing: that needs Discord's Presence intent, which is off for me. I can only see who's in voice.";
@@ -422,7 +424,7 @@ export function gameNightTool(d: GameNightDeps): Tool {
     timeoutMs: 12_000,
     // "Which game?" is a question back: their answer must still be heard.
     acts: (a) => (a.action === 'ping' && !!String(a.game ?? '').trim()) || a.action === 'join' || a.action === 'leave',
-    speak: (a, raw) => (raw.startsWith('Ping ') && raw.endsWith('?') ? raw : a.action === 'ping' && raw.startsWith('Pinged ') && !raw.includes('(') ? 'Pinged them.' : undefined),
+    speak: (a, raw, ctx) => (raw.startsWith('Ping ') && raw.endsWith('?') ? raw : a.action === 'ping' && raw.startsWith('Pinged ') && !raw.includes('(') ? 'Pinged them.' : (d.english?.(ctx.userId) ?? true) ? signupLine(raw) : undefined),
     asks: (raw) => raw.startsWith('Ping ') && raw.endsWith('?'),
     run: async (a, _signal, ctx) => {
       const action = String(a.action ?? '');
@@ -459,6 +461,17 @@ export function gameNightTool(d: GameNightDeps): Tool {
       }
     },
   };
+}
+
+/** A join or leave said back to them (the results speak of "them", for the model). */
+export function signupLine(raw: string): string | undefined {
+  let m: RegExpExecArray | null;
+  if (raw === 'Signed them up for game-night pings, every game.') return "You're signed up for game-night pings.";
+  if ((m = /^Signed them up for (.+) pings\.$/.exec(raw))) return `You're signed up for ${m[1]} pings.`;
+  if (/^They were already signed up for every game/.test(raw)) return "You're already signed up for every game.";
+  if (raw === 'No more game-night pings for them.') return 'No more game-night pings for you.';
+  if ((m = /^No more (.+) pings for them; other games still ping them\.$/.exec(raw))) return `No more ${m[1]} pings for you; other games still will.`;
+  return undefined;
 }
 
 /** Prompt line: when to use it. */

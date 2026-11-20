@@ -623,3 +623,60 @@ describe('alarm sounds', () => {
     expect(m.alarmRinging).toBe(false);
   });
 });
+
+describe('changes that say themselves (no second model call)', () => {
+  it('reads back what an edit changed, from what was stored', async () => {
+    const r = rig();
+    await r.call('set_timer', { minutes: 12, label: 'pizza' });
+    expect((await r.call('edit_alarm', { which: 'pizza', add_minutes: 5 })).said).toBe('17 minutes left on the pizza timer.');
+    await r.call('set_alarm', { time: '06:30', repeat: 'weekdays' });
+    expect((await r.call('edit_alarm', { which: '6:30', time: '06:45' })).said).toBe("It's set for 6:45 AM on weekdays.");
+    expect((await r.call('edit_alarm', { which: '6:45', skip_next: true })).said).toMatch(/^It won't ring tomorrow, Thursday, next it rings Friday at 6:45 AM\.$/);
+    expect((await r.call('edit_alarm', { which: '6:45', sound: 'birds', snooze_minutes: 15 })).said).toBe("It'll ring with the birds sound, its snooze is 15 minutes.");
+    expect((await r.call('edit_alarm', { which: '6:45', on: false })).said).toBe('Turned it off.');
+  });
+
+  it('leaves the model what it has to explain', async () => {
+    const r = rig();
+    await r.call('set_alarm', { time: '07:00' });
+    await r.call('set_alarm', { time: '08:00' });
+    expect((await r.call('edit_alarm', { which: '', time: '09:00' })).said).toBeUndefined(); // which one?
+    expect((await r.call('edit_alarm', { which: '7', on: true })).said).toBeUndefined(); // already on: nothing changed
+    expect((await r.call('edit_alarm', { which: '7', add_minutes: 5 })).said).toBeUndefined(); // timers only
+    const other = await r.call('edit_alarm', { which: '7', time: '07:30' }, { userId: 'u1' });
+    expect(other.said).toBeDefined();
+    // Asked again with the same result: the line went with the first one.
+    expect(r.tool('edit_alarm').speak?.({}, other.raw, ctx)).toBeUndefined();
+  });
+
+  it("doesn't take an empty label or sound for a change", async () => {
+    const r = rig();
+    await r.call('set_alarm', { time: '07:00', label: 'gym', sound: 'birds' });
+    const { said } = await r.call('edit_alarm', { which: 'gym', time: '07:15', label: '', sound: '', play: '' });
+    expect(said).toBe("It's set for 7:15 AM tomorrow, Thursday.");
+    const a = r.clock.all()[0]!;
+    expect(a.label).toBe('gym');
+    expect(a.sound).toBe('birds');
+  });
+
+  it('reads back settings as stored, and leaves lists and mistakes to the model', async () => {
+    const r = rig();
+    expect((await r.call('alarm_options', { action: 'set', snooze_minutes: 15 })).said).toBe('Snooze is 15 minutes.');
+    expect((await r.call('alarm_options', { action: 'set', snooze_minutes: 500, default_sound: '' })).said).toMatch(/^Snooze is \d+ minutes\.$/);
+    expect(r.clock.prefs('u1').sound).toBeUndefined();
+    expect((await r.call('alarm_options', { action: 'set', default_sound: 'birds' })).said).toBe('Alarms ring with the birds sound.');
+    expect((await r.call('alarm_options', { action: 'set', dismiss: 'firm' })).said).toBe('Only "I\'m up" turns them off now, stop just snoozes.');
+    expect((await r.call('alarm_options', { action: 'set', default_sound: 'kazoo' })).said).toBeUndefined();
+    expect((await r.call('alarm_options', { action: 'set' })).said).toBeUndefined();
+    expect((await r.call('alarm_options', { action: 'sounds' })).said).toBeUndefined();
+    expect((await r.call('alarm_options', { action: 'settings' })).said).toBeUndefined();
+  });
+
+  it('says nothing in English to someone who speaks another language', async () => {
+    const clock = new AlarmClock(undefined, TZ, { placeFor: () => 'discord', ring: () => ({ stop() {}, alive: () => true }), dm: async () => true });
+    const tools = alarmTools({ clock, reminders: new Reminders(undefined, TZ, () => {}), english: () => false, reach: () => 'call', preview: async () => true, musicOk: true });
+    const set = tools.find((t) => t.spec.name === 'alarm_options')!;
+    const raw = (await set.run({ action: 'set', snooze_minutes: 15 }, sig(), ctx)) as string;
+    expect(set.speak?.({ action: 'set' }, raw, ctx)).toBeUndefined();
+  });
+});

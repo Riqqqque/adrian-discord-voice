@@ -9,6 +9,7 @@
 // from a DM, and so may any note older than this rule. Those count as private.
 
 import { readFileSync } from 'node:fs';
+import { asksMore } from '../brain/tools.js';
 import type { Tool, ToolContext, UserId } from '../core/interfaces.js';
 import { writeJsonFile } from '../web/secrets-file.js';
 
@@ -171,6 +172,8 @@ export class UserNotes {
           parameters: { type: 'object', properties: { note: { type: 'string' } }, required: ['note'], additionalProperties: false },
         },
         run: async (a, _s, ctx) => this.add(ctx.userId, typeof a.note === 'string' ? a.note : '', 'told', ctx.guildId),
+        // Saved: a word back is the whole answer, unless they asked something too.
+        speak: (_a, raw, ctx) => (!english(ctx.userId) || asksMore(ctx.said) ? undefined : raw.startsWith('Remembered:') ? 'Got it.' : raw === 'Already remembered.' ? 'I already have that.' : undefined),
       },
       {
         spec: {
