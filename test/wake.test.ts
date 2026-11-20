@@ -138,13 +138,11 @@ describe('the name later in the sentence', () => {
     for (const t of ['Wait, Adrian left?', 'So yeah Adrian is not here', 'Marco, Adrian, and Sam are on', 'Yeah Adrian did that', 'Well Adrian does that all the time', 'Okay so Adrian works there', 'Okay so Adrian said no', 'Yeah, Adrian.', 'This morning Adrian went out'])
       expect(w.matchLoose(t).woke, t).toBe(false);
   });
-  it('accepts more greetings, followed by a question or a request', () => {
+  it('accepts more greetings, followed by something only she does', () => {
     expect(w.match('Hey there Adrian, what time is it?')).toEqual({ woke: true, remainder: 'what time is it?' });
     expect(w.match('Hey hey Adrian, louder')).toEqual({ woke: true, remainder: 'louder' });
-    expect(w.match('Good morning Adrian, any news?')).toEqual({ woke: true, remainder: 'any news?' });
     expect(w.match('Morning Adrian, play some jazz')).toEqual({ woke: true, remainder: 'play some jazz' });
-    expect(w.match('Excuse me Adrian, how far is the moon?').woke).toBe(true);
-    expect(w.matchLoose("Morning Adrian, what's the weather?")).toMatchObject({ woke: true, loose: false });
+    expect(w.matchLoose('Excuse me Adrian, turn it down')).toMatchObject({ woke: true, loose: false });
   });
   it('not on an everyday greeting alone, or with only a stop after it', () => {
     for (const t of ['Morning Adrian', 'Good morning, Adrian!', 'Morning, Adrian!', 'Hey there Adrian.', 'Hi there, Adrian', 'Good evening Adrian', 'Excuse me Adrian', 'I said good morning Adrian', 'Excuse me, Adrian, stop.']) {
@@ -153,9 +151,12 @@ describe('the name later in the sentence', () => {
     }
     expect(w.matchLoose('Hey hey Adrian')).toEqual({ woke: true, remainder: '', loose: false }); // still "hey Adrian"
   });
-  it('leaves anything else after an everyday greeting to the model', () => {
+  it('leaves anything else after an everyday greeting to the model, questions too', () => {
     expect(w.matchLoose('Excuse me, Adrian, you are on my foot.')).toEqual({ woke: true, remainder: 'you are on my foot.', loose: true });
-    expect(w.matchLoose('Good morning Adrian, nice jacket')).toMatchObject({ woke: true, loose: true });
+    for (const t of ['Good morning Adrian, nice jacket', 'Morning Adrian, how was your weekend?', 'Excuse me, Adrian, is this your seat?', "Morning Adrian, what's the weather?", 'Excuse me Adrian, how far is the moon?']) {
+      expect(w.matchLoose(t), t).toMatchObject({ woke: true, loose: true });
+      expect(w.match(t).woke, t).toBe(false);
+    }
   });
   it('not on a stop said to a person called Adrian, at the end or after a lead-in', () => {
     for (const t of ['Can you stop, Adrian?', 'Would you shut up, Adrian', 'Wait, Adrian, can you stop?', 'Could you stop, Adrian?', 'Can you shut up, Adrian?', 'Will you stop, Adrian?', 'can you be quiet adrian', 'Can you wait, Adrian?'])

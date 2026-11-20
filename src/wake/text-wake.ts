@@ -193,12 +193,11 @@ function exclaims(ws: string[]): boolean {
   return !ws.slice(2).some((w) => AUX.has(w) || HAS.has(w) || w === 'do' || w === 'does' || w === 'did' || w === 's');
 }
 
-/** After an everyday greeting, she was clearly addressed: a question, or
- *  something only she does ("play Drake", "turn it up", "what time is it"). */
+/** After an everyday greeting, she was clearly addressed: something only she
+ *  does ("play Drake", "turn it up", "what time is it"). A question isn't
+ *  enough: "morning Adrian, how was your weekend?" is said to a friend. */
 function addressed(r: string): boolean {
-  if (/\?\s*$/.test(r)) return true;
-  const w = (lead(r, 1)[0]?.w ?? '').replace(/'.*$/, '');
-  return QUESTION.has(w) || !!classify(r) || !!classifyMusic(r) || isTimeQuestion(r);
+  return !!classify(r) || !!classifyMusic(r) || isTimeQuestion(r);
 }
 
 /** "Adrian works there", "Adrian plays bass": a verb with a third-person "s"
@@ -269,7 +268,7 @@ export class TextWakeDetector implements WakeDetector {
   match(transcript: string): { woke: boolean; remainder: string } {
     const hit = this.wakeAt(transcript, words(transcript), 0, this.allowBare);
     const r = hit?.after.replace(STRIP, '').trim() ?? '';
-    // "Good morning, Adrian!" is said to friends: only a clear request after it counts.
+    // "Good morning, Adrian!" is said to friends: only a request for her after it counts.
     if (!hit || (hit.soft && (actsAlone(r) || !addressed(r)))) return { woke: false, remainder: '' };
     return { woke: true, remainder: r };
   }
@@ -281,7 +280,7 @@ export class TextWakeDetector implements WakeDetector {
     // talk about her ("Hey, Adrian is in the other channel"), which the model judges.
     // An everyday greeting ("good morning", "hey there", "excuse me") is said
     // to friends as often as to her: with nothing after the name, or only a
-    // stop, it doesn't wake her, and without a clear request the model judges it.
+    // stop, it doesn't wake her, and unless it asks what only she does, the model judges it.
     const soft = (h: Hit) => !!h.soft && !addressed(rest(h));
     const refused = (h: Hit) => !!h.soft && actsAlone(rest(h));
     const strict = this.wakeAt(transcript, ws, 0, this.allowBare);
