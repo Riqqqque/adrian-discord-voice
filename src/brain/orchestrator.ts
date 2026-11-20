@@ -103,7 +103,7 @@ export function stablePrompt(o: OrchestratorOptions, toolNames: string[] = []): 
 
 /** Said with every spoken turn, right before their words. */
 export const SPOKEN_TURN =
-  'If you answer, it is out loud: one short sentence for most things (under twenty words), at most two short ones for a how or why (forty words in all), longer only if they asked for detail. No offers or tips, and no question back unless you need their answer. But a safety warning that matters always goes in, and a list they asked for gets every item.';
+  'If you answer, it is out loud: one short sentence for most things (under twenty words), at most two short ones for a how or why (forty words in all), longer only if they asked for detail. No offers or tips, and no question back unless you need their answer.';
 
 /** The part that changes with every request: who, when, the call, notes. */
 export function requestPrompt(o: OrchestratorOptions, speaker: string, today: string, extra: string[] = []): string {
