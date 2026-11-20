@@ -54,7 +54,7 @@ const PC = [
 ];
 
 const pcAnswer = (name, x = {}) => {
-  if (name === 'pc_system') return x.action === 'lock' ? 'Locked the PC.' : x.action === 'screen_off' ? 'Screens off.' : x.action === 'sleep' ? 'Going to sleep in 3 seconds.' : `${x.action === 'restart' ? 'Restarting' : 'Shutting down'} in 30 seconds. Saying "cancel that" stops it.`;
+  if (name === 'pc_system') return x.action === 'cancel_shutdown' ? 'Called off the shutdown.' : x.action === 'lock' ? 'Locked the PC.' : x.action === 'screen_off' ? 'Screens off.' : x.action === 'sleep' ? 'Going to sleep in 3 seconds.' : `${x.action === 'restart' ? 'Restarting' : 'Shutting down'} in 30 seconds. Saying "cancel that" stops it.`;
   if (name === 'pc_apps') return x.action === 'open' ? `Opening ${x.name} (app).` : x.action === 'close' ? `Asked ${x.name} to close.` : 'Open: Chrome, Discord, Spotify.';
   if (name === 'pc_media') return x.action === 'status' ? 'Nothing is playing.' : 'Spotify is paused on “Nights” by Frank Ocean.';
   if (name === 'pc_volume') return x.playing ? 'Spotify down to 40%.' : `Volume ${x.level ?? 40}%.`;
