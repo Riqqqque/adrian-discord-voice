@@ -12,6 +12,7 @@ import { dirname } from 'node:path';
 import type { SpeechPiece, TextToSpeech } from '../core/interfaces.js';
 import { integratedLoudness, StreamLimiter } from '../audio/loudness.js';
 import { CEILING_DB, levelChunk, TARGET_LUFS } from './kokoro.js';
+import { forSpeech } from '../brain/speech-text.js';
 
 const API = 'https://api.speechify.ai/v1/audio/stream';
 const RATE = 24_000;
@@ -221,7 +222,8 @@ export class SpeechifyTts implements TextToSpeech {
     return this.gain;
   }
 
-  async synthesize(text: string, opts: { voice: string; speed: number }, signal?: AbortSignal) {
+  async synthesize(line: string, opts: { voice: string; speed: number }, signal?: AbortSignal) {
+    const text = forSpeech(line);
     // Short lines repeat ("Yes?", "Okay, louder."): kept so they play at once.
     const key = text.length <= SHORT ? `${opts.speed}|${text}` : undefined;
     const hit = key && this.short.get(key);
@@ -268,10 +270,11 @@ export class SpeechifyTts implements TextToSpeech {
       yield { samples: a.samples, sampleRate: a.sampleRate };
       return;
     }
+    const said = forSpeech(text);
     let started = false;
     try {
       const gain = await this.gainFor();
-      for await (const samples of this.rawStream(text, opts.speed, gain, signal, () => started)) {
+      for await (const samples of this.rawStream(said, opts.speed, gain, signal, () => started)) {
         started = true;
         yield { samples, sampleRate: RATE };
       }
