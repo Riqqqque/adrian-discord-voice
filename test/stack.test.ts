@@ -700,6 +700,19 @@ describe('a PC whose owner is muted in her call', () => {
     await r.stack.stop();
   });
 
+  it('push-to-talk gets past the call guard, but the house guard still judges what the lock acts on', async () => {
+    // Two layers: who may speak at this PC (the call guard), then what a PC call may act on (target.ts).
+    const r = await rig();
+    r.voiceStates.set(OWNER, MUTED);
+    const { conn, pipe } = r.connect();
+    r.steps.push({ parts: [toolCall('pc_system', '{"action":"lock"}'), usage(10, 2)] });
+    conn.emit('ptt');
+    r.heard(pipe, OWNER, 'turn off the lights and lock it');
+    await until(() => r.tts.calls.includes('Lock the PC?'), 'the question');
+    expect(conn.actions).toHaveLength(0);
+    await r.stack.stop();
+  });
+
   it('the follow-up after a push-to-talk answer needs push-to-talk too', async () => {
     const r = await rig();
     r.voiceStates.set(OWNER, MUTED);
