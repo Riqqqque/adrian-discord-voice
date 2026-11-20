@@ -125,6 +125,30 @@ describe('another order with it (review S4)', () => {
       expect(asksMore(s), s).toBe(false);
   });
 
+  it('takes a name, a filler or a polite "can you" in front as part of the one order', () => {
+    for (const s of [
+      'can you set a timer for ten minutes',
+      'can you set a timer for ten minutes?',
+      'could you change my alarm to 7',
+      'okay, set a timer for ten minutes',
+      'and set a timer for five',
+      'Adrian, set a timer for ten minutes',
+      'hey adrian, change my alarm to 6:45',
+      'please remember I take my coffee black',
+      'so, remind me to call mom at five',
+    ])
+      expect(asksMore(s), s).toBe(false);
+    for (const s of ['can you set a timer for ten minutes and play some music', 'okay, set a timer, what time is it?', 'could you remember that, and how long is the drive?'])
+      expect(asksMore(s), s).toBe(true);
+  });
+
+  it('leaves a reminder-kit timer with another order to the model', async () => {
+    const r = new Reminders(undefined, 'UTC', () => {});
+    const set = r.tools().find((t) => t.spec.name === 'set_timer')!;
+    expect(await say(set, { minutes: 30 }, 'start a 30 minute timer and text Sam that')).toBeUndefined();
+    expect(await say(set, { minutes: 30 }, 'start a 30 minute timer')).toBeDefined();
+  });
+
   it('leaves taste, remember, alarm and game-night lines to the model then', async () => {
     const taste = new MusicTaste(undefined).tools()[0]!;
     expect(await say(taste, { who: 'them', what: 'like', name: 'Frank Ocean' }, 'I love Frank Ocean, play something of his')).toBeUndefined();

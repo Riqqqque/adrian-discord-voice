@@ -138,10 +138,16 @@ const ANOTHER_ORDER =
  *  more to say or do than the tool's own line. Speech doesn't always bring a "?". */
 export function asksMore(said: string | undefined): boolean {
   if (!said) return false;
+  // Not a second thing: a name or filler in front ("Adrian, set a timer", "okay so ..."),
+  // or the order asked politely ("can you set a timer for ten minutes?").
+  let s = said.trim().replace(/^(?:(?:hey|hi|ok|okay|alright|all right|so|and|um|uh|oh|well|yo|please|adrian)\b[\s,.:;!-]*)+/i, '');
+  const polite = /^(?:(?:can|could|would|will) (?:you|u)|please)\b\s*/i;
+  if (polite.test(s)) s = s.replace(polite, '').replace(/\?\s*$/, '');
+  const more = ANOTHER_ORDER.exec(s);
   return (
-    /\?/.test(said) ||
-    /(?:^|[,;:]|\b(?:and|but|so|also|then)\b)\s*(?:what|what's|whats|who|who's|how|why|when|where|which|should|could|would|can|do|does|did|is|are|will|any|tell me)\b/i.test(said) ||
-    ANOTHER_ORDER.test(said)
+    /\?/.test(s) ||
+    /(?:^|[,;:]|\b(?:and|but|so|also|then)\b)\s*(?:what|what's|whats|who|who's|how|why|when|where|which|should|could|would|can|do|does|did|is|are|will|any|tell me)\b/i.test(s) ||
+    (!!more && more.index > 0)
   );
 }
 
