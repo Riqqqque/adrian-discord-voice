@@ -132,7 +132,8 @@ interface Scenario {
   name: string;
   /** Parts of one utterance, with the pause before each part after the first, s. */
   parts: { clip: string; pauseBefore?: number }[];
-  /** Words the recognizers give for audio this long (s): local and cloud alike. */
+  /** Words the recognizers give for audio this long (s): local and cloud alike. The
+   *  lengths are what the VADs cut from these renders (LATENCY_DEBUG=1 prints them). */
   words(seconds: number): string;
   /** Smart Turn: done (0.9) unless this says the clip sounds unfinished. */
   unfinished?(seconds: number): boolean;
@@ -145,13 +146,19 @@ interface Scenario {
 const SCENARIOS: Scenario[] = [
   { name: 'wake + order', parts: [{ clip: 'wake' }], words: () => 'Hey Adrian, open Spotify.' },
   { name: 'wake + question', parts: [{ clip: 'wake2' }], words: () => 'Hey Adrian, what is the capital of Australia?' },
-  { name: 'wake, 0.45 s pause, order', parts: [{ clip: 'name' }, { clip: 'cmd', pauseBefore: 0.45 }], words: (s) => (s < 1.6 ? 'Hey Adrian.' : 'Hey Adrian. Open Spotify.') },
+  { name: 'wake, 0.45 s pause, order', parts: [{ clip: 'name' }, { clip: 'cmd', pauseBefore: 0.45 }], words: (s) => (s < 1.3 ? 'Hey Adrian.' : s < 2.3 ? 'Open Spotify.' : 'Hey Adrian. Open Spotify.') },
+  { name: 'wake + "play", 0.4 s, "Drake"', parts: [{ clip: 'play' }, { clip: 'drake', pauseBefore: 0.4 }], words: (s) => (s < 1 ? 'Drake.' : s < 2 ? 'Hey Adrian, play' : 'Hey Adrian, play Drake.') },
+  {
+    name: 'order, 0.4 s, more order',
+    parts: [{ clip: 'wake' }, { clip: 'follow', pauseBefore: 0.4 }],
+    words: (s) => (s < 2 ? 'And turn it up a little.' : s < 3.5 ? 'Hey Adrian, open Spotify.' : 'Hey Adrian, open Spotify. And turn it up a little.'),
+  },
   { name: 'follow-up, no name', parts: [{ clip: 'follow' }], words: () => 'And turn it up a little.', afterAnswer: true },
   {
     name: 'held: "play" ... "Drake"',
     parts: [{ clip: 'play' }, { clip: 'drake', pauseBefore: 1.0 }],
-    words: (s) => (s < 1.8 ? 'Hey Adrian, play' : 'Hey Adrian, play. Drake.'),
-    unfinished: (s) => s < 1.8,
+    words: (s) => (s < 1 ? 'Drake.' : s < 2 ? 'Hey Adrian, play' : 'Hey Adrian, play. Drake.'),
+    unfinished: (s) => s >= 1 && s < 2,
   },
   { name: 'side talk', parts: [{ clip: 'side' }], words: () => 'So then we went to the store and they were out of everything.', sideTalk: true },
 ];
@@ -205,6 +212,8 @@ async function runOnce(sc: Scenario, sttMs: number, audio: Record<string, Int16A
       const job = queue.then(async () => {
         if (signal?.aborted) throw new Error('cancelled');
         decodes++;
+        if (process.env.LATENCY_DEBUG) process.stderr.write(`decode ${sc.name}: ${(samples.length / 16_000).toFixed(3)} s -> ${words(samples.length / 16_000)}
+`);
         await sleep(sttMs);
         return { text: words(samples.length / 16_000), decodeMs: sttMs };
       });

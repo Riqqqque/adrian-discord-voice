@@ -35,10 +35,12 @@ export interface HeardEvent {
   turnCheckMs?: number;
   /** Smart Turn's answer → release, ms: what a hold added (0: not held). */
   holdMs?: number;
+  /** Its words were recognized during the silence wait (EarlyOptions). */
+  early?: boolean;
 }
 
 export type ClosedBy = 'vad' | 'flush';
-type ClipTiming = Pick<HeardEvent, 'vadClosedAt' | 'closedBy' | 'turnCheckMs' | 'holdMs'>;
+type ClipTiming = Pick<HeardEvent, 'vadClosedAt' | 'closedBy' | 'turnCheckMs' | 'holdMs' | 'early'>;
 type Words = Awaited<ReturnType<SpeechToText['transcribe']>>;
 
 export interface ListeningPipelineEvents {
@@ -61,11 +63,27 @@ interface HeldSpeech {
   checkedAt?: number;
   /** Recognition of exactly `samples`, once started. A join starts over. */
   words?: Promise<Words>;
+  /** Those words were started during the silence wait. */
+  early?: boolean;
+}
+
+/** A clip the quicker VAD closed, recognized while the full silence wait runs out. */
+interface EarlyClip {
+  samples: Float32Array;
+  words: Promise<Words>;
+  /** Aborted when the clip is dropped: its recognition, and whatever onWords started. */
+  ctl: AbortController;
 }
 
 export interface UserState {
   down: Downsampler;
   vad: SileroVad;
+  /** The same audio with a shorter silence wait (early option). */
+  early?: SileroVad;
+  /** What `early` closed last, until the full wait decides. */
+  clip?: EarlyClip;
+  /** `early` closed something the full wait hasn't closed yet. */
+  earlyOpen?: boolean;
   /** performance.now() when the current run of speech began. */
   voicedSince?: number;
   held?: HeldSpeech;
@@ -87,6 +105,35 @@ export interface TurnOptions {
   /** The words of speech that is being held, for starting a second listen early.
    *  `samples` is the array the heard event will carry, unless a join replaces it. */
   onHeldWords?: (userId: UserId, words: { text: string; samples: Float32Array }) => void;
+}
+
+/** Recognizing during the silence wait (PC rooms). A second Silero VAD with a
+ *  shorter silence wait watches the same audio. When it closes a clip, that
+ *  clip is recognized at once; if they stay quiet, the full wait then closes
+ *  the very same samples, and their words are ready (or nearly) by then. If
+ *  they talk again, the full wait closes different audio and the early clip is
+ *  dropped. Nothing decides on the early clip: the full wait, Smart Turn and
+ *  the wake check all still run on what the full wait closes. */
+export interface EarlyOptions {
+  /** The shorter silence wait, s. Both waits must be whole Silero windows
+   *  (32 ms) or the two VADs cut the same speech a few samples apart and
+   *  nothing is ever reused; the option is then off. */
+  minSilence: number;
+  /** The words of an early clip, for starting a second listen early. `samples`
+   *  is the array the heard event will carry if the full wait closes the same
+   *  audio. `startedAt` is when heard will say they started talking. `signal`
+   *  aborts if the clip is dropped. */
+  onWords?: (userId: UserId, words: { text: string; samples: Float32Array; startedAt: number; signal: AbortSignal }) => void;
+}
+
+/** Silero's window, samples at 16 kHz. */
+const SILERO_WINDOW = 512;
+const wholeWindows = (seconds: number) => Math.round(seconds * ASR_SAMPLE_RATE) % SILERO_WINDOW === 0;
+
+function sameSamples(a: Float32Array, b: Float32Array): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
 }
 
 /** Segments shorter than this are coughs/clicks; don't spend ASR on them. */
@@ -149,6 +196,8 @@ function concat(...parts: Float32Array[]): Float32Array {
 
 export class ListeningPipeline extends EventEmitter {
   protected readonly users = new Map<UserId, UserState>();
+  /** Early options, if both silence waits are whole Silero windows. */
+  private readonly early: EarlyOptions | undefined;
 
   constructor(
     private readonly transport: VoiceTransport,
@@ -156,11 +205,15 @@ export class ListeningPipeline extends EventEmitter {
     private readonly wake: WakeDetector,
     private readonly vadOptions: SileroOptions,
     private readonly turn?: TurnOptions,
+    early?: EarlyOptions,
   ) {
     super();
+    this.early = early && early.minSilence < vadOptions.minSilence && wholeWindows(early.minSilence) && wholeWindows(vadOptions.minSilence) ? early : undefined;
     transport.on('audio', (id, chunk) => {
       const u = this.user(id);
-      const segments = u.vad.accept(u.down.push(chunk.samples));
+      const pcm = u.down.push(chunk.samples);
+      const segments = u.vad.accept(pcm);
+      const early = this.early && u.early ? u.early.accept(pcm) : [];
       if (u.vad.isSpeaking()) {
         u.voicedSince ??= chunk.receivedAt;
         this.emit('voiceActivity', id, Math.round(chunk.receivedAt - u.voicedSince));
@@ -168,6 +221,7 @@ export class ListeningPipeline extends EventEmitter {
         delete u.voicedSince;
       }
       for (const s of segments) this.handleSegment(id, s, 'vad');
+      for (const s of early) this.recognizeEarly(id, u, s);
     });
     // Discord stopped sending for this user: close any open segment.
     transport.on('speechEnd', (id) => {
@@ -175,9 +229,17 @@ export class ListeningPipeline extends EventEmitter {
       if (!u) return;
       delete u.voicedSince;
       for (const s of u.vad.flush()) this.handleSegment(id, s, 'flush');
+      // Both start over together, so their segments keep lining up.
+      u.early?.flush();
+      this.dropEarly(u);
+      delete u.earlyOpen;
     });
     transport.on('membersChanged', (members) => {
-      for (const id of this.users.keys()) if (!members.has(id)) this.users.delete(id);
+      for (const [id, u] of this.users)
+        if (!members.has(id)) {
+          this.dropEarly(u);
+          this.users.delete(id);
+        }
     });
   }
 
@@ -188,22 +250,70 @@ export class ListeningPipeline extends EventEmitter {
   protected user(id: UserId): UserState {
     let u = this.users.get(id);
     if (!u) {
-      u = { down: new Downsampler(), vad: new SileroVad(this.vadOptions), epoch: 0 };
+      u = {
+        down: new Downsampler(),
+        vad: new SileroVad(this.vadOptions),
+        ...(this.early ? { early: new SileroVad({ ...this.vadOptions, minSilence: this.early.minSilence }) } : {}),
+        epoch: 0,
+      };
       this.users.set(id, u);
     }
     return u;
   }
 
+  /** The quicker VAD closed a clip: recognize it now, in case the full wait closes the same one. */
+  private recognizeEarly(userId: UserId, u: UserState, samples: Float32Array): void {
+    // They paused, went on and paused again: the full wait is still inside the
+    // speech this ends, so what it closes will be longer. Not worth a decode.
+    const onlyTheEnd = u.earlyOpen;
+    u.earlyOpen = true;
+    this.dropEarly(u);
+    if (onlyTheEnd || samples.length / ASR_SAMPLE_RATE < MIN_SEGMENT_SECONDS) return;
+    const ctl = new AbortController();
+    const words = this.stt.transcribe(samples, ASR_SAMPLE_RATE, ctl.signal);
+    void words.catch(() => undefined);
+    u.clip = { samples, words, ctl };
+    const onWords = this.early?.onWords;
+    if (!onWords) return;
+    // As heard will judge it: from the full wait's close, minus the clip.
+    const startedAt = performance.now() + (this.vadOptions.minSilence - this.early!.minSilence) * 1000 - (samples.length / ASR_SAMPLE_RATE) * 1000;
+    void words
+      .then(({ text }) => {
+        if (text && !ctl.signal.aborted) onWords(userId, { text, samples, startedAt, signal: ctl.signal });
+      }, () => undefined)
+      .catch((e: Error) => this.emit('error', userId, e));
+  }
+
+  private dropEarly(u: UserState): void {
+    u.clip?.ctl.abort();
+    delete u.clip;
+  }
+
+  /** The early clip, if the full wait closed exactly the same audio (else it's dropped). */
+  private takeEarly(u: UserState | undefined, samples: Float32Array): EarlyClip | undefined {
+    const c = u?.clip;
+    if (!c) return undefined;
+    delete u.clip;
+    if (sameSamples(c.samples, samples)) return c;
+    c.ctl.abort();
+    return undefined;
+  }
+
   private handleSegment(userId: UserId, samples: Float32Array, closedBy: ClosedBy): void {
     const closedAt = performance.now();
+    const u = this.users.get(userId);
+    if (u) delete u.earlyOpen;
+    const early = this.takeEarly(u, samples);
+    if (early) samples = early.samples; // the same audio: the array its words and any early listen are for
     const short = samples.length / ASR_SAMPLE_RATE < MIN_SEGMENT_SECONDS;
     if (!this.turn) {
-      if (!short) this.transcribe(userId, samples, { vadClosedAt: closedAt, closedBy });
+      if (!short) this.transcribe(userId, samples, { vadClosedAt: closedAt, closedBy, ...(early ? { early: true } : {}) }, early?.words);
       return;
     }
-    const u = this.users.get(userId);
     if (!u) return;
     const held = u.held;
+    // Joined to held speech: the early clip's words are only for its last part.
+    if (held) early?.ctl.abort();
     if (short) {
       // a cough while we wait: keep waiting, but don't let the wait stall
       if (held && !held.timer) this.arm(userId, u);
@@ -220,7 +330,7 @@ export class ListeningPipeline extends EventEmitter {
       closedBy,
       // Recognize beside the check: the words are ready by the time a hold
       // ends. A join changes the audio, so what was started for it is dropped.
-      ...(held ? {} : { words: this.decode(all) }),
+      ...(held ? {} : early ? { words: early.words, early: true } : { words: this.decode(all) }),
     };
     void this.turn.detector
       .complete(concat(all.length > 8 * ASR_SAMPLE_RATE ? all.subarray(all.length - 8 * ASR_SAMPLE_RATE) : all, TURN_TAIL))
@@ -289,6 +399,7 @@ export class ListeningPipeline extends EventEmitter {
     const timing: ClipTiming = {
       vadClosedAt: h.closedAt,
       closedBy: h.closedBy,
+      ...(h.early ? { early: true } : {}),
       ...(h.checkedAt !== undefined ? { turnCheckMs: Math.round(h.checkedAt - h.closedAt), holdMs: Math.round(performance.now() - h.checkedAt) } : {}),
     };
     this.transcribe(userId, h.samples, timing, h.words);
