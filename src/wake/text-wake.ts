@@ -4,6 +4,7 @@
 // friend named Adrian, so this check is the authority.
 
 import type { WakeDetector } from '../core/interfaces.js';
+import { classify, classifyMusic, isTimeQuestion } from '../conversation/intents.js';
 
 export interface TextWakeOptions {
   /** Spoken name, lower case. Default "adrian". */
@@ -81,6 +82,15 @@ const OBJECT_TAKERS = new Set([
   'added', 'tag', 'tagged', 'ping', 'pinged', 'beat', 'help', 'helped', 'blame', 'blamed', 'trust', 'believe', 'ignore', 'ignored', 'follow', 'kill',
   'killed', 'find', 'found', 'miss', 'missed', 'bring', 'brought', 'pick', 'picked', 'hear', 'heard', 'show', 'showed', 'pay', 'paid', 'owe', 'get',
   'got', 'thank', 'thanked', 'join', 'joined', 'carry', 'carried', 'marry', 'date', 'dated', 'visit', 'visited', 'wait', 'need', 'want', 'became',
+  // game talk about a teammate ("can you heal Adrian", "did anyone rez Adrian")
+  'heal', 'healed', 'healing', 'revive', 'revived', 'reviving', 'rez', 'rezzed', 'res', 'ressed', 'resurrect', 'downed', 'spectate', 'spectating',
+  'rescue', 'rescued', 'protect', 'protected',
+]);
+/** After "how", these make a question ("how long", "how do I"); any other word
+ *  with no helper verb later is an exclamation ("how lucky, Adrian!"). */
+const HOW_ASKS = new Set([
+  'do', 'does', 'did', 'is', 'are', 'was', 'were', 'am', 'can', 'could', 'will', 'would', 'should', 'shall', 'may', 'might', 'have', 'has', 'had',
+  's', 'much', 'many', 'long', 'far', 'old', 'often', 'come', 'about', 'to', 'soon', 'big', 'late', 'early', 'fast',
 ]);
 const TIMES = /^(morning|evening|afternoon)$/;
 /** How a question to her starts. The name at the end or after a lead-in only
@@ -104,6 +114,9 @@ interface Hit {
   last: number;
   /** Text right after the name, punctuation included. */
   after: string;
+  /** Opened by an everyday greeting ("good morning", "hey there", "excuse me"),
+   *  said to friends as often as to her. */
+  soft?: boolean;
 }
 
 function words(text: string): Word[] {
@@ -152,6 +165,41 @@ function oldAbout(remainder: string): boolean {
   return !(a && b && (AUX.has(a.w) || HAS.has(a.w) || a.w === 'does' || a.w === 'did') && PRONOUNS.has(b.w));
 }
 
+/** Helper verbs that ask what a person did or does ("did you eat", "has he
+ *  left"): after the bare name the model judges these, as it always did.
+ *  "Will you", "would you" and "is it" stay direct: they ask her for something. */
+const PAST = new Set(['did', 'does', "didn't", "doesn't", 'has', 'had', 'was', "wasn't"]);
+const PERSONAL = new Set(['you', 'he', 'she', 'they', 'we', 'i']);
+function bareAbout(r: string): boolean {
+  const [a, b] = lead(r, 2);
+  return (!!a && !!b && PAST.has(a.w) && PERSONAL.has(b.w)) || oldAbout(r);
+}
+
+/** What she acts on without the model: a stop or a hold, or her name alone.
+ *  The loose paths never let these through, so a stop said to a person called
+ *  Adrian doesn't stop her music ("can you stop, Adrian?"). */
+function actsAlone(r: string): boolean {
+  if (!r.trim()) return true;
+  const k = classify(r)?.kind;
+  return k === 'stop' || k === 'name';
+}
+
+/** "What a shot", "what an idea", "how lucky": an exclamation, not a question.
+ *  `ws` starts at the question word. */
+function exclaims(ws: string[]): boolean {
+  const [q, a] = ws;
+  if (q === 'what') return a === 'a' || a === 'an';
+  if (q !== 'how' || !a || HOW_ASKS.has(a)) return false;
+  return !ws.slice(2).some((w) => AUX.has(w) || HAS.has(w) || w === 'do' || w === 'does' || w === 'did' || w === 's');
+}
+
+/** After an everyday greeting, she was clearly addressed: something only she
+ *  does ("play Drake", "turn it up", "what time is it"). A question isn't
+ *  enough: "morning Adrian, how was your weekend?" is said to a friend. */
+function addressed(r: string): boolean {
+  return !!classify(r) || !!classifyMusic(r) || isTimeQuestion(r);
+}
+
 /** "Adrian works there", "Adrian plays bass": a verb with a third-person "s"
  *  right after the name (no pause). Only where the wake is loose anyway:
  *  "thanks", "pass", "focus" don't count. */
@@ -193,14 +241,14 @@ export class TextWakeDetector implements WakeDetector {
   /** Greetings starting at word i ("hey", "hey hey", "hey there", "good
    *  morning", "excuse me"): the index after them, or i if there are none.
    *  A bare "morning" only opens the transcript: "this morning Adrian went" isn't one. */
-  private greetingEnd(ws: Word[], i: number, first: boolean): number {
+  private greetingEnd(ws: Word[], i: number, first: boolean): { end: number; soft: boolean } {
     let j = i;
-    if (ws[j]?.w === 'excuse' && ws[j + 1]?.w === 'me') return j + 2;
-    if (ws[j]?.w === 'good' && TIMES.test(ws[j + 1]?.w ?? '')) return j + 2;
-    if (first && TIMES.test(ws[j]?.w ?? '')) return j + 1;
+    if (ws[j]?.w === 'excuse' && ws[j + 1]?.w === 'me') return { end: j + 2, soft: true };
+    if (ws[j]?.w === 'good' && TIMES.test(ws[j + 1]?.w ?? '')) return { end: j + 2, soft: true };
+    if (first && TIMES.test(ws[j]?.w ?? '')) return { end: j + 1, soft: true };
     while (j < i + 2 && ws[j] && this.greetings.has(ws[j]!.w)) j++;
-    if (j > i && ws[j]?.w === 'there' && /^(hey|hi|hello)$/.test(ws[j - 1]!.w)) j++;
-    return j;
+    if (j > i && ws[j]?.w === 'there' && /^(hey|hi|hello)$/.test(ws[j - 1]!.w)) return { end: j + 1, soft: true };
+    return { end: j, soft: false };
   }
 
   /** Greeting + name at word i (fillers allowed first). With `bare`, the
@@ -208,18 +256,21 @@ export class TextWakeDetector implements WakeDetector {
   private wakeAt(text: string, ws: Word[], i: number, bare: boolean): Hit | undefined {
     const first = i === 0;
     while (i < ws.length && FILLERS.has(ws[i]!.w)) i++;
-    const g = this.greetingEnd(ws, i, first);
+    const { end: g, soft } = this.greetingEnd(ws, i, first);
     if (g === i && !bare) return undefined;
     const last = this.nameAt(ws, g, g > i);
     if (last < 0) return undefined;
     const after = text.slice(ws[last]!.end);
     if (CONTRACTION.test(after)) return undefined; // "Hey, Adrian's coming"
-    return { last, after };
+    return { last, after, ...(soft ? { soft } : {}) };
   }
 
   match(transcript: string): { woke: boolean; remainder: string } {
     const hit = this.wakeAt(transcript, words(transcript), 0, this.allowBare);
-    return hit ? { woke: true, remainder: hit.after.replace(STRIP, '').trim() } : { woke: false, remainder: '' };
+    const r = hit?.after.replace(STRIP, '').trim() ?? '';
+    // "Good morning, Adrian!" is said to friends: only a request for her after it counts.
+    if (!hit || (hit.soft && (actsAlone(r) || !addressed(r)))) return { woke: false, remainder: '' };
+    return { woke: true, remainder: r };
   }
 
   matchLoose(transcript: string): { woke: boolean; remainder: string; loose: boolean } {
@@ -227,21 +278,26 @@ export class TextWakeDetector implements WakeDetector {
     const rest = (h: Hit) => h.after.replace(STRIP, '').trim();
     // "Hey Adrian, ...": a question to her, unless the words after her name
     // talk about her ("Hey, Adrian is in the other channel"), which the model judges.
+    // An everyday greeting ("good morning", "hey there", "excuse me") is said
+    // to friends as often as to her: with nothing after the name, or only a
+    // stop, it doesn't wake her, and unless it asks what only she does, the model judges it.
+    const soft = (h: Hit) => !!h.soft && !addressed(rest(h));
+    const refused = (h: Hit) => !!h.soft && actsAlone(rest(h));
     const strict = this.wakeAt(transcript, ws, 0, this.allowBare);
-    if (strict) return { woke: true, remainder: rest(strict), loose: talksAbout(strict.after) };
+    if (strict && !refused(strict)) return { woke: true, remainder: rest(strict), loose: talksAbout(strict.after) || soft(strict) };
     // The bare name first: "Adrian, what's the weather" is a question to it;
     // "Adrian is so slow" is talk about it, which the model may let pass.
-    const bare = this.wakeAt(transcript, ws, 0, true);
+    const bare = strict ? undefined : this.wakeAt(transcript, ws, 0, true);
     if (bare) {
       const r = rest(bare);
-      return { woke: true, remainder: r, loose: oldAbout(r) || talksAbout(bare.after) }; // "Adrian?" alone answers "Yes?"
+      return { woke: true, remainder: r, loose: bareAbout(r) || talksAbout(bare.after) }; // "Adrian?" alone answers "Yes?"
     }
     // The wake phrase later on: "yo wait, hey Adrian, what's ...".
     for (let i = 1; i < ws.length; i++) {
       const h = this.wakeAt(transcript, ws, i, false);
-      if (h) {
+      if (h && !refused(h)) {
         const r = rest(h);
-        return { woke: true, remainder: r, loose: oldAbout(r) || talksAbout(h.after) };
+        return { woke: true, remainder: r, loose: bareAbout(r) || talksAbout(h.after) || soft(h) };
       }
     }
     // Everything below is loose: the model decides whether it was for her, and
@@ -259,6 +315,8 @@ export class TextWakeDetector implements WakeDetector {
       const r = after.replace(STRIP, '').trim();
       // Not the name alone ("yeah, Adrian"), nor a list of names ("Marco, Adrian, and Sam").
       if (!r || !QUESTION.has((lead(r, 1)[0]?.w ?? '').replace(/'.*$/, '')) || /^(and|or)\b/i.test(r) || CONTRACTION.test(after) || talksAbout(after) || oldAbout(r) || saysWhatHeDoes(after) || (!led && !PAUSE.test(after))) continue;
+      // Nor a stop ("wait, Adrian, can you stop?") or an exclamation ("wait, Adrian, what a shot").
+      if (actsAlone(r) || exclaims(words(r).map((x) => x.w))) continue;
       return { woke: true, remainder: r, loose: true };
     }
     // The name at the end, as an address: "what is good, Adrian?", "can you
@@ -268,10 +326,12 @@ export class TextWakeDetector implements WakeDetector {
     if (n >= 1 && ws[n]!.w === 's' && /^['’]$/.test(transcript.slice(ws[n - 1]!.end, ws[n]!.start))) n--;
     const last = ws[n]?.w ?? '';
     const named = this.names.has(last) || (last.endsWith('s') && this.names.has(last.slice(0, -1)));
-    const asks = QUESTION.has(ws.slice(0, n).find((x) => !LEAD_INS.has(x.w) && !this.greetings.has(x.w))?.w ?? '');
+    const q = ws.slice(0, n).findIndex((x) => !LEAD_INS.has(x.w) && !this.greetings.has(x.w));
+    const asks = q >= 0 && QUESTION.has(ws[q]!.w) && !exclaims(ws.slice(q, n).map((x) => x.w));
     if (n >= 1 && named && asks && !OBJECT_TAKERS.has(ws[n - 1]!.w)) {
       const before = transcript.slice(0, ws[n]!.start).replace(/[\s,.:;!?—–-]+$/, '').trim();
-      return { woke: true, remainder: before, loose: true };
+      // A stop said to a person called Adrian ("can you stop, Adrian?") isn't hers to act on.
+      if (!actsAlone(before)) return { woke: true, remainder: before, loose: true };
     }
     return { woke: false, remainder: '', loose: false };
   }
