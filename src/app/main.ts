@@ -18,6 +18,7 @@ import { readJsonFile, SecretsFile } from '../web/secrets-file.js';
 import { createAdminServer } from '../web/server.js';
 import { toWav } from '../audio/wav.js';
 import { StackManager } from './manager.js';
+import { readMemInfo } from './memory.js';
 import { reraise, shutdownOnSignal } from './shutdown.js';
 
 const log = createLogger(process.env.LOG_LEVEL === 'debug' ? 'debug' : 'info');
@@ -37,7 +38,7 @@ const limitsRaw = (raw.limits ?? {}) as { usageFile?: string };
 const secrets = new SecretsFile(secretsFile);
 const ledger = new UsageLedger(limitsRaw.usageFile ?? join(stateDir, 'usage.json'), { perUserPerHour: 30, dailyUsd: 1, monthlyUsd: 10 }, timezone);
 const auth = new AdminAuth(stateDir);
-const stack = new StackManager(configFile, secrets, ledger, log, { secretsFile, stateDir, modelsDir });
+const stack = new StackManager(configFile, secrets, ledger, log, { secretsFile, stateDir, modelsDir }, undefined, () => readMemInfo());
 
 // --- voice preview for the wizard (cached; shares the loaded TTS) --------
 const previews = new Map<string, Buffer>();

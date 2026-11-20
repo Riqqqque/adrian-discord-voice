@@ -67,6 +67,8 @@ import { deezerTopTracks, describe as trackName, ffmpegDecoder, MusicPlayer, mus
 import { modelJudge, type QuizRoom, Quizzes } from '../features/quiz.js';
 import { linksLine, PLAY_THAT_LINK, RecentLinks } from '../features/links.js';
 import { ParakeetStt } from '../speech/sherpa.js';
+import { prepareLocalVoice } from './local-voice.js';
+import { rssMb } from './memory.js';
 import { DiscordVoiceTransport } from '../transport/discord.js';
 import { Speaker } from '../voice/speaker.js';
 import { TextWakeDetector } from '../wake/text-wake.js';
@@ -177,13 +179,10 @@ export async function startVoiceStack(
   const stt = models
     ? await models.sttFor(listen.asrModelDir, listen.asrThreads)
     : await ParakeetStt.load({ modelDir: listen.asrModelDir, threads: listen.asrThreads });
-  log.info('asr loaded', { ms: Math.round(performance.now() - t) });
-  t = performance.now();
+  log.info('asr loaded', { ms: Math.round(performance.now() - t), rssMb: rssMb() });
   const tts = models ? models.ttsFor(voice.modelDir, voice.threads) : new KokoroTts({ modelDir: voice.modelDir, threads: voice.threads });
   /** Where the extra language models live (next to the Kokoro model). */
   const langModels = dirname(voice.modelDir);
-  const gainDb = await tts.gainFor(voice.voice, voice.speed);
-  log.info('tts loaded and calibrated', { ms: Math.round(performance.now() - t), voice: voice.voice, gainDb: Number(gainDb.toFixed(2)) });
   const piperVi = existsSync(join(langModels, MODEL_LAYOUT.piperVi))
     ? new PiperTts({ modelDir: join(langModels, MODEL_LAYOUT.piperVi), modelFile: 'vi_VN-vais1000-medium.onnx', threads: voice.threads })
     : undefined;
@@ -196,6 +195,8 @@ export async function startVoiceStack(
       ? new SpeechifyTts({ apiKey: cloudKey, voiceId: cv.voiceId, model: cv.model, timeoutMs: cv.timeoutMs, speed: cv.speed, budget: voiceBudget, log }, tts, voice.voice)
       : undefined;
   if (cloud) log.info('cloud voice', { provider: cv!.provider, voice: cv!.voiceId, usedChars: voiceBudget.used(), monthlyChars: cv!.monthlyChars });
+  // Kokoro loads now only when it speaks English; as the cloud's stand-in it loads on first use.
+  await prepareLocalVoice(tts, { modelDir: voice.modelDir, voice: voice.voice, speed: voice.speed, cloudPrimary: !!cloud && voiceBudget.allows(1) }, log);
   const CLOUD = 'cloud:en';
   const voiceFor = (lang: ReplyLang) => (lang === 'en' ? (cloud ? CLOUD : voice.voice) : lang === 'vi' && !piperVi ? voice.voice : LANGS[lang].voice);
   /** Said before a slow lookup when nothing else has been said yet. */
@@ -1793,7 +1794,7 @@ export async function startVoiceStack(
         holdMs: config.satellite.unfinishedWaitMs,
         onHold: (userId, info) => log.info('waiting for the rest', { user: userId, ...info }),
       };
-      log.info('smart turn loaded', { waitMs: turn.holdMs });
+      log.info('smart turn loaded', { waitMs: turn.holdMs, rssMb: rssMb() });
     } catch (err) {
       log.warn('smart turn unavailable; using the plain silence wait', { error: (err as Error).message.slice(0, 160) });
     }
