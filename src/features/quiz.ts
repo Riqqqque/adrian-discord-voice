@@ -823,7 +823,7 @@ export async function quizSongs(o: QuizOptions, src: SongSources, signal: AbortS
     songs = fit((top?.titles ?? []).map((title) => ({ title, artist: top!.artist })));
   } else if (o.decade || (o.genre && GENRES[o.genre] === undefined)) {
     if (src.yt) {
-      const c = await src.yt.playlist(`${[o.decade, o.genre].filter(Boolean).join(' ')} hits`, signal).catch((e: Error) => {
+      const c = await src.yt.playlist(`${[o.decade, o.genre].filter(Boolean).join(' ')} hits`, signal, { spare: false }).catch((e: Error) => {
         if (signal.aborted) throw e;
         src.log.warn('quiz playlist failed', { error: e.message.slice(0, 120) });
         return undefined;

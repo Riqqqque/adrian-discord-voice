@@ -478,6 +478,9 @@ export const PocConfigSchema = z.object({
       /** Artist requests shuffle the artist's top songs (ranked by Deezer's free public API).
        *  Deezer gets the artist's name, and X from a plain "play X", to find out whether it's an artist. */
       topSongs: z.boolean().default(true),
+      /** Ask YouTube's video search directly (one request) instead of starting yt-dlp
+       *  for it. It isn't a documented API: off goes back to yt-dlp for every video search. */
+      directSearch: z.boolean().default(true),
       /** "Start a music quiz": rounds by default, clip length and when the hint comes (seconds). */
       quiz: z
         .object({
@@ -488,7 +491,7 @@ export const PocConfigSchema = z.object({
         })
         .default({ enabled: true, rounds: 8, clipSeconds: 20, hintSeconds: 12 }),
     })
-    .default({ enabled: true, ffmpeg: 'ffmpeg', plexBackup: true, volume: 0.5, duckLevel: 0.2, maxQueue: 25, autoplay: true, prefix: '!', topSongs: true, quiz: { enabled: true, rounds: 8, clipSeconds: 20, hintSeconds: 12 } }),
+    .default({ enabled: true, ffmpeg: 'ffmpeg', plexBackup: true, volume: 0.5, duckLevel: 0.2, maxQueue: 25, autoplay: true, prefix: '!', topSongs: true, directSearch: true, quiz: { enabled: true, rounds: 8, clipSeconds: 20, hintSeconds: 12 } }),
   /** Cloud voice for English replies; the local voice stays as fallback. */
   cloudVoice: z
     .object({
