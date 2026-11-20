@@ -293,6 +293,22 @@ describe('what an answer costs', () => {
     await r.stack.stop();
   });
 
+  it("a guest past their own share of the day hears why, and nobody else is held back", async () => {
+    const r = await rig({ owners: [OWNER], limits: { perUserPerHour: 0, dailyUsd: 1, monthlyUsd: 0, guestDailyUsd: 0.001 } });
+    r.steps.push({ parts: [text('Canberra.'), usage(1000, 100)] }); // $0.0015
+    r.heard(r.discordPipe, SAM, 'hey adrian capital of australia', 'capital of australia');
+    await until(() => r.stack.answers().length === 1, 'the answer');
+    expect(r.ledger.userTodayUsd(SAM)).toBeCloseTo(0.0015, 6);
+    r.heard(r.discordPipe, SAM, 'hey adrian capital of peru', 'capital of peru');
+    await until(() => r.stack.answers().length === 2, 'the notice');
+    expect(r.llmBodies).toHaveLength(1);
+    expect(r.tts.calls).toContain("You've used your share of today's budget, so I'm pausing your questions until tomorrow.");
+    r.steps.push({ parts: [text('Lima.'), usage(1000, 100)] });
+    r.heard(r.discordPipe, OWNER, 'hey adrian capital of peru', 'capital of peru');
+    await until(() => r.llmBodies.length === 2, 'the owner answered');
+    await r.stack.stop();
+  });
+
   it('a stop during a search sends no further model call, and the round that ran is charged', async () => {
     const r = await rig();
     r.steps.push({ parts: [toolCall('web_search', '{"query":"weather"}'), usage(1000, 100)] });

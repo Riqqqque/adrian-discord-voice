@@ -836,8 +836,9 @@ export async function startVoiceStack(
           notes,
           sessions,
           log,
-          (inTok, outTok, model) =>
-            ledger.addCost(bgLlm && bg && model === bgLlm.model && model !== llm.model ? (inTok * bg.priceInPerM + outTok * bg.priceOutPerM) / 1e6 : (inTok * brain.priceInPerM + outTok * brain.priceOutPerM) / 1e6),
+          // Learning about someone is part of what they spend.
+          (inTok, outTok, model, userId) =>
+            ledger.addCost(bgLlm && bg && model === bgLlm.model && model !== llm.model ? (inTok * bg.priceInPerM + outTok * bg.priceOutPerM) / 1e6 : (inTok * brain.priceInPerM + outTok * brain.priceOutPerM) / 1e6, userId),
           4,
           bgLlm ? llm : undefined,
         );
@@ -1189,7 +1190,7 @@ export async function startVoiceStack(
     } else if (!allowed.ok) {
       log.info('limited', { user: userId, reason: allowed.reason });
       // Say why once per reason per 10 minutes; otherwise stay quiet.
-      const key = allowed.reason === 'user-rate' ? `user:${userId}` : allowed.reason;
+      const key = allowed.reason === 'user-rate' || allowed.reason === 'guest-daily' ? `${allowed.reason}:${userId}` : allowed.reason;
       if (performance.now() - (pausedNotified.get(key) ?? -Infinity) < 600_000) return;
       pausedNotified.set(key, performance.now());
       source = fixed(LIMIT_MESSAGES[allowed.reason]);
@@ -1269,7 +1270,7 @@ export async function startVoiceStack(
     // Nothing to mark if the model never ran, or stayed out of it (SILENT).
     if (outer.aborted && usage && !silent) sessions.markCutOff(userId);
     const cost = usage ? costUsd(usage) : 0;
-    ledger.addCost(cost);
+    ledger.addCost(cost, userId);
     const rec: AnswerRecord = {
       at: new Date().toISOString(),
       room: rm.key,
@@ -1716,7 +1717,7 @@ export async function startVoiceStack(
                 // out of too: otherwise "adrian" in every message spends the shared
                 // daily budget with no per-person check.
                 ledger.noteRequest(userId);
-                if (usage) ledger.addCost(costUsd(usage));
+                if (usage) ledger.addCost(costUsd(usage), userId);
                 if (usage && !silent) recap.answered('text', userId);
               }
             })();
