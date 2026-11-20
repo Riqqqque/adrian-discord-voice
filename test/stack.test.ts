@@ -2677,3 +2677,35 @@ describe('a ringing alarm', () => {
     await r.stack.stop();
   });
 });
+
+describe('someone with no PC connected', () => {
+  const NO_PC = 'has no PC connected: never offer or use the pc_ tools for them.';
+
+  it("is told so in their turn, while someone else's PC is connected", async () => {
+    const r = await rig();
+    r.connect(OWNER);
+    r.heard(r.discordPipe, SAM, 'hey adrian lock the front door', 'lock the front door');
+    await until(() => r.llmBodies.length === 1, 'the model');
+    expect(asPrompt(r.llmBodies[0])).toContain(NO_PC);
+    await r.stack.stop();
+  });
+
+  it('not when they have one, in the call or at it', async () => {
+    const r = await rig();
+    const { pipe } = r.connect(OWNER);
+    r.heard(r.discordPipe, OWNER, 'hey adrian lock my pc', 'lock my pc');
+    await until(() => r.stack.answers().length === 1, 'the call answer');
+    r.heard(pipe, OWNER, 'hey adrian open spotify', 'open spotify');
+    await until(() => r.llmBodies.length === 2, 'the PC answer');
+    for (const b of r.llmBodies) expect(asPrompt(b)).not.toContain(NO_PC);
+    await r.stack.stop();
+  });
+
+  it('not when PCs are off altogether', async () => {
+    const r = await rig({ satellite: { enabled: false } });
+    r.heard(r.discordPipe, SAM, 'hey adrian lock the front door', 'lock the front door');
+    await until(() => r.llmBodies.length === 1, 'the model');
+    expect(asPrompt(r.llmBodies[0])).not.toContain(NO_PC);
+    await r.stack.stop();
+  });
+});
