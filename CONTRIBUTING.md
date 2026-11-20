@@ -139,7 +139,7 @@ Changes move money, not just behavior. Before you change anything on the answer 
 
 ## Before you call a change done
 
-1. `npm run typecheck` and `npm test` pass (see [docs/development.md](docs/development.md) for platform quirks). There is no CI: nothing runs typecheck or tests on push. Run them yourself; `packaging/package.sh` is the only automatic gate, at release time.
+1. `npm run typecheck` and `npm test` pass (see [docs/development.md](docs/development.md) for platform quirks). CI (`.github/workflows/ci.yml`) runs both on every push and pull request to `main`, on Linux; run them yourself first, and on Windows too if you touched paths or shell code. `packaging/package.sh` runs them again at release time.
 2. A test covers the new behavior or the bug, in the matching file from the area table.
 3. If you changed prompt wording, tools, routing, follow-up or barge-in timing, music routing or confirmations, you reran the matching real-model bench. Most prompt rules trace to a real complaint; don't remove one without a reason.
 4. Docs are updated in the same change:
