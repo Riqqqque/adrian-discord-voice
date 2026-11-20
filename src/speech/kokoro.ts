@@ -51,7 +51,7 @@ export const TARGET_LUFS = -16 - 3.01;
  *  words like "Yes?" read hotter than the calibration sentences). */
 const MAX_OVER_LU = 1.5;
 /** Sample-peak ceiling; leaves ~1 dB for inter-sample peaks → < −1 dBTP. */
-const CEILING_DB = -2;
+export const CEILING_DB = -2;
 const CALIBRATION = [
   "Sure, here's what I found. It's seventy two degrees and clear right now.",
   'The capital of Australia is Canberra, which surprises a lot of people.',

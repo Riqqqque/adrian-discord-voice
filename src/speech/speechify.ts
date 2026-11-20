@@ -1,14 +1,17 @@
-// Speechify cloud voice (Simba 3.2, English), with a local voice as the
+// Speechify cloud voice (Simba, English), with a local voice as the
 // automatic fallback: used when the monthly character budget is spent, the
 // key is missing, or the API is slow or failing. Audio is fetched from the
 // streaming endpoint as raw 24 kHz PCM, then leveled like the local voices.
+// Sentences longer than the cached short lines play as their bytes arrive
+// (first audio ~0.1 s after the request instead of the ~0.3 s the whole
+// sentence takes).
 
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dateFormat } from '../core/time.js';
 import { dirname } from 'node:path';
-import type { TextToSpeech } from '../core/interfaces.js';
-import { integratedLoudness } from '../audio/loudness.js';
-import { levelChunk, TARGET_LUFS } from './kokoro.js';
+import type { SpeechPiece, TextToSpeech } from '../core/interfaces.js';
+import { integratedLoudness, StreamLimiter } from '../audio/loudness.js';
+import { CEILING_DB, levelChunk, TARGET_LUFS } from './kokoro.js';
 
 const API = 'https://api.speechify.ai/v1/audio/stream';
 const RATE = 24_000;
@@ -147,6 +150,12 @@ export class SpeechifyTts implements TextToSpeech {
 
   /** One try at the API: the raw PCM bytes. */
   private async post(text: string, speed: number, signal: AbortSignal): Promise<Buffer> {
+    const r = await this.request(text, speed, signal);
+    return Buffer.from(await r.arrayBuffer());
+  }
+
+  /** The API's answer, once its headers are in (the audio follows). */
+  private async request(text: string, speed: number, signal: AbortSignal): Promise<Response> {
     const r = await (this.o.fetch ?? fetch)(API, {
       method: 'POST',
       headers: { Authorization: `Bearer ${this.o.apiKey}`, 'Content-Type': 'application/json' },
@@ -162,7 +171,7 @@ export class SpeechifyTts implements TextToSpeech {
       signal,
     });
     if (!r.ok) throw new SpeechifyError(r.status, (await r.text().catch(() => '')).slice(0, 160));
-    return Buffer.from(await r.arrayBuffer());
+    return r;
   }
 
   private async raw(text: string, speed: number, signal?: AbortSignal, timeoutMs = this.o.timeoutMs) {
@@ -229,17 +238,98 @@ export class SpeechifyTts implements TextToSpeech {
         return { ...a, samples };
       } catch (e) {
         if (signal?.aborted) throw e;
-        // A request it won't take (content policy, bad input) only affects
-        // that sentence; timeouts, rate limits and outages pause the API.
-        const status = e instanceof SpeechifyError ? e.status : 0;
-        if (status >= 400 && status < 500 && status !== 401 && status !== 403 && status !== 408 && status !== 429) {
-          this.o.log.warn('cloud voice refused a line; local voice for it', { status, error: (e as Error).message });
-        } else {
-          this.pausedUntil = this.now() + 60_000;
-          this.o.log.warn('cloud voice failed; local voice for a minute', { status, error: (e as Error).message });
-        }
+        this.failed(e);
       }
     }
     return this.fallback.synthesize(text, { voice: this.fallbackVoice, speed: opts.speed }, signal);
+  }
+
+  /** A request it won't take (content policy, bad input) only affects that
+   *  sentence; timeouts, rate limits and outages pause the API. */
+  private failed(e: unknown, midSentence = false): void {
+    const status = e instanceof SpeechifyError ? e.status : 0;
+    const error = (e as Error).message;
+    if (status >= 400 && status < 500 && status !== 401 && status !== 403 && status !== 408 && status !== 429) {
+      this.o.log.warn('cloud voice refused a line; local voice for it', { status, error });
+    } else {
+      this.pausedUntil = this.now() + 60_000;
+      this.o.log.warn(midSentence ? 'cloud voice broke off mid-sentence; local voice for a minute' : 'cloud voice failed; local voice for a minute', { status, error });
+    }
+  }
+
+  /** The sentence as it arrives. Short lines come whole (they're cached).
+   *  Anything that goes wrong before the first audio falls back to the local
+   *  voice for the sentence, as synthesize() does. If the stream breaks off
+   *  partway, the rest of that sentence is dropped (another voice saying it
+   *  again would repeat its start) and the API is paused like any failure. */
+  async *stream(text: string, opts: { voice: string; speed: number }, signal?: AbortSignal): AsyncGenerator<SpeechPiece> {
+    if (text.length <= SHORT || !this.available(text.length)) {
+      const a = await this.synthesize(text, opts, signal);
+      yield { samples: a.samples, sampleRate: a.sampleRate };
+      return;
+    }
+    let started = false;
+    try {
+      const gain = await this.gainFor();
+      for await (const samples of this.rawStream(text, opts.speed, gain, signal, () => started)) {
+        started = true;
+        yield { samples, sampleRate: RATE };
+      }
+      if (!started) throw new Error('speechify returned no audio');
+      return;
+    } catch (e) {
+      if (signal?.aborted) throw e;
+      this.failed(e, started);
+      if (started) return;
+    }
+    const a = await this.fallback.synthesize(text, { voice: this.fallbackVoice, speed: opts.speed }, signal);
+    yield { samples: a.samples, sampleRate: a.sampleRate };
+  }
+
+  /** Leveled audio pieces as the bytes come in. timeoutMs limits the wait for
+   *  the first bytes and any stall after them. */
+  private async *rawStream(text: string, speed: number, gainDb: number, signal: AbortSignal | undefined, started: () => boolean): AsyncGenerator<Float32Array> {
+    this.lastCall = this.now();
+    const stall = new AbortController();
+    const stalled = () => stall.abort(new DOMException('speechify stalled', 'TimeoutError'));
+    let timer = setTimeout(stalled, this.o.timeoutMs);
+    const limit = signal ? AbortSignal.any([signal, stall.signal]) : stall.signal;
+    const rate = speed * (this.o.speed ?? 1);
+    let limiter = new StreamLimiter(RATE, gainDb, CEILING_DB);
+    let carry: Buffer | undefined;
+    let counted = false;
+    try {
+      for (let attempt = 0; ; attempt++) {
+        try {
+          const r = await this.request(text, rate, limit);
+          if (!r.body) throw new Error('speechify returned no audio');
+          if (!counted) this.o.budget.add(text.length);
+          counted = true;
+          for await (const part of r.body as unknown as AsyncIterable<Uint8Array>) {
+            clearTimeout(timer);
+            timer = setTimeout(stalled, this.o.timeoutMs);
+            let b = Buffer.from(part.buffer, part.byteOffset, part.byteLength);
+            if (carry) b = Buffer.concat([carry, b]);
+            // A piece can end halfway through a 16-bit sample.
+            const even = b.length & ~1;
+            carry = even < b.length ? Buffer.from(b.subarray(even)) : undefined;
+            const out = limiter.push(pcm16ToFloat(b.subarray(0, even)));
+            if (out.length) yield out;
+          }
+          break;
+        } catch (e) {
+          // A reused socket can die without warning: one more try, as raw()
+          // does, but only while nothing has been played.
+          if (attempt > 0 || started() || limit.aborted || !connectionBroke(e)) throw e;
+          this.o.log.info('cloud voice connection broke; trying again', { error: ((e as Error).cause as Error).message });
+          carry = undefined;
+          limiter = new StreamLimiter(RATE, gainDb, CEILING_DB);
+        }
+      }
+      const tail = limiter.end();
+      if (tail.length) yield tail;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 }
