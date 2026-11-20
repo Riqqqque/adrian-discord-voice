@@ -137,6 +137,8 @@ export async function startVoiceStack(
   if (!listen || !voice) throw new Error('config needs "listen" and "voice" sections');
   const token = secrets.get('DISCORD_TOKEN');
   if (!token) throw new Error('DISCORD_TOKEN is not set');
+  // The providers kept open are the ones this start sets up, not the last one's.
+  connections.forgetProviders();
 
   // Messages: ones that @mention the bot (and DMs) carry their text anyway.
   // Reading the rest of a channel needs the Message Content intent, which is
