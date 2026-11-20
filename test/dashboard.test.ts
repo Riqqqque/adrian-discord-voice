@@ -433,6 +433,14 @@ describe('needs attention', () => {
     ]);
   });
 
+  it('counts a streamed sentence that broke off as a cloud voice failure', () => {
+    const i = input({}, (c) => {
+      c.log('cloud voice failed; local voice for a minute', { status: 503 }, 'warn');
+      c.log('cloud voice broke off mid-sentence; local voice for a minute', { error: 'stalled' }, 'warn');
+    });
+    expect(texts(i)).toEqual(['warn: The cloud voice failed 2 times in the last day; the local voice stood in.']);
+  });
+
   it('names low disk and memory, and memory near the service cap', () => {
     expect(texts(input({ system: { ...SYS, diskFreeGiB: 0.6, memAvailableMiB: 200, rssMiB: 4600 } }))).toEqual([
       "bad: Only 0.6 GiB of disk is free where she keeps her data. Updates need about 0.5 GB, and saving stops when it's full.",

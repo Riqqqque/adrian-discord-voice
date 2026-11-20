@@ -251,6 +251,8 @@ export const WATCHED = {
   llmFallback: 'primary LLM failed; using fallback',
   sttFail: 'cloud speech-to-text failed; using local words',
   cloudVoiceFail: 'cloud voice failed; local voice for a minute',
+  /** The same fallback when a streamed sentence breaks off after its first audio. */
+  cloudVoiceBrokeOff: 'cloud voice broke off mid-sentence; local voice for a minute',
   cloudVoiceRefused: 'cloud voice refused a line; local voice for it',
   cloudVoiceBudget: 'cloud voice budget used up for this month; using the local voice',
   startFailed: 'voice stack failed to start',
@@ -382,6 +384,7 @@ export class Metrics {
         if (/HTTP 429/.test(String(f?.error ?? ''))) this.count(t, 'sttRateLimited');
         break;
       case WATCHED.cloudVoiceFail:
+      case WATCHED.cloudVoiceBrokeOff:
         this.count(t, 'cloudVoiceFail');
         break;
       case WATCHED.cloudVoiceRefused:
