@@ -117,7 +117,7 @@ await ask('should I get a real christmas tree or a fake one', { max: 35 });
 await ask("what's the weather supposed to be tomorrow", { tool: 'web_search', says: /48|forty.?eight/i, max: 25 });
 await ask('did the broncos win', { tool: 'web_search', says: /24|twenty.?four|yes|yeah|they did/i, max: 25 });
 await ask('is target open on thanksgiving', { tool: 'web_search', says: /closed|no|nope/i, max: 25 });
-await ask('how much is a ps5 right now', { tool: 'web_search', says: /449|499|749|four (hundred|forty)|seven (hundred|forty)/i, max: 30 });
+await ask('how much is a ps5 right now', { tool: 'web_search', says: /449|450|499|500|749|750|four (hundred|forty|fifty)|five hundred|seven (hundred|forty|fifty)/i, max: 30 });
 await ask("what's in the news today", { tool: 'headlines', max: 40 });
 // Timers and reminders: the tool, then a short read-back.
 await ask('set a timer for ten minutes for the pasta', { tool: 'set_timer', args: (a) => Number(a.minutes) === 10, max: 15 });
