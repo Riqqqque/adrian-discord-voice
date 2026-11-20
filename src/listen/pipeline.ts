@@ -265,7 +265,8 @@ export class ListeningPipeline extends EventEmitter {
   private recognizeEarly(userId: UserId, u: UserState, samples: Float32Array): void {
     // They paused, went on and paused again: the full wait is still inside the
     // speech this ends, so what it closes will be longer. Not worth a decode.
-    const onlyTheEnd = u.earlyOpen;
+    // Speech held as unfinished takes whatever the full wait closes next as its rest.
+    const onlyTheEnd = u.earlyOpen || !!u.held;
     u.earlyOpen = true;
     this.dropEarly(u);
     if (onlyTheEnd || samples.length / ASR_SAMPLE_RATE < MIN_SEGMENT_SECONDS) return;
