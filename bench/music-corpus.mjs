@@ -65,7 +65,7 @@ globalThis.fetch = async (url, init) => {
     count.ytm++;
     const b = JSON.parse(init?.body ?? '{}');
     body = `${b.query ?? ''}|${b.params ?? ''}`;
-    kinds.push(`ytm:${b.query}`);
+    kinds.push(`${host.startsWith('music') ? 'ytm' : 'web'}:${b.query}`);
   } else if (host === 'api.deezer.com') count.deezer++;
   else count.web++;
   const key = `fetch ${u} ${body}`;
@@ -83,22 +83,35 @@ globalThis.fetch = async (url, init) => {
   return r;
 };
 
-const runKey = (a) => `run ${a.filter((x) => !x.startsWith('node:')).slice(-1)[0]} ${a.join(' ').includes('%(url)s') ? 'url' : 'flat'} ${a[a.indexOf('--print') + 1] ?? ''}`;
+const runKey = (a, target) => `run ${target} ${a.join(' ').includes('%(url)s') ? 'url' : 'flat'} ${a[a.indexOf('--print') + 1] ?? ''}`;
 const live = music.runProgram;
-/** Every yt-dlp run goes through here (when the build takes a runner). */
-const run = async (cmd, a, signal, enough) => {
-  count.yt++;
-  count.ytdlp++;
-  const target = a.at(-1);
-  kinds.push(`ytdlp:${target.replace(/^https:\/\/(www|music)\.youtube\.com\//, '')}`);
-  const key = runKey(a);
+/** Every yt-dlp run goes through here (when the build takes a runner). A run
+ *  started ahead (its address comes on stdin) counts once it has one: until
+ *  then it hasn't asked YouTube anything. */
+const run = async (cmd, a, signal, enough, input) => {
+  let target = input ? undefined : a.at(-1);
+  const counted = (t) => {
+    count.yt++;
+    count.ytdlp++;
+    kinds.push(`ytdlp:${input ? 'early:' : ''}${t.replace(/^https:\/\/(www|music)\.youtube\.com\//, '')}`);
+  };
+  if (input)
+    input = input.then((u) => {
+      target = u?.trim();
+      if (target) counted(target);
+      return u;
+    });
+  else counted(target);
   if (replayFrom) {
+    if (input) await input;
+    if (!target) throw new Error('dropped');
+    const key = runKey(a, target);
     if (cache[key] !== undefined) return cache[key];
     count.missed++;
     throw new ReplayMiss(`not recorded: ${key.slice(0, 120)}`);
   }
-  const o = await live(cmd, a, signal, enough);
-  if (recordTo) cache[key] = o;
+  const o = await live(cmd, a, signal, enough, input);
+  if (recordTo && target) cache[runKey(a, target)] = o;
   return o;
 };
 
@@ -162,7 +175,8 @@ const decoder = (ffmpeg) => {
 let logs = [];
 const log = { info: (m, f) => logs.push({ m, ...f }), warn: (m, f) => logs.push({ warn: true, m, ...f }) };
 
-const yt = new music.YoutubeSource({ ytdlp, node: process.execPath, searchApi: music.YTM_API }, run);
+// startEarly: what production gets with the real yt-dlp (this runner only counts and records).
+const yt = new music.YoutubeSource({ ytdlp, node: process.execPath, searchApi: music.YTM_API, startEarly: true }, run);
 let urlAt;
 const open = yt.open.bind(yt);
 yt.open = async (t, s) => {
