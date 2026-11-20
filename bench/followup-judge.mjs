@@ -54,7 +54,9 @@ const player = new Proxy({}, {
     if (k === 'upNext' || k === 'recent') return [];
     if (k === 'paused' || k === 'youtubePaused') return false;
     if (k === 'autoplay') return true;
-    return async (...a) => (rec(`music.${String(k)}`, a.filter((x) => typeof x === 'string')), { ok: true, started: NIGHTS, added: 1 });
+    // Tool calls are recorded by name below; the player only answers.
+    if (/volume/i.test(String(k))) return async () => 0.4;
+    return async () => ({ ok: true, started: NIGHTS, added: 1 });
   },
 });
 const pcResult = (name, x) => {
@@ -72,19 +74,21 @@ const alarms = alarmKit(c.timezone, (name, args) => rec(name, args));
 const [handoff] = handoffTools({ things: { candidates: () => [] }, starts: {}, callRoom: 'discord', pcFor: () => pc, callMusic: () => undefined, call: () => undefined, inCall: () => false, isOwner: () => true, canSee: async () => true, readable: false });
 const handoffRec = { ...handoff, run: async (a) => (rec(handoff.spec.name, a), 'Done.') };
 
+const musicTools = music.musicTools(player).map((t) => ({ ...t, run: (a, sig, ctx) => (rec(t.spec.name, a), t.run(a, sig, ctx)) }));
+
 const room = new RoomTalk();
 const PC_LINE = (who) => `${who} is talking to you through their PC (A.D.R.I.A.N. satellite), not in the Discord call. Music and sounds play on that PC.`;
 const ROSTER = (asker, others) => `People in this voice call right now (Lounge): ${[`${asker} (talking to you now)`, ...others].join(', ')}.`;
 
 const pcMemory = new SessionMemory(16, 3_600_000);
-const pcBrain = new ConversationOrchestrator(llm, pcMemory, [...alarms.tools, ...music.musicTools(player), ...pcTools({ pcFor: () => pc, findVideo: async () => 'jfKfPfyJRdk' }), handoffRec], {
+const pcBrain = new ConversationOrchestrator(llm, pcMemory, [...alarms.tools, ...musicTools, ...pcTools({ pcFor: () => pc, findVideo: async () => 'jfKfPfyJRdk' }), handoffRec], {
   spokenName: 'Adrian', writtenName: 'A.D.R.I.A.N.', timezone: c.timezone, firstEventTimeoutMs: 12000, maxTokens: 500, maxToolRounds: 3,
   stablePrefix: true,
   stableLines: [...music.musicRules(), PC_RULE, HANDOFF_RULE, alarms.rule],
   context: (x) => [LANG_EN, ...room.context(x.channelId, x.userId), music.musicState(player), PC_LINE(x.speaker)],
 });
 const callMemory = new SessionMemory(16, 3_600_000);
-const callBrain = new ConversationOrchestrator(llm, callMemory, [...music.musicTools(player), soundTool(sounds), ...alarms.tools], {
+const callBrain = new ConversationOrchestrator(llm, callMemory, [...musicTools, soundTool(sounds), ...alarms.tools], {
   spokenName: 'Adrian', writtenName: 'A.D.R.I.A.N.', timezone: c.timezone, firstEventTimeoutMs: 12000, maxTokens: 500, maxToolRounds: 3,
   stablePrefix: true,
   stableLines: [SOUND_RULE, ...music.musicRules(), alarms.rule],
