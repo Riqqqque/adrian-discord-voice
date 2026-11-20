@@ -369,12 +369,21 @@ export class ListeningPipeline extends EventEmitter {
     if (!turn.shouldHold && !turn.onHeldWords) return;
     void (h.words ??= this.decode(h.samples))
       .then(
-        ({ text }) => {
+        ({ text, decodeMs }) => {
           if (u.held !== h) return; // joined, or the wait already ran out
           if (turn.shouldHold) {
             if (!turn.shouldHold(userId, text, h.samples.length / ASR_SAMPLE_RATE)) {
               // talking again: that's the rest of it, whatever the words so far say
-              if (!u.vad.isSpeaking()) this.release(userId, u);
+              const letGo = () => {
+                if (u.held === h && !u.vad.isSpeaking()) this.release(userId, u);
+              };
+              // Early words are in before a decode started at the close would be.
+              // Ask then, not sooner, so what's joined doesn't depend on the head
+              // start (side talk and requests for her alike). The cloud's listen,
+              // started early too, usually takes longer than this anyway.
+              const wait = h.early ? h.closedAt + decodeMs - performance.now() : 0;
+              if (wait > 0) setTimeout(letGo, wait);
+              else letGo();
               return;
             }
             holding();
