@@ -60,7 +60,7 @@ function machine(m: Machine = {}) {
   // install_node has its own tests (packaging.test.ts). Its swap of the opt/node
   // link can't be done twice with Git Bash's stand-in links, so here it only
   // puts a Node in place.
-  const nodeStub = `\ninstall_node() { mkdir -p "$1/node/bin"; printf '#!/usr/bin/env bash\\nexec "%s" "$@"\\n' "${node}" >"$1/node/bin/node"; }\n`;
+  const nodeStub = `\ninstall_node() { mkdir -p "$1/node/bin"; printf '#!/usr/bin/env bash\\nexec "%s" "$@"\\n' "${node}" >"$1/node/bin/node"; command chmod 755 "$1/node/bin/node"; }\n`;
   put('inst/downloads.sh', pins + nodeStub);
   if (m.systemd !== false) mkdirSync(join(root, 'run-systemd'));
   const nodeVersion = /^NODE_VERSION=(.*)$/m.exec(pins)![1]!;
