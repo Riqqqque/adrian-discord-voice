@@ -3,6 +3,7 @@
 // Also the check every tool with real consequences shares: the person's own
 // yes, which nothing planted in the prompt can give.
 
+import { noteCall } from '../core/calls.js';
 import type { Tool, ToolContext } from '../core/interfaces.js';
 
 export function timeTool(timezone: string): Tool {
@@ -38,6 +39,7 @@ export async function topResultUrl(apiKey: string, query: string, signal: AbortS
     body: JSON.stringify({ query: query.slice(0, 200), search_depth: 'basic', max_results: 3, include_answer: false }),
     signal,
   });
+  noteCall('tavily', res.status);
   if (!res.ok) return undefined;
   const j = (await res.json()) as { results?: { url?: string }[] };
   return j.results?.map((r) => r.url).find((u): u is string => typeof u === 'string' && /^https?:\/\//i.test(u));
@@ -53,6 +55,7 @@ export async function webYoutubeVideos(apiKey: string, query: string, signal: Ab
     body: JSON.stringify({ query: query.slice(0, 200), search_depth: 'basic', max_results: 5, include_answer: false, include_domains: ['youtube.com', 'music.youtube.com'] }),
     signal,
   });
+  noteCall('tavily', res.status);
   if (!res.ok) throw new Error(`web search answered ${res.status}`);
   const j = (await res.json()) as { results?: { url?: unknown; title?: unknown }[] } | null;
   const out: { id: string; title: string }[] = [];
@@ -108,6 +111,7 @@ export function tavilySearchTool(apiKey: string, maxResults = 4): Tool {
         body: JSON.stringify({ query, search_depth: 'basic', max_results: maxResults, include_answer: false }),
         signal,
       });
+      noteCall('tavily', res.status);
       if (!res.ok) return `Search failed (HTTP ${res.status}).`;
       const j: any = await res.json();
       const lines: string[] = [];

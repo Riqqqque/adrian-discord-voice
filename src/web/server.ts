@@ -23,7 +23,9 @@ import type { UsageLedger } from '../limits/usage-ledger.js';
 import { KOKORO_VOICES } from '../speech/voices.js';
 import { type AdminAuth, LIMIT_WINDOW_MS, type Session } from './auth.js';
 import { checkDiscordToken, checkHardware, checkLlm, checkTavily, checkVoiceAccess, cleanToken, keyMismatch, LLM_PRESETS, listVoiceChannels } from './checks.js';
+import { buildDashboard, LINUX_UPDATE_PATHS, ReleaseCheck, systemInfo, type UpdatePaths } from './dashboard.js';
 import { explainStartError } from './explain.js';
+import { Metrics } from './metrics.js';
 import { SECRET_NAME, type SecretsFile, writeConfigFile } from './secrets-file.js';
 import { applySettings, CustomLlmSchema, type InstallPaths, keyRouteProblem, SettingsPatchSchema, settingsView } from './settings.js';
 
@@ -44,6 +46,12 @@ export interface WebDeps {
   /** Running in the Docker image (default: whether /.dockerenv exists): changes
    *  the commands the page tells people to run. */
   docker?: boolean;
+  /** The dashboard's counters (fed by the logger); a fresh, empty set if unset. */
+  metrics?: Metrics;
+  /** Where releases come from, for "an update is available". */
+  releaseRepo?: string;
+  /** The updater's notes (default: the Linux install's, on Linux). */
+  updatePaths?: UpdatePaths;
 }
 
 /** The command that shows the one-time setup code, where this runs. */
@@ -144,9 +152,13 @@ function pct(xs: number[], p: number): number | null {
 
 export function createAdminServer(d: WebDeps): Server {
   const tls = !!d.tls;
-  const codeCommand = setupCodeCommand(d.docker ?? existsSync('/.dockerenv'));
   const f = d.fetch ?? fetch;
-  const handler = (req: IncomingMessage, res: ServerResponse) => {
+  const docker = d.docker ?? existsSync('/.dockerenv');
+  const metrics = d.metrics ?? new Metrics();
+  const releases = new ReleaseCheck(d.releaseRepo ?? 'Riqqqque/adrian-discord-voice', f);
+  const updatePaths = d.updatePaths ?? (process.platform === 'linux' && !docker ? LINUX_UPDATE_PATHS : undefined);
+  const codeCommand = setupCodeCommand(docker);
+  const handler =(req: IncomingMessage, res: ServerResponse) => {
     securityHeaders(res, tls);
     // DNS rebinding: a web page on some other domain pointed at this address
     // arrives with that domain as Host. Answer only to IPs, localhost and
@@ -314,6 +326,36 @@ export function createAdminServer(d: WebDeps): Server {
         lastAnswers: ans.slice(-10).map(({ at, room, outcome, speechEndToAudioMs, costUsd }) => ({ at, room, outcome, speechEndToAudioMs, costUsd })),
         spend: d.ledger.summary(),
       });
+    }
+    if (path === '/api/dashboard' && method === 'GET') {
+      let config;
+      let timezone = 'UTC';
+      try {
+        config = s.config();
+        const tz = s.rawConfig().timezone;
+        if (typeof tz === 'string') timezone = tz;
+      } catch {
+        /* a config that can't be read shows on the status card */
+      }
+      return json(
+        res,
+        200,
+        buildDashboard({
+          metrics: metrics.snapshot(),
+          spend: d.ledger.summary(),
+          config,
+          secretNames: d.secrets.names(),
+          stateDir: d.paths.stateDir,
+          timezone,
+          version: d.version,
+          stackState: s.state,
+          voiceReady: s.current?.voiceReady() ?? false,
+          system: systemInfo(d.paths.stateDir),
+          release: releases.get(),
+          ...(updatePaths ? { updatePaths } : {}),
+          docker,
+        }),
+      );
     }
     if (path === '/api/settings' && method === 'GET') {
       return json(res, 200, { settings: settingsView(savedConfig()), presets: LLM_PRESETS, voices: KOKORO_VOICES });
