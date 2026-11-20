@@ -2,7 +2,8 @@
 // Parakeet recognizer with at most one decode at a time (brief section 7).
 
 import sherpa from 'sherpa-onnx-node';
-import type { SpeechToText, VoiceActivityDetector } from '../core/interfaces.js';
+import type { DecodeOptions, SpeechToText, VoiceActivityDetector } from '../core/interfaces.js';
+import { DecodeQueue } from './decode-queue.js';
 
 export const ASR_SAMPLE_RATE = 16_000;
 /** Silero's window at 16 kHz, samples. */
@@ -142,7 +143,7 @@ export interface ParakeetOptions {
 }
 
 export class ParakeetStt implements SpeechToText {
-  private queue: Promise<unknown> = Promise.resolve();
+  private readonly queue = new DecodeQueue();
 
   private constructor(private readonly recognizer: InstanceType<typeof sherpa.OfflineRecognizer>) {}
 
@@ -165,22 +166,24 @@ export class ParakeetStt implements SpeechToText {
     return new ParakeetStt(r);
   }
 
-  /** Decodes are serialized: one ASR job at a time. A request cancelled
-   *  while queued never starts. */
+  /** Decodes are serialized: one ASR job at a time, background ones last
+   *  (DecodeQueue). A request cancelled while queued never starts. */
   transcribe(
     samples: Float32Array,
     sampleRate: number,
     signal?: AbortSignal,
+    options?: DecodeOptions,
   ): Promise<{ text: string; decodeMs: number }> {
-    const job = this.queue.then(async () => {
-      if (signal?.aborted) throw new Error('cancelled');
-      const stream = this.recognizer.createStream();
-      stream.acceptWaveform({ samples, sampleRate });
-      const t0 = performance.now();
-      const r = await this.recognizer.decodeAsync(stream);
-      return { text: r.text.trim(), decodeMs: Math.round(performance.now() - t0) };
-    });
-    this.queue = job.catch(() => undefined);
-    return job;
+    return this.queue.run(
+      async () => {
+        const stream = this.recognizer.createStream();
+        stream.acceptWaveform({ samples, sampleRate });
+        const t0 = performance.now();
+        const r = await this.recognizer.decodeAsync(stream);
+        return { text: r.text.trim(), decodeMs: Math.round(performance.now() - t0) };
+      },
+      signal,
+      options,
+    );
   }
 }

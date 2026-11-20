@@ -73,6 +73,8 @@ interface EarlyClip {
   words: Promise<Words>;
   /** Aborted when the clip is dropped: its recognition, and whatever onWords started. */
   ctl: AbortController;
+  /** The full wait closed the same audio: someone waits on these words now. */
+  taken?: boolean;
 }
 
 export interface UserState {
@@ -272,9 +274,13 @@ export class ListeningPipeline extends EventEmitter {
     this.dropEarly(u);
     if (onlyTheEnd || samples.length / ASR_SAMPLE_RATE < MIN_SEGMENT_SECONDS) return;
     const ctl = new AbortController();
-    const words = this.stt.transcribe(samples, ASR_SAMPLE_RATE, ctl.signal);
+    const clip: Partial<EarlyClip> = { samples, ctl };
+    // Nobody waits on it until the full wait closes the same audio: until then
+    // every other clip waiting for the recognizer (her call's too) goes first.
+    const words = this.stt.transcribe(samples, ASR_SAMPLE_RATE, ctl.signal, { background: () => !clip.taken });
     void words.catch(() => undefined);
-    u.clip = { samples, words, ctl };
+    clip.words = words;
+    u.clip = clip as EarlyClip;
     const onWords = this.early?.onWords;
     if (!onWords) return;
     // As heard will judge it: from the full wait's close, minus the clip.
@@ -296,7 +302,10 @@ export class ListeningPipeline extends EventEmitter {
     const c = u?.clip;
     if (!c) return undefined;
     delete u.clip;
-    if (sameSamples(c.samples, samples)) return c;
+    if (sameSamples(c.samples, samples)) {
+      c.taken = true;
+      return c;
+    }
     c.ctl.abort();
     return undefined;
   }
