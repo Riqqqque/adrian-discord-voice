@@ -30,7 +30,7 @@ while [ $# -gt 0 ]; do
     --yes|-y) YES=1; PASS+=("$1") ;;
     --no-packages) PACKAGES=0 ;;
     --reinstall) REINSTALL=1 ;;
-    -h|--help) sed -n '2,19p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,17p' "$0"; exit 0 ;;
     *) PASS+=("$1") ;;
   esac
   shift

@@ -260,7 +260,7 @@ if [ -f "$BUNDLE.sha256" ]; then
 else
   say "warning: no $(basename "$BUNDLE").sha256 next to the bundle, so it can't be checked. Download both from the Releases page."
 fi
-VERSION=$(tar -xzOf "$BUNDLE" ./package.json 2>/dev/null | sed -n 's/^ *"version": *"\([^"]*\)".*/\1/p' | head -1) || true
+VERSION=$(tar -xzOf - ./package.json <"$BUNDLE" 2>/dev/null | sed -n 's/^ *"version": *"\([^"]*\)".*/\1/p' | head -1) || true
 [[ $VERSION =~ ^[0-9A-Za-z][0-9A-Za-z.+-]*$ && $VERSION != *..* ]] || die "can't read the version from $BUNDLE; is the download complete? Nothing was changed."
 newer() { [ "$1" != "$2" ] && [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n 1)" = "$1" ]; } # newer A B: A is above B
 if installed; then
@@ -300,7 +300,7 @@ install_node "$OPT" "$TMP"
 # --- app release ---------------------------------------------------------------
 say "Unpacking the app"
 mkdir -p "$TMP/app"
-tar -xzf "$BUNDLE" -C "$TMP/app" --no-same-owner || die "can't unpack $BUNDLE; is the download complete?"
+tar -xzf - -C "$TMP/app" --no-same-owner <"$BUNDLE" || die "can't unpack $BUNDLE; is the download complete?"
 rm -rf "$OPT/releases/$VERSION.new"
 mv "$TMP/app" "$OPT/releases/$VERSION.new"
 chown -R root:root "$OPT/releases/$VERSION.new"
@@ -379,12 +379,16 @@ if [ "$START" = 1 ]; then
   systemctl enable --quiet "$SERVICE"
   # Running from before: it has to restart to run what was just installed.
   if [ "$WAS_ACTIVE" = 1 ]; then systemctl restart "$SERVICE"; else systemctl start "$SERVICE"; fi
-  ok=0
+  # Any answer means the admin page is up: 503 is a bot that failed to start
+  # (a bad token, say), which the admin page and the doctor explain.
+  code=000
   for _ in $(seq 1 60); do
-    if curl -fsS "http://127.0.0.1:$PORT/api/health" >/dev/null 2>&1; then ok=1; break; fi
+    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "http://127.0.0.1:$PORT/api/health" 2>/dev/null) || true
+    if [ -n "$code" ] && [ "$code" != 000 ]; then break; fi
     sleep 1
   done
-  [ "$ok" = 1 ] || { journalctl -u "$SERVICE" -n 30 --no-pager >&2 || true; die "$(explain_down)"; }
+  if [ -z "$code" ] || [ "$code" = 000 ]; then journalctl -u "$SERVICE" -n 30 --no-pager >&2 || true; die "$(explain_down)"; fi
+  [ "$code" = 200 ] || say "warning: the admin page is up, but the bot itself didn't start. Open the admin page, or run: sudo adrian doctor"
 fi
 
 echo

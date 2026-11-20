@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { checkDiscordToken, checkVoiceAccess, cleanToken, keyMismatch, llmError, tokenShapeProblem } from '../src/web/checks.js';
-import { explainStartError } from '../src/web/explain.js';
+import { explainStartError, lastStartFailure } from '../src/web/explain.js';
 
 // Token-shaped, assembled so secret scanners don't flag it.
 const TOKEN = ['MTAwMDAwMDAwMDAwMDAwMDMw', 'Gabcde', 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefgh12'].join('.');
@@ -160,5 +160,21 @@ describe('a start that failed', () => {
   it('adds nothing for a reason it does not know', () => {
     expect(explainStartError('something new went wrong')).toBeUndefined();
     expect(explainStartError(null)).toBeUndefined();
+  });
+});
+
+describe('adrian doctor, reading the service log', () => {
+  const line = (msg: string, fields: object = {}) => JSON.stringify({ t: '2026-01-01T00:00:00.000Z', level: 'error', msg, ...fields });
+
+  it('finds the last failed start and what to do about it', () => {
+    const log = [line('voice stack failed to start', { error: 'getaddrinfo ENOTFOUND discord.com' }), 'Started adrian-voice.service.', line('asr loaded'), line('voice stack failed to start', { error: 'An invalid token was provided.' })].join('\n');
+    const f = lastStartFailure(log)!;
+    expect(f.error).toBe('An invalid token was provided.');
+    expect(f.fix).toContain('Reset Token');
+  });
+
+  it('gives the reason alone when there is nothing to add, and nothing without a failure', () => {
+    expect(lastStartFailure(line('voice stack failed to start', { error: 'a new kind of trouble' }))).toEqual({ error: 'a new kind of trouble' });
+    expect(lastStartFailure([line('asr loaded'), 'not json'].join('\n'))).toBeUndefined();
   });
 });

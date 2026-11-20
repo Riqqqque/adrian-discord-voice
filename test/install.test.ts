@@ -214,6 +214,14 @@ describe.skipIf(!hasBash)('install.sh run again on a live install', () => {
     expect(m.read('calls.log')).toMatch(/^systemctl restart adrian-voice$/m);
   }, 60_000);
 
+  it('finishes over a bot that failed to start (a bad token, say): the admin page is up to fix it', () => {
+    const m = live();
+    m.put('health-code', '503');
+    const r = m.install(['--yes', '--bundle', m.bundle('1.0.1')]);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("the bot itself didn't start");
+  }, 60_000);
+
   it('keeps everything else in the config', () => {
     const m = live();
     const c = JSON.parse(m.read('etc/config.json')) as Record<string, unknown>;

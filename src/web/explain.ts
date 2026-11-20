@@ -55,6 +55,24 @@ const RULES: Rule[] = [
   },
 ];
 
+/** The last "voice stack failed to start" in a service log (one JSON line per
+ *  entry; other lines are skipped), with what to do about it. */
+export function lastStartFailure(log: string): { error: string; fix?: string } | undefined {
+  const lines = log.split('\n');
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (!lines[i]!.includes('"voice stack failed to start"')) continue;
+    try {
+      const error = String((JSON.parse(lines[i]!) as { error?: unknown }).error ?? '').replace(/\s+/g, ' ').slice(0, 300);
+      if (!error) continue;
+      const fix = explainStartError(error);
+      return fix ? { error, fix } : { error };
+    } catch {
+      /* not one of ours */
+    }
+  }
+  return undefined;
+}
+
 /** What to do about a failed start, or undefined when the reason isn't a known one. */
 export function explainStartError(error: string | null | undefined): string | undefined {
   if (!error) return undefined;

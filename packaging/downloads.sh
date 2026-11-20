@@ -65,7 +65,7 @@ install_node() { # install_node <opt dir> <scratch dir>
     fetch "$NODE_URL" "$NODE_SHA256" "$tmp/node.tar.xz"
     rm -rf "${opt:?}/$dir.new"
     mkdir -p "$opt/$dir.new"
-    tar -xJf "$tmp/node.tar.xz" -C "$opt/$dir.new" --strip-components=1 --no-same-owner
+    tar -xJf - -C "$opt/$dir.new" --strip-components=1 --no-same-owner <"$tmp/node.tar.xz"
     "$opt/$dir.new/bin/node" --version >/dev/null || { rm -rf "${opt:?}/$dir.new"; die "Node $NODE_VERSION does not run on this system"; }
     rm -rf "${opt:?}/$dir"
     mv -T "$opt/$dir.new" "$opt/$dir"
@@ -96,7 +96,7 @@ install_models() { # install_models <models dir> <scratch dir>
       install -m 0755 "$file" "$dir/$name"
     else
       say "Unpacking $name"
-      tar -xjf "$file" -C "$dir" --no-same-owner
+      tar -xjf - -C "$dir" --no-same-owner <"$file"
       [ -d "$dir/$name" ] || die "$name archive did not contain $name/"
       for f in $drop; do rm -rf "${dir:?}/$name/$f"; done
     fi
