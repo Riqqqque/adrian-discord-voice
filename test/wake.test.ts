@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { ConversationController } from '../src/conversation/controller.js';
 import { TextWakeDetector } from '../src/wake/text-wake.js';
 
 const d = new TextWakeDetector();
@@ -137,11 +138,88 @@ describe('the name later in the sentence', () => {
     for (const t of ['Wait, Adrian left?', 'So yeah Adrian is not here', 'Marco, Adrian, and Sam are on', 'Yeah Adrian did that', 'Well Adrian does that all the time', 'Okay so Adrian works there', 'Okay so Adrian said no', 'Yeah, Adrian.', 'This morning Adrian went out'])
       expect(w.matchLoose(t).woke, t).toBe(false);
   });
-  it('accepts more greetings', () => {
+  it('accepts more greetings, followed by a question or a request', () => {
     expect(w.match('Hey there Adrian, what time is it?')).toEqual({ woke: true, remainder: 'what time is it?' });
     expect(w.match('Hey hey Adrian, louder')).toEqual({ woke: true, remainder: 'louder' });
     expect(w.match('Good morning Adrian, any news?')).toEqual({ woke: true, remainder: 'any news?' });
-    expect(w.match('Morning Adrian')).toEqual({ woke: true, remainder: '' });
+    expect(w.match('Morning Adrian, play some jazz')).toEqual({ woke: true, remainder: 'play some jazz' });
     expect(w.match('Excuse me Adrian, how far is the moon?').woke).toBe(true);
+    expect(w.matchLoose("Morning Adrian, what's the weather?")).toMatchObject({ woke: true, loose: false });
+  });
+  it('not on an everyday greeting alone, or with only a stop after it', () => {
+    for (const t of ['Morning Adrian', 'Good morning, Adrian!', 'Morning, Adrian!', 'Hey there Adrian.', 'Hi there, Adrian', 'Good evening Adrian', 'Excuse me Adrian', 'I said good morning Adrian', 'Excuse me, Adrian, stop.']) {
+      expect(w.matchLoose(t).woke, t).toBe(false);
+      expect(w.match(t).woke, t).toBe(false);
+    }
+    expect(w.matchLoose('Hey hey Adrian')).toEqual({ woke: true, remainder: '', loose: false }); // still "hey Adrian"
+  });
+  it('leaves anything else after an everyday greeting to the model', () => {
+    expect(w.matchLoose('Excuse me, Adrian, you are on my foot.')).toEqual({ woke: true, remainder: 'you are on my foot.', loose: true });
+    expect(w.matchLoose('Good morning Adrian, nice jacket')).toMatchObject({ woke: true, loose: true });
+  });
+  it('not on a stop said to a person called Adrian, at the end or after a lead-in', () => {
+    for (const t of ['Can you stop, Adrian?', 'Would you shut up, Adrian', 'Wait, Adrian, can you stop?', 'Could you stop, Adrian?', 'Can you shut up, Adrian?', 'Will you stop, Adrian?', 'can you be quiet adrian', 'Can you wait, Adrian?'])
+      expect(w.matchLoose(t).woke, t).toBe(false);
+  });
+  it('not on exclamations or game talk with the name at the end', () => {
+    for (const t of ['What a shot, Adrian!', 'How lucky, Adrian!', 'What a save Adrian', 'Wait, Adrian, what a play', 'Can you heal Adrian?', 'Should we revive Adrian?', 'Did anyone rez Adrian?'])
+      expect(w.matchLoose(t).woke, t).toBe(false);
+    for (const t of ['How bad is the lag, Adrian?', 'How long is left, Adrian?', "How's it going, Adrian?", 'What a day huh, Adrian, is it over?'])
+      expect(w.matchLoose(t), t).toMatchObject({ woke: true, loose: true });
+  });
+  it('leaves "Adrian, did you …?" to the model; "Adrian, will you …?" and "Adrian, is it …?" stay direct', () => {
+    expect(w.matchLoose('Adrian, did you eat?')).toEqual({ woke: true, remainder: 'did you eat?', loose: true });
+    expect(w.matchLoose('Adrian, has he left?').loose).toBe(true);
+    expect(w.matchLoose('Adrian was he there').loose).toBe(true);
+    for (const t of ['Adrian, will you set a timer for ten minutes?', 'Adrian, is it going to rain tomorrow?', 'Adrian, has anyone joined the server?', 'Adrian, does it rain tomorrow?'])
+      expect(w.matchLoose(t), t).toMatchObject({ woke: true, loose: false });
+  });
+});
+
+describe('what she does without the model (detector + controller)', () => {
+  const w = new TextWakeDetector();
+  /** One line, said while music plays and nothing else is going on. */
+  const said = async (text: string) => {
+    const out = { music: 0, stopped: 0, yes: 0, asked: [] as { command: string; followUp: boolean | undefined }[] };
+    const c = new ConversationController({
+      now: () => 100_000,
+      respond: async (_u, command, _s, followUp) => void out.asked.push({ command, followUp }),
+      say: async (t) => void (t === 'Yes?' && out.yes++),
+      isPriority: () => false,
+      stopOther: () => void out.music++,
+      onStopped: () => void out.stopped++,
+    });
+    const m = w.matchLoose(text);
+    c.heard({ userId: 'a', text, woke: m.woke, command: m.remainder, ...(m.loose ? { loose: true } : {}) });
+    await new Promise((r) => setTimeout(r, 0));
+    return { out, c };
+  };
+  it('a stop to a person called Adrian leaves the music on', async () => {
+    for (const t of ['Can you stop, Adrian?', 'Would you shut up, Adrian', 'Wait, Adrian, can you stop?', 'can you be quiet adrian']) {
+      const { out } = await said(t);
+      expect({ t, ...out }).toMatchObject({ t, music: 0, stopped: 0, yes: 0 });
+    }
+  });
+  it('real stops still stop it at once', async () => {
+    for (const t of ['Adrian, stop', 'hey Adrian stop', 'Hey Adrian, shut up', 'Adrian, be quiet', 'yo wait, hey Adrian, stop']) {
+      const { out } = await said(t);
+      expect({ t, music: out.music, stopped: out.stopped }).toEqual({ t, music: 1, stopped: 1 });
+    }
+  });
+  it('a greeting to a friend gets no "Yes?", so what they say next is not taken as for her', async () => {
+    for (const t of ['Good morning, Adrian!', 'Morning Adrian.', 'Hey there Adrian.']) {
+      const { out, c } = await said(t);
+      expect(out.yes, t).toBe(0);
+      expect(c.listeningTo('a'), t).toBe(false);
+      c.heard({ userId: 'a', text: 'how was your weekend', woke: false, command: '' });
+      await new Promise((r) => setTimeout(r, 0));
+      expect(out.asked, t).toEqual([]);
+    }
+  });
+  it('the model judges a loose wake from the whole sentence, name included', async () => {
+    const { out } = await said('Can you send me the link, Adrian?');
+    expect(out.asked).toEqual([{ command: 'Can you send me the link, Adrian?', followUp: true }]);
+    const plain = await said('Hey Adrian, what time is it?');
+    expect(plain.out.asked).toEqual([{ command: 'what time is it?', followUp: undefined }]);
   });
 });

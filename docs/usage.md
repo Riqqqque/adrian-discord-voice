@@ -8,7 +8,8 @@
 | "Adrian, …" | Treated as a question to it. |
 | "… hey Adrian, …" in the middle of a sentence | Also a question to it. |
 | "Adrian?" (the name alone) | "Yes?", then it listens to your next sentence (for 20 seconds). |
-| "What time is it, Adrian?", "Wait, Adrian, what's the score?" | A question with the name at the end, or after a lead-in: the model decides whether it was meant for it. Anything else said this way ("nice shot, Adrian", "stop it, Adrian") is left to whoever is called Adrian. |
+| "What time is it, Adrian?", "Wait, Adrian, what's the score?" | A question with the name at the end, or after a lead-in: the model decides whether it was meant for it. Anything else said this way ("nice shot, Adrian", "what a save, Adrian", "can you stop, Adrian?") is left to whoever is called Adrian. |
+| "Good morning, Adrian", "Hey there, Adrian", "Excuse me, Adrian" | Everyday greetings, said to friends as often as to it: alone they don't wake it. Followed by a question or a request ("Morning Adrian, what's the weather?") they do; anything else after them is left for the model to judge. |
 | "Adrian is so slow", "Hey, Adrian is in the other channel" | Talk *about* it: the model decides whether to answer, and usually stays quiet. "Have you seen Adrian?" doesn't wake it at all. |
 
 After it answers, you have about 8 seconds to follow up without the name ("and what about tomorrow?"). If the follow-up is clearly not for it (game callouts, talking to someone else), it stays silent.

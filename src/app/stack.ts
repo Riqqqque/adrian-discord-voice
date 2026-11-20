@@ -1534,8 +1534,9 @@ export async function startVoiceStack(
         const m = wakeDetector.matchLoose(text);
         const command = e.woke ? (m.woke ? m.remainder : stripWakeLead(text)) : '';
         if (config.satellite.logTranscripts && (rm.ui || hasPc(e.userId))) log.info('pc stt', { local: e.text, cloud: text, ms: groqMs });
-        // Keep the local words if the cloud lost the request itself.
-        if (!e.woke || command.trim()) e = { ...e, text, command };
+        // Keep the local words if the cloud lost the request itself, and for a
+        // loose wake unless the cloud's words wake her too ("can you stop, Adrian?" doesn't).
+        if (!e.woke || (command.trim() && (m.woke || !e.loose))) e = { ...e, text, command };
       }
     }
     if (recorder && forBot && rm.ui && e.samples) {
