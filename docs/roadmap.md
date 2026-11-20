@@ -199,7 +199,7 @@ What doesn't work, or works with a catch, as of 0.17.1. Many of these have entri
 
 ### Answers and cost
 
-- **Answers run long** (median 34 words against a 20-word target).
+- **Answers run long** (median 34 words against a 20-word target at 0.17.1; about 22-30 words with the next release's rule, still over the target on `bench/answer-length.mjs --real`).
 - **`brain.maxTokens` is not a real cap with Claude**: the adapter sends `max(2048, maxTokens * 4)` to leave room for thinking.
 - **Caps are soft by one request**: they're checked before a request and the cost is added after, so the request that crosses a cap finishes. Per-person hourly counts reset on restart.
 - **Prices at 0 make the dollar caps blind**: `brain.priceInPerM` and the other price keys must be set. The ledger misses Speechify, Groq and Tavily.

@@ -65,19 +65,19 @@ Registration order, with everything enabled. 52 built-in tools, plus one per all
 | `set_reminder` | always | anyone, own data | yes | yes |
 | `set_alarm` | always | anyone, own data | yes | yes |
 | `set_timer` | always | anyone, own data | yes | yes |
-| `edit_alarm` | always | anyone, own data | yes | no |
+| `edit_alarm` | always | anyone, own data | yes | yes: what changed, read from the stored alarm (next release) |
 | `list_timers` | always | anyone, own data | no | no |
 | `cancel_timer` | always | anyone, own data | yes | yes; asks first for several or repeating |
 | `alarm_control` | always | anyone, own alarm | yes | yes |
-| `alarm_options` | always | anyone, own settings | except `sounds`, `settings` | a preview plays in silence |
-| `remember` | always | anyone, own notes | no | no |
+| `alarm_options` | always | anyone, own settings | except `sounds`, `settings` | `set`, `save_sound` and `delete_sound` say their result (next release); a preview plays in silence |
+| `remember` | always | anyone, own notes | no | yes: "Got it." / "I already have that." (next release) |
 | `forget` | always | anyone, own notes | no | yes |
 | `roll_dice` | always | anyone | no | no |
 | `flip_coin` | always | anyone | no | no |
 | `game` | always | anyone | no | no |
 | `play_music` | music is on | people in the room, the PC owner, owners | yes | mostly |
 | `music_control` | music is on | the same, `status` for anyone | except `status` | yes |
-| `music_taste` | music is on | anyone for their own taste; owners for hers | no | no |
+| `music_taste` | music is on | anyone for their own taste; owners for hers | no | the person's own likes and dislikes (next release) |
 | `music_quiz` | music is on | the same as music, `score` for anyone | except `score` | yes |
 | `play_sound` | music is on with a YouTube source | people in the room, the PC owner, owners | yes | ends the turn |
 | `pc_apps` | `satellite.enabled` | the asker, on their own PC | except `running`, `list` | yes |
@@ -93,7 +93,7 @@ Registration order, with everything enabled. 52 built-in tools, plus one per all
 | `message_member` | `serverInfo.enabled` and `messaging.enabled` | anyone | yes | read-back |
 | `pc_handoff` | `satellite.enabled` and `handoff.enabled` | the asker, own PC | yes | yes |
 | `tell_call` | `handoff.enabled` and `handoff.tellCall.enabled` | a member of her server who isn't in her call | yes | yes |
-| `game_night` | `gameNight.enabled` | anyone; join and leave only change the asker | `ping`, `join`, `leave` | only the ping question and "Pinged them." |
+| `game_night` | `gameNight.enabled` | anyone; join and leave only change the asker | `ping`, `join`, `leave` | the ping question, "Pinged them.", and join and leave (next release) |
 | `game_server_status` | `gameServers` set | anyone | no | no |
 | `game_server_control` | `gameServers` and `helix` set | owners and `helix.allow.<action>` | yes | yes |
 | `game_server_whitelist` | `gameServers` and `helix` set | owners and `helix.allow.whitelist` | `add`, `remove` | yes |
@@ -221,13 +221,13 @@ File: `src/features/notes.ts`.
 
 ### `remember`
 
-`note` (string, required): a short third-person note ("birthday is March 3"), up to 200 characters. Up to 30 notes per person. When the list is full, the oldest note she picked up by herself goes; notes they asked her to keep are never pushed out.
+`note` (string, required): a short third-person note ("birthday is March 3"), up to 200 characters. A saved note says "Got it." itself, unless the person's words also ask something (`asksMore`), which goes to the model. Up to 30 notes per person. When the list is full, the oldest note she picked up by herself goes; notes they asked her to keep are never pushed out.
 
 ### `forget`
 
 `what` (string, required): words to match, or "all" / "everything". She only says how many went ("Forgot 2 notes."), never which. "Forget everything" also clears that person's conversation history.
 
-**Privacy.** Notes only reach the asker's own prompt, as JSON data. In a server (the call or a text channel), only notes told in that server, or notes the asker's own words ask about, are shown, with an instruction not to bring them up. In a DM or at their own PC, all of them are. Automatic memory (`autoMemory`) is not a tool: it is a background model call every 4 voice turns that adds, rewrites or drops learned notes.
+**Privacy.** Notes only reach the asker's own prompt, as JSON data. In a server (the call or a text channel), only notes told in that server, or notes the asker's own words ask about (matched on a rough word stem plus a few synonyms: "live" finds "lives", "job" finds "works"), are shown, with an instruction not to bring them up. In a DM or at their own PC, all of them are. Automatic memory (`autoMemory`) is not a tool: it is a background model call every 4 voice turns that adds, rewrites or drops learned notes.
 
 ---
 
@@ -286,6 +286,8 @@ Files: `src/features/music.ts`, `taste.ts`, `quiz.ts`, `sounds.ts`. Each room (t
 ## The PC (satellite)
 
 Files: `src/satellite/tools.ts`, `src/satellite/senses.ts`. The bot sends each call as an `action` to the asker's own PC, and the PC app checks it against its own local settings before doing anything (main repo, `crates/pc-control`). A setting that is off answers "That's turned off in this PC's settings." A PC app too old for an action answers "Your PC app needs an update for that." With no PC connected: "No PC is connected for `<name>`. Their A.D.R.I.A.N. satellite app has to be running on it."
+
+**House orders never reach the PC.** `houseOrder` (`src/satellite/tools.ts`) reads only the person's own words. When an order word is paired with a house thing (a door, the garage, the lights, a TV, the heat, a fan, the thermostat ...) and the PC isn't named, `pc_system` refuses; `pc_volume` and `pc_media` refuse unless something playing is named ("turn down my music and turn off the lights" still turns the music down); `pc_apps` refuses to open, close, focus or minimize an app called after a house thing. The refusal comes before the PC is looked up and before any yes is held, and tells the model to use a home-control tool if there is one. "TV show", "Apple TV" and "the doors on youtube" are not house things. `PC_RULE` and the `pc_system` description say the same in words (lock is the PC's sign-in screen, `screen_off` its monitors).
 
 Hard rules on the PC, whatever its settings say: it never types or clicks into other programs, never hooks or messages a running game (kernel anti-cheat), never kills processes, and starts nothing except installed apps and games and the PC's own shortcuts.
 

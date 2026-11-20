@@ -12,11 +12,11 @@ This repository is what runs in production. The Windows PC app and its PC-contro
 
 ## Features at a glance
 
-Everything below is in the current release (0.17.1). Example phrases and every command are in [docs/usage.md](docs/usage.md); every model tool is in [docs/tools.md](docs/tools.md).
+Everything below is in the current release (0.17.1), except what is marked *(next release)*: that is on `main` and ships with the next release. Example phrases and every command are in [docs/usage.md](docs/usage.md); every model tool is in [docs/tools.md](docs/tools.md).
 
 **Talking to it**
 - Wake with "Hey Adrian", "Adrian, ...", or just "Adrian?" (it says "Yes?" and listens). Follow-ups within 8 seconds in a call (20 seconds at a PC) don't need the name.
-- Short, conversational answers. It knows who is in the call and what was said in the last few minutes, ignores side talk and game chatter, keeps one answer at a time with a short queue, and lets the person it is answering talk over it.
+- Short, conversational answers: most are one sentence, how-to answers two, with no offers or questions back unless it needs your answer. A safety warning that matters, and every item of a list you asked for, are always kept *(next release)*. It knows who is in the call and what was said in the last few minutes, ignores side talk and game chatter, keeps one answer at a time with a short queue, and lets the person it is answering talk over it.
 - Stops at once on "stop", "shut up", "never mind". Everyday words like "done" or "quiet" only count from the person it is answering, or with its name.
 - Everyday phrases are handled locally, with no model call: thanks, bye, repeat that, louder or quieter, faster or slower, what time is it, and plain music controls.
 - Five languages: English, Spanish, Chinese, Japanese and Vietnamese, answered in the language you speak. For Chinese, Japanese and Vietnamese, say "Hey Adrian", wait for "Yes?", then ask.
@@ -31,6 +31,7 @@ Everything below is in the current release (0.17.1). Example phrases and every c
 **Music and sounds** (YouTube Music through a pinned yt-dlp, your Plex library as a backup; needs `ffmpeg`)
 - Songs, artists, albums, playlists, moods ("something for a late night drive"), "more like this", podcasts, any YouTube video, and pasted YouTube, SoundCloud, Bandcamp or Spotify links (Spotify is found on YouTube).
 - Queue, skip, back, pause, shuffle, volume, "what's playing", "who put this on?". Autoplay keeps similar songs coming without repeats. Music ducks under its voice.
+- A version asked for by name ("tiny desk", "live", "acoustic", "remix", "sped up") plays that performance, and a bare genre or era ("some jazz", "90s r&b") plays a playlist *(next release)*.
 - Learns each person's taste for "play some music", and has its own.
 - Music quiz: short clips, anyone in the call guesses, it keeps score. Matching is local; a near miss may cost one tiny model call.
 - Sound effects: "give me a drum roll" plays a short clip (up to 15 seconds).
@@ -54,7 +55,8 @@ Everything below is in the current release (0.17.1). Example phrases and every c
 
 **Voice**
 - 54 built-in Kokoro voices run locally, plus a local Piper voice for Vietnamese. Speech is loudness-matched (about -16 LUFS).
-- Optional cloud voice for English (Speechify, model `simba-3.5`, voice `sabrina` by default) with a monthly character cap. It falls back to the local voice by itself when the cap is reached or the service fails.
+- Optional cloud voice for English (Speechify, model `simba-3.5`, voice `sabrina` by default) with a monthly character cap. It falls back to the local voice by itself when the cap is reached or the service fails. Its longer sentences start playing while they're still arriving, and the local voice then loads only when it's needed *(next release)*.
+- Times, units, symbols and links are said the way people say them ("7 o'clock", "season 3 episode 3", "modrinth.com"), and emoji aren't read out *(next release)*.
 
 **On your PC** (optional Windows app, see [docs/pc-app.md](docs/pc-app.md))
 - Listens through the PC's mic ("Hey Adrian", or hold Ctrl+Alt+Space), answers through its speakers in the same voice, and shows a small animated window. In the tray it uses about 5 MB of memory.
@@ -63,6 +65,8 @@ Everything below is in the current release (0.17.1). Example phrases and every c
 - Quiet while gaming: during a game it needs its name every time, keeps answers short and holds reminders until the match ends.
 - Between the PC and Discord: "send that link to my PC", "move the music to my PC", "tell the call I'll be on in 5".
 - When the PC's owner is also in its Discord call, the call answers instead, so music plays for everyone.
+- Orders about the house ("lock the front door", "turn the TV down", "kill the lights") never reach the PC; "lock my PC" still does *(next release)*.
+- Answers at the PC start sooner: it starts recognizing what you said during the pause at the end of it (about 0.5 s sooner in a test harness with stand-in models) *(next release)*.
 
 **Running it**
 - Admin web page with a setup wizard, live status (latency, spend), settings, keys and logs. Loopback only by default.
@@ -82,7 +86,7 @@ Full numbers, how they were measured and how to spend less: [docs/costs.md](docs
 | Cloud voice (optional) | Your Speechify plan. Default cap `cloudVoice.monthlyChars` 950,000 characters a month for `simba-3.5`, then the local voice. | No, own character budget |
 | Cloud second listen (optional, off by default) | `cloudStt`: Groq Whisper re-transcribes speech already judged to be for it (PC rooms only by default, `cloudStt.rooms`). Groq key and rate limits apply. | No |
 | Web search (optional) | Tavily, one credit per search. | No |
-| Server machine | About 1.5-1.6 GB of memory after start (1.52-1.64 GB measured, releases 0.15.4-0.17.1); about 1.3 GB more once someone speaks a language other than English. The service is capped at `MemoryHigh=4G`, `MemoryMax=5G`, `CPUQuota=400%`. The installer needs 3 GB free under `/opt`. | — |
+| Server machine | About 1.5-1.6 GB of memory after start (1.52-1.64 GB measured, releases 0.15.4-0.17.1); about 1.3 GB more once someone speaks a language other than English. With the cloud voice on, about 0.5 GB less from the next release, because the local voice then loads only when it's needed (1.59 to 1.10 GB in a measurement on Windows). The service is capped at `MemoryHigh=4G`, `MemoryMax=5G`, `CPUQuota=400%`. The installer needs about 3 GB free under `/opt` and `/var/lib`. | — |
 | PC app | About 5 MB of private memory in the tray (releases 0.15.3-0.17.1, November 2026); about 0.01% CPU and 0% GPU in the tray (measured 2026-10-23). All AI cost is on the server. | — |
 
 ## Requirements
@@ -92,8 +96,8 @@ Full numbers, how they were measured and how to spend less: [docs/costs.md](docs
 | OS | Linux x86_64 with systemd and glibc (not musl/Alpine, not ARM). The container tests default to Ubuntu 24.04. | Ubuntu 24.04 |
 | CPU | 4 cores | 8 threads, recent desktop or server CPU |
 | Memory | 4 GB free (about 3.5 GB once the language voices load, as measured in 0.14.7 when they loaded at every start; since 0.15.4 they load on first use: about 1.5-1.6 GB after start, plus about 1.3 GB the first time someone speaks a language other than English; `sudo adrian config languages false` keeps it near 1.5 GB). The installer warns below 4 GB. | 8 GB+ |
-| Disk | 3 GB free under `/opt` (the installer refuses less) | |
-| Other | `ffmpeg` for music and sounds, plus `curl`, `xz-utils`, `bzip2` and `iproute2` for the installer (`sudo apt install ffmpeg curl xz-utils bzip2 iproute2`). Node.js 22 and the speech models are downloaded by the installer, pinned and checked against SHA-256. | |
+| Disk | About 3 GB free: 1 GB under `/opt` and 2 GB under `/var/lib` (the installer refuses less) | |
+| Other | `ffmpeg` for music and sounds, plus `curl`, `xz-utils`, `bzip2` and `iproute2` for the installer (`get.sh` installs them after asking; by hand: `sudo apt install ffmpeg curl xz-utils bzip2 iproute2`). Node.js 22 and the speech models are downloaded by the installer, pinned and checked against SHA-256. | |
 
 You also need:
 - A Discord account and a server where you can add a bot.
@@ -104,23 +108,18 @@ Docker is supported as an alternative to the native install (without the `adrian
 
 ## Quick start
 
-The full walkthrough, including creating the Discord bot and getting each key, is in **[docs/install.md](docs/install.md)**. The short version:
+The full walkthrough, including creating the Discord bot and getting each key, is in **[docs/install.md](docs/install.md)**. The short version, on the Linux machine:
 
 ```bash
-# 1. Find the newest release and download its bundle and checksum
-#    (to install a particular version, set VER=x.y.z yourself instead)
-VER=$(curl -fsSL https://api.github.com/repos/Riqqqque/adrian-discord-voice/releases/latest | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p')
-echo "Newest release: ${VER:?could not read it from GitHub, set VER by hand from the Releases page}"
-curl -fLO https://github.com/Riqqqque/adrian-discord-voice/releases/download/v$VER/adrian-voice-$VER-linux-x64.tar.gz
-curl -fLO https://github.com/Riqqqque/adrian-discord-voice/releases/download/v$VER/adrian-voice-$VER-linux-x64.tar.gz.sha256
-sha256sum -c adrian-voice-$VER-linux-x64.tar.gz.sha256
+# 1. Get the installer and run it: it installs the packages it needs (asking first),
+#    downloads the newest release with its checksum, checks it and installs it
+curl -fsSLO https://raw.githubusercontent.com/Riqqqque/adrian-discord-voice/main/packaging/get.sh
+sudo bash get.sh
 
-# 2. Unpack the installer and run it
-mkdir adrian-$VER && tar -xzf adrian-voice-$VER-linux-x64.tar.gz -C adrian-$VER
-sudo adrian-$VER/packaging/install.sh --bundle adrian-voice-$VER-linux-x64.tar.gz
-
-# 3. Open the admin page it prints (usually http://127.0.0.1:8790), enter the setup code, follow the wizard
+# 2. Open the admin page it prints (usually http://127.0.0.1:8790), enter the setup code, follow the wizard
 ```
+
+If the machine isn't ready (disk, internet, an unsupported computer), it lists everything to fix at once and changes nothing; run it again after. Installing by hand, without `get.sh`, is in [docs/install.md](docs/install.md#install-by-hand).
 
 The installer creates a locked-down `adrian` system user and the systemd service, and prints a one-time setup code. The wizard then walks you through the Discord token, the server and channel, the language model, search, the voice and spend limits. On a remote server, reach the admin page through an SSH tunnel (the installer prints the command).
 
@@ -131,6 +130,7 @@ sudo adrian status            # service state, health, admin page address
 sudo adrian logs -f           # live log (keys are redacted)
 sudo adrian doctor            # full diagnostics
 sudo adrian update            # newest release from GitHub, checksum verified; rolls back if it does worse
+                              # (runs in the background, so a dropped SSH connection can't stop it)
 sudo adrian config music.autoplay false   # change any setting, then: sudo adrian restart
 sudo adrian config owners '["<your Discord user ID>"]'
 ```

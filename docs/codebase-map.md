@@ -2,7 +2,7 @@
 
 Every directory and file in this repo: what it is for, what it exports, what must stay true, and which tests guard it. Read [CONTRIBUTING.md](../CONTRIBUTING.md) first. Use this page when you need to find where something lives, or what you will break by changing it.
 
-Facts here match version 0.17.1 (`package.json`). Line counts are `wc -l` on that tree, taken 2026-11-20. Test counts are lines that start an `it(` / `it.each(` / `test(` call; rows of `it.each` expand at run time, so `npm test` reports more. Line references into `src/app/stack.ts` are approximate: search for the name.
+Facts here match version 0.17.1 (`package.json`) plus the changes merged after it on 2026-11-20 (faster PC answers, 2-thread recognition, lazy local voice, streamed cloud voice, the one-step installer). Line counts are `wc -l` on that tree, taken 2026-11-20. Test counts are lines that start an `it(` / `it.each(` / `test(` call; rows of `it.each` expand at run time, so `npm test` reports more. Line references into `src/app/stack.ts` are approximate: search for the name.
 
 Related pages: [architecture.md](architecture.md) (how a turn flows), [tools.md](tools.md) (every model tool), [configuration.md](configuration.md) (every config key), [satellite.md](satellite.md) (PC protocol), [development.md](development.md) (build, test, bench), [security.md](security.md), [costs.md](costs.md), [decisions.md](decisions.md), [roadmap.md](roadmap.md).
 
@@ -16,7 +16,7 @@ Related pages: [architecture.md](architecture.md) (how a turn flows), [tools.md]
   - the Discord bot (one voice call at a time, text chat, slash and typed commands),
   - the server for the Windows PC app ("satellite"): a WebSocket at `/satellite`, one room per connected PC,
   - the admin web UI (setup wizard and dashboard), on loopback by default.
-- `src/`: 96 files, about 25,400 lines. `test/`: 76 files, about 1,640 test call sites. `bench/`: 47 scripts plus one data file.
+- `src/`: 103 files, about 27,400 lines. `test/`: 90 files, about 1,860 test call sites. `bench/`: 65 scripts plus four data files.
 - Checks: `npm run typecheck`, `npm test` (vitest; no network, models or keys needed), `npm run build`.
 
 The PC app itself (Rust, Tauri 2) and its action library live in the main repo, [A.D.R.I.A.N](https://github.com/Riqqqque/A.D.R.I.A.N) (`crates/desktop`, `crates/pc-control`). That repo also holds an older Rust household server that is not what runs in production.
@@ -57,9 +57,12 @@ One spoken turn, file by file (full story in [architecture.md](architecture.md))
 
 | File | Lines | Purpose | Key exports | Tests |
 |---|---|---|---|---|
-| `main.ts` | 101 | Process entry. Resolves paths (config from `argv[2]`, `ADRIAN_CONFIG`, else `/etc/adrian/config.json`; state `ADRIAN_STATE`, else `/var/lib/adrian`; models `ADRIAN_MODELS`, else `<state>/models`), creates the usage ledger, admin auth and `StackManager`, starts the admin server, calls `stack.restart()`, handles SIGINT/SIGTERM (flushes the ledger). Keeps a 12-entry cache for the wizard's voice preview. | (script) | through `web.test.ts`, `manager.test.ts` |
-| `manager.ts` | 193 | Voice stack lifecycle: `setup`, `starting`, `running`, `failed`, `stopped`. Serialized restarts; retry with backoff (30 s doubling to 5 min) only for failures that can pass by themselves (`canRecover`: network codes, timeouts, HTTP 5xx). Plain-word setup problem list. One shared Parakeet and Kokoro instance across restarts (`SpeechModels`). | `StackManager`, `StackState`, `SpeechModels`, `configProblems`, `canRecover` | `manager.test.ts` (14) |
-| `stack.ts` | 1957 | Builds and wires the whole bot: speech, voices, mixer, music, rooms (the call and each PC), every feature, the tool list, the brain, the controller, listening, slash and typed commands, text chat, the satellite server. Owns owner rights, local answers, `respond()`, cost accounting, `busy()` and `stop()`. | `startVoiceStack`, `VoiceStack`, `AnswerRecord`, `privilegedIntents`, `MUSICISH`, `MUSIC_FOLLOW_UP` | `stack.test.ts` (156): the real `startVoiceStack` with fake Discord, listening, satellite server and HTTP |
+| `main.ts` | 102 | Process entry. Resolves paths (config from `argv[2]`, `ADRIAN_CONFIG`, else `/etc/adrian/config.json`; state `ADRIAN_STATE`, else `/var/lib/adrian`; models `ADRIAN_MODELS`, else `<state>/models`), creates the usage ledger, admin auth and `StackManager`, starts the admin server, installs the SIGINT/SIGTERM handlers (`shutdown.ts`) before it calls `stack.restart()`, passes the `/proc/meminfo` reader to the manager. Keeps a 12-entry cache for the wizard's voice preview. | (script) | through `web.test.ts`, `manager.test.ts` |
+| `manager.ts` | 235 | Voice stack lifecycle: `setup`, `starting`, `running`, `failed`, `stopped`. Serialized restarts; retry with backoff (30 s doubling to 5 min) only for failures that can pass by themselves (`canRecover`: network codes, timeouts, HTTP 5xx). Plain-word setup problem list. One shared Parakeet and Kokoro instance across restarts (`SpeechModels`). On Linux a first start waits while memory is short (`LowMemoryError`, retried by the same backoff; after 15 min it loads anyway); a restart with the models already loaded skips the check. | `StackManager`, `StackState`, `SpeechModels`, `configProblems`, `canRecover` | `manager.test.ts` (14) |
+| `local-voice.ts` | 41 | Whether Kokoro loads and calibrates at start (it is the English voice) or on first use (the cloud voice speaks English, so Kokoro only stands in). A missing Kokoro model is a warning when the cloud voice is primary. | `prepareLocalVoice`, `cloudVoicePrimary`, `LocalVoice` | `local-voice.test.ts` (5), `stack.test.ts` "the local voice at start" |
+| `memory.ts` | 72 | Memory at start: `/proc/meminfo` parsing, the estimated need (1030 MB, 1550 MB with Kokoro at start), the rule that puts a first start off (available plus swap above earlyoom's floor, minus the need, under 6% of RAM), memory fields for the start log lines. | `rssMb`, `parseMemInfo`, `readMemInfo`, `memoryFields`, `startNeedMb`, `tooLittleMemory`, `LowMemoryError`, `MemInfo` | `memory.test.ts` (14) |
+| `shutdown.ts` | 81 | Signal handling. Logs `shutting down` with the signal, state, uptime and memory. While `starting`, closes the admin UI, flushes the ledger and re-raises the signal (a model load can't be waited for); when running, a clean stop capped at 20 s; a second signal exits at once. | `shutdownOnSignal`, `reraise`, `ShutdownDeps` | `shutdown.test.ts` (9) |
+| `stack.ts` | 1974 | Builds and wires the whole bot: speech, voices, mixer, music, rooms (the call and each PC), every feature, the tool list, the brain, the controller, listening, slash and typed commands, text chat, the satellite server. Owns owner rights, local answers, `respond()`, cost accounting, `busy()` and `stop()`. | `startVoiceStack`, `VoiceStack`, `AnswerRecord`, `privilegedIntents`, `MUSICISH`, `MUSIC_FOLLOW_UP` | `stack.test.ts` (169): the real `startVoiceStack` with fake Discord, listening, satellite server and HTTP |
 | `commands.ts` | 170 | `/join`, `/leave`, seat rules (who may move her between calls), the app owner id fetched on ready. Registers every slash command in one call (Discord replaces the whole set). | `registerVoiceCommands`, `COMMANDS`, `humansIn`, `Seat`, `VoiceSpot`, `Asking`, `VoiceCommands`, `CommandDeps` | `commands.test.ts` (19) |
 | `music-commands.ts` | 704 | `/play` (with autocomplete), `/music ...`, typed `!` commands, the now-playing card and its buttons, output escaping. | `registerMusicCommands`, `MUSIC_COMMANDS`, `PLAY_TYPES`, `parseTextCommand`, `textHelp`, `nowCard`, `queueCard`, `buttons`, `playedText`, `suggestions`, `safe`, `trackLine` | `music-commands.test.ts` (47) |
 | `alarm-commands.ts` | 367 | `/alarm ...`, Stop/Snooze buttons on alarm DMs, the `alarms` message sent to PCs (`alarmState`, next 8 days), saving a YouTube clip as an alarm sound. | `registerAlarmCommands`, `ALARM_COMMANDS`, `alarmState`, `alarmButtons`, `saveClip` | `alarms.test.ts` |
@@ -107,26 +110,29 @@ What must stay true here:
 
 | File | Lines | Purpose | Key exports | Tests |
 |---|---|---|---|---|
-| `loudness.ts` | 119 | ITU-R BS.1770-4 integrated loudness, peak measure, gain plus look-ahead peak limiter. Used to level every voice to -16 LUFS. | `integratedLoudness`, `peakDbfs`, `gainAndLimit` | `loudness.test.ts` (3) |
-| `pauses.ts` | 33 | Trims silence off synthesized chunks (below -45 dBFS, 15 ms margin) and picks the pause after punctuation (0.26 s after `?`/`!`, 0.22 s after `.`, 0.12 s after `,;:` and dashes, 0.06 s otherwise; shortened 2026-11-08). | `trimSilence`, `pauseAfter` | indirectly, `speaker.test.ts` |
+| `loudness.ts` | 180 | ITU-R BS.1770-4 integrated loudness, peak measure, gain plus look-ahead peak limiter. Used to level every voice to -16 LUFS. | `integratedLoudness`, `peakDbfs`, `gainAndLimit`, `StreamLimiter` (the same gain and limiter for audio that arrives in pieces), `CEILING_DB` | `loudness.test.ts` (3), `speech-stream.test.ts` |
+| `pauses.ts` | 113 | Trims silence off synthesized chunks (below -45 dBFS, 15 ms margin) and picks the pause after punctuation (0.26 s after `?`/`!`, 0.22 s after `.`, 0.12 s after `,;:` and dashes, 0.06 s otherwise; shortened 2026-11-08). | `trimSilence`, `pauseAfter`, `StreamTrimmer` (the same trim for streamed audio: exact at the start, within 10 ms at the end) | `speech-stream.test.ts`, `speaker.test.ts` |
 | `pcm.ts` | 43 | Stereo to mono, RMS in dBFS, Buffer to Int16Array. `decimate48kTo16k` has no caller (the sherpa resampler is used). | `downmixStereo`, `rmsDbfs`, `bufferToInt16`, `decimate48kTo16k` | `pcm.test.ts` (6) |
 | `wav.ts` | 23 | Float samples to a 16-bit WAV Buffer (the admin UI's voice preview, built in `app/main.ts`). | `toWav` | (no direct test) |
 
 ## src/bench: compiled benches
 
-Built with the rest of `src/` and shipped in `dist/bench/`. They need real models and run on Linux x86_64.
+Built with the rest of `src/` and shipped in `dist/bench/`. They need real models. `e2e-bench` and `wake-bench` run on Linux x86_64; the side-talk benches also run on Windows.
 
 | File | Lines | Purpose | Run |
 |---|---|---|---|
 | `e2e-bench.ts` | 182 | End of speech to first audio without Discord: wake clips in real time through VAD, Parakeet, wake, orchestrator (mock LLM with a configurable time to first token), Kokoro and leveling. | `node dist/bench/e2e-bench.js <bench.json>` |
+| `sidetalk-bench.ts` | 156 | What each heard segment costs (VAD, Smart Turn, Parakeet CPU and wall time) and whether it wakes her, over a labelled clip corpus with the PC room's settings. `THREADS` sets Parakeet's threads, `TURN=only` measures Smart Turn alone. Scored by `bench/sidetalk-score.mjs`. | `node dist/bench/sidetalk-bench.js <corpus> <models> <out.jsonl>` |
+| `sidetalk-pipeline.ts` | 173 | The PC room's real `ListeningPipeline` fed clips back to back in real time, holds and joins included: decoded seconds per heard second, Smart Turn calls, process CPU. | `node dist/bench/sidetalk-pipeline.js <corpus> <models> <out.jsonl>`; env `THREADS`, `MINUTES` |
+| `turn-child.ts` | 19 | Smart Turn in a child process for `sidetalk-pipeline.ts` (on Windows onnxruntime-node can't load beside sherpa-onnx). | (spawned) |
 | `wake-bench.ts` | 109 | Wake miss rate, false-wake rate and ASR timing over a labelled clip corpus (the corpus is generated outside the repo). | `node dist/bench/wake-bench.js <corpus> <vad.onnx> <asr_dir> <threads> [gainDb ...]`; env `PREROLL` (default 0.25) |
 
 ## src/brain: prompts, tool loop, model adapters
 
 | File | Lines | Purpose | Key exports | Tests |
 |---|---|---|---|---|
-| `orchestrator.ts` | 454 | One request to a streamed, speakable answer. Builds the prompt (stable part plus per-request part), runs up to 3 tool rounds (4 model calls), holds a possible `SILENT`, retries once on a transient error before anything was said, first-event timeout, fillers for slow tools, `speak`/`asks`/`endsTurn` handling, reports usage exactly once (estimates it on a stop). | `ConversationOrchestrator`, `OrchestratorOptions`, `Usage`, `systemPrompt`, `stablePrompt`, `requestPrompt` | `brain.test.ts` (20), `orchestrator-tools.test.ts` (39), `fallback.test.ts`, `dm-talk.test.ts` |
-| `tools.ts` | 201 | Built-in tools `get_time` and `web_search` (Tavily); Tavily helpers for `pc_open search` and misheard songs; the untrusted-data wrapper; the person's own yes (`isYes`, `PendingYes`, 20 s); `cachedTool` for read-only lookups. | `timeTool`, `tavilySearchTool`, `topResultUrl`, `webYoutubeVideos`, `youtubeVideoId`, `asUntrustedData`, `isYes`, `PendingYes`, `cachedTool` | `pending-yes.test.ts` (17), `cached-tool.test.ts` (1), `music-lookups.test.ts` |
+| `orchestrator.ts` | 464 | One request to a streamed, speakable answer. Builds the prompt (stable part plus per-request part), runs up to 3 tool rounds (4 model calls), adds `SPOKEN_TURN` (the length rule, repeated last in every spoken turn; text chat doesn't get it), holds a possible `SILENT`, retries once on a transient error before anything was said, first-event timeout, fillers for slow tools, `speak`/`asks`/`endsTurn` handling, reports usage exactly once (estimates it on a stop). | `ConversationOrchestrator`, `OrchestratorOptions`, `Usage`, `systemPrompt`, `stablePrompt`, `requestPrompt`, `SPOKEN_TURN` | `brain.test.ts` (21), `orchestrator-tools.test.ts` (39), `fallback.test.ts`, `dm-talk.test.ts` |
+| `tools.ts` | 209 | Built-in tools `get_time` and `web_search` (Tavily); Tavily helpers for `pc_open search` and misheard songs; the untrusted-data wrapper; the person's own yes (`isYes`, `PendingYes`, 20 s); `cachedTool` for read-only lookups; `asksMore` (their words also ask something, so a tool's own confirmation line isn't enough). | `asksMore`, `timeTool`, `tavilySearchTool`, `topResultUrl`, `webYoutubeVideos`, `youtubeVideoId`, `asUntrustedData`, `isYes`, `PendingYes`, `cachedTool` | `pending-yes.test.ts` (17), `cached-tool.test.ts` (1), `music-lookups.test.ts` |
 | `tool-router.ts` | 56 | Which tools a request carries, by keyword groups or a tool's own `route` regex. Only used for non-Claude providers. | `routeTools`, `RouteHints` | `tool-router.test.ts` (4), `mcp.test.ts`, `steam.test.ts` |
 | `anthropic.ts` | 141 | Claude through `@anthropic-ai/sdk`: message conversion, two cache breakpoints, exact replay of thinking and tool-use blocks, effort setting, `maxRetries: 0`. | `AnthropicLlm`, `toClaude`, `AnthropicOptions` | `anthropic.test.ts` (3), `pc-senses.test.ts` |
 | `openai-compatible.ts` | 143 | Any Chat Completions endpoint over `fetch` + SSE, with tool calls. Throws `LlmHttpError` carrying the status (`transient` for 429 and 5xx). Never sends pictures. | `OpenAiCompatibleLlm`, `LlmHttpError`, `wire`, `OpenAiCompatibleOptions` | `brain.test.ts`, `orchestrator-tools.test.ts` |
@@ -134,7 +140,7 @@ Built with the rest of `src/` and shipped in `dist/bench/`. They need real model
 | `sessions.ts` | 67 | Per-person conversation history in memory, trimmed in blocks so the cached prefix stays stable; separate DM history; cut-off marks. Production uses 16 turns and 60 minutes idle. | `SessionMemory` | `brain.test.ts`, `dm-talk.test.ts` (6) |
 | `images.ts` | 33 | Pictures in tool results (`pc_screen`): seen in one model call, then replaced with a note; counted as 1,600 tokens. | `IMAGE_SEEN`, `IMAGE_UNREADABLE`, `stripImages`, `countable` | `pc-senses.test.ts` (22) |
 | `mature.ts` | 16 | Adult-language prompt lines and their hard limits, per channel's age-restricted flag. | `matureContext`, `MatureSetting` | `mature.test.ts` (3) |
-| `speech-text.ts` | 132 | Sentence splitter (220-char chunks, abbreviations, initials, CJK marks) and `toSpeakable` (spoken name, no markdown, URLs become "a link"). | `SentenceSplitter`, `SplitterOptions`, `toSpeakable` | `brain.test.ts`, `discordinfo-tools.test.ts` |
+| `speech-text.ts` | 226 | Sentence splitter (220-char chunks, abbreviations such as Pt., vol., feat. and months, initials, CJK marks; "No." ends a sentence unless a number follows), `toSpeakable` (spoken name, no markdown or emoji, a link said as its site, never read whole) and `forSpeech` (English voices only: degrees, dates, times and durations, units, currency, #1, slashes, St./vs./approx., Roman numerals). | `SentenceSplitter`, `SplitterOptions`, `toSpeakable`, `forSpeech`, `ordinal` | `speech-text.test.ts` (9), `brain.test.ts`, `discordinfo-tools.test.ts` |
 
 What must stay true here:
 
@@ -149,13 +155,13 @@ What must stay true here:
 
 | File | Lines | Purpose | Tests |
 |---|---|---|---|
-| `tool.ts` | 206 | Node helper the bash CLI runs as the service user (`node dist/cli/tool.js <cmd>`): `secret-set NAME` (value on stdin, never argv), `secret-delete`, `secret-list`, `setup-code [--new]`, `reset-admin`, `check` (exit 3 incomplete, 1 unreadable), `port`, `voice`, `config KEY [VALUE]`, `satellite-add`, `satellite-list`, `satellite-remove`, `version`. `config` validates the whole result with the real schema, keeps 16+ digit strings as strings, and only allows the top-level keys in `ALLOWED` (no paths, no `server`, no `allowedGuilds`). | `config-file.test.ts` (18), `packaging.test.ts` |
+| `tool.ts` | 213 | Node helper the bash CLI runs as the service user (`node dist/cli/tool.js <cmd>`): `secret-set NAME` (value on stdin, never argv), `secret-delete`, `secret-list`, `setup-code [--new]`, `reset-admin`, `check` (exit 3 incomplete, 1 unreadable), `port`, `voice`, `config KEY [VALUE]`, `satellite-add`, `satellite-list`, `satellite-remove`, `version`. `config` validates the whole result with the real schema, keeps 16+ digit strings as strings, and only allows the top-level keys in `ALLOWED` (no paths, no `server`, no `allowedGuilds`). | `config-file.test.ts` (18), `packaging.test.ts` |
 
 ## src/config.ts: the config schema
 
 | File | Lines | Purpose | Key exports | Tests |
 |---|---|---|---|---|
-| `config.ts` | 538 | The zod schema for the whole config file with every default; secret names and their purposes; the private-host rule for `helix.url`; cloud voice defaults by model (`simba-3.5`: speed 1, 950,000 chars a month). | `PocConfigSchema`, `PocConfig`, `loadConfig`, `readSecrets`, `SECRET_PURPOSE`, `keyName`, `privateHost`, `cloudVoiceSpeed`, `cloudVoiceChars` | `config.test.ts` (3), `secret-purpose.test.ts` (5), `cloud-voice-defaults.test.ts` (3), `helix-config.test.ts` (7), `recap.test.ts`, `steam.test.ts` |
+| `config.ts` | 545 | The zod schema for the whole config file with every default; secret names and their purposes; the private-host rule for `helix.url`; cloud voice defaults by model (`simba-3.5`: speed 1, 950,000 chars a month). | `PocConfigSchema`, `PocConfig`, `loadConfig`, `readSecrets`, `SECRET_PURPOSE`, `keyName`, `privateHost`, `cloudVoiceSpeed`, `cloudVoiceChars` | `config.test.ts` (4), `secret-purpose.test.ts` (5), `cloud-voice-defaults.test.ts` (3), `helix-config.test.ts` (7), `recap.test.ts`, `steam.test.ts` |
 
 What must stay true: a new key needs a default (a required key breaks every existing config), and sections with `.default({...})` must repeat every inner default. A setting that names a secret must use `keyName(purpose)`, so no endpoint can be pointed at another service's key. Every key is documented in [configuration.md](configuration.md). Secrets are read only from the secrets file; there is no environment fallback.
 
@@ -173,7 +179,7 @@ What must stay true: everyday words (weak stops) never stop someone else's answe
 
 | File | Lines | Purpose | Key exports | Tests |
 |---|---|---|---|---|
-| `interfaces.ts` | 212 | The contracts everything plugs into: transport, VAD, wake, STT, TTS, LLM, tools, memory, secrets, logger. `Tool` carries `timeoutMs`, `slow`, `filler`, `endsTurn`, `speak`, `asks`, `acts`, `route`. | `VoiceTransport`, `VoiceTransportEvents`, `PlaybackHandle`, `PcmChunk`, `VoiceActivityDetector`, `WakeDetector`, `SpeechToText`, `TextToSpeech`, `LlmProvider`, `LlmEvent`, `ChatMessage`, `ToolCall`, `Tool`, `ToolSpec`, `ToolContext`, `ToolOutput`, `ToolImage`, `MemoryStore`, `SecretsStore`, `Logger`, `UserId` | used by most tests |
+| `interfaces.ts` | 222 | The contracts everything plugs into: transport, VAD, wake, STT, TTS, LLM, tools, memory, secrets, logger. `Tool` carries `timeoutMs`, `slow`, `filler`, `endsTurn`, `speak`, `asks`, `acts`, `route`. `TextToSpeech.stream?` returns a sentence's audio in pieces (`SpeechPiece`). | `VoiceTransport`, `VoiceTransportEvents`, `PlaybackHandle`, `PcmChunk`, `VoiceActivityDetector`, `WakeDetector`, `SpeechToText`, `TextToSpeech`, `SpeechPiece`, `LlmProvider`, `LlmEvent`, `ChatMessage`, `ToolCall`, `Tool`, `ToolSpec`, `ToolContext`, `ToolOutput`, `ToolImage`, `MemoryStore`, `SecretsStore`, `Logger`, `UserId` | used by most tests |
 | `logger.ts` | 50 | JSON-lines logger to stdout with redaction of token shapes (Groq, Google, Tavily, `sk-`, Discord bot tokens, argon2 hashes, `sat_` pairing tokens, long `Bearer` values) and a 500-line in-memory buffer for the dashboard. | `createLogger`, `redact`, `recentLogLines` | `web.test.ts` (careless log calls are still redacted), `helix-config.test.ts` (bearer tokens) |
 | `eager.ts` | 42 | Pulls an async stream as fast as it produces, buffering for a slower reader, so the model's time limit never counts time spent speaking. | `eager` | `eager.test.ts` (3) |
 | `time.ts` | 14 | Cached `Intl.DateTimeFormat` instances. | `dateFormat` | (none) |
@@ -186,11 +192,11 @@ Each feature is a module that exposes model tools (`Tool` objects) and prompt li
 
 | File | Lines | Purpose | Key exports | Tests |
 |---|---|---|---|---|
-| `alarms.ts` | 963 | Alarm and timer store (`alarms.json`), 1 s clock, ring sessions, where it rings, stop/snooze words (whole utterances only), dismiss modes (`stop`, `firm`, `math`), undo within 3 min, self-snooze rounds, missed-while-offline, DST, per-person prefs, `busySoon()`. | `AlarmClock`, `Alarm`, `AlarmPrefs`, `SavedSound`, `LIMITS`, `DEFAULTS`, `ringWord`, `backWord`, `parseClock`, `parseDays`, `nextAt`, `localParts`, `localDate`, `clockText`, `dayText`, `daysText`, `firstNumber`, `timerName`, `soundKind`, `validZone` | `alarms.test.ts` (40), `stack.test.ts` "a ringing alarm" |
-| `alarm-tools.ts` | 552 | The 7 model tools: `set_alarm`, `set_timer`, `edit_alarm`, `list_timers`, `cancel_timer` (also lists and cancels reminders), `alarm_control`, `alarm_options`; spoken read-backs; the `ALARM_RULE` prompt line. | `alarmTools`, `ALARM_RULE` | `alarms.test.ts` |
+| `alarms.ts` | 963 | Alarm and timer store (`alarms.json`), 1 s clock, ring sessions, where it rings, stop/snooze words (whole utterances only), dismiss modes (`stop`, `firm`, `math`), undo within 3 min, self-snooze rounds, missed-while-offline, DST, per-person prefs, `busySoon()`. | `AlarmClock`, `Alarm`, `AlarmPrefs`, `SavedSound`, `LIMITS`, `DEFAULTS`, `ringWord`, `backWord`, `parseClock`, `parseDays`, `nextAt`, `localParts`, `localDate`, `clockText`, `dayText`, `daysText`, `firstNumber`, `timerName`, `soundKind`, `validZone` | `alarms.test.ts` (45), `stack.test.ts` "a ringing alarm" |
+| `alarm-tools.ts` | 619 | The 7 model tools: `set_alarm`, `set_timer`, `edit_alarm`, `list_timers`, `cancel_timer` (also lists and cancels reminders), `alarm_control`, `alarm_options`; spoken read-backs; the `ALARM_RULE` prompt line. | `alarmTools`, `ALARM_RULE` | `alarms.test.ts` |
 | `alarm-tones.ts` | 255 | 9 built-in tones synthesized in code at 48 kHz (`classic` for alarms, `chime` for timers), trimmed to about -13 LUFS; the ring PCM stream. Nothing to download. | `TONES`, `DEFAULT_TONE`, `DEFAULT_TIMER_TONE`, `isTone`, `tonePattern`, `ringStream`, `patternFromPcm`, `TONE_RATE` | `alarms.test.ts` |
 | `reminders.ts` | 316 | Reminder store (`reminders.json`) and the `set_reminder` tool, with delivery retry (every 60 s for about a day); where a reminder is said; household-time helpers used across features. Its own `set_timer`/`list_timers`/`cancel_timer` are not registered: the alarm ones are. | `Reminders`, `Reminder`, `reminderRoute`, `dueMessage`, `localToEpoch`, `spokenDuration` | `reminders.test.ts` (21) |
-| `notes.ts` | 191 | Per-person notes (`notes.json`), `remember` and `forget`, and the place rule for which notes reach a prompt (all in a DM or at their own PC; in a server only notes told there or asked about). | `UserNotes`, `asksAbout` | `notes.test.ts` (29) |
+| `notes.ts` | 206 | Per-person notes (`notes.json`), `remember` and `forget`, and the place rule for which notes reach a prompt (all in a DM or at their own PC; in a server only notes told there or asked about, matched on a rough word stem and a few synonyms, so "where do I live" finds "lives in ..."). `remember` says its own "Got it." | `UserNotes`, `asksAbout` | `notes.test.ts` (29) |
 | `automemory.ts` | 158 | Every 4th voice turn per person, one background model call that adds, updates or drops learned notes. One run at a time; "forget" wins over a run in progress. | `AutoMemory`, `parseFacts`, `parseChanges` | `automemory.test.ts` (20) |
 | `weather.ts` | 229 | Open-Meteo geocoding and forecast for the configured place only; `weather` tool; briefing words. | `Weather`, `sky` | `briefing.test.ts` |
 | `headlines.ts` | 94 | RSS/Atom title reader; `headlines` tool (titles only). | `Headlines`, `feedTitles`, `feedText` | `briefing.test.ts` |
@@ -207,8 +213,8 @@ What must stay true: nothing rings out silently (unanswered alarms self-snooze, 
 
 | File | Lines | Purpose | Key exports | Tests |
 |---|---|---|---|---|
-| `music.ts` | 2053 | YouTube source (yt-dlp plus a direct YouTube Music search), Plex source, ffmpeg decoder (protocol whitelist), Deezer top tracks, misheard-name matching, `MusicPlayer` (queue, autoplay, history, stalls, YouTube bot-check pause), `play_music` and `music_control` tools, music prompt lines. | `YoutubeSource`, `PlexMusicSource`, `ffmpegDecoder`, `decoderArgs`, `inputArgs`, `deezerTopTracks`, `MusicPlayer`, `musicTools`, `musicRules`, `musicState`, `whoAsked`, `cleanTitle`, `matchScore`, `soundOf`, `respell`, `songKey`, `trackKey`, `heatmapPeak`, `pickVideo`, `pickShort` | `music.test.ts` (15), `music-lookups.test.ts` (140), `music-requests.test.ts` (14), `music-polish.test.ts` (22), `music-taste.test.ts` (28) |
-| `taste.ts` | 175 | Per-person artist play scores (60-day half-life), likes and dislikes, her own taste; `music_taste` tool; `music-taste.json`. | `MusicTaste` | `music-taste.test.ts`, `music-commands.test.ts` |
+| `music.ts` | 2344 | YouTube source (YouTube Music's API for songs, albums and playlists, YouTube's search API for videos, yt-dlp as the fallback and for streams; the stream's yt-dlp starts beside the search and reads the address from stdin), Plex source, ffmpeg decoder (protocol whitelist), Deezer top tracks, misheard-name matching (soft g, two words as one name, other scripts), version words (tiny desk, live, remix ...) that must appear in a result, genres that play a playlist (`isGenre`), `MusicPlayer` (queue, autoplay, history, stalls, YouTube bot-check pause), `play_music` and `music_control` tools, music prompt lines. | `YoutubeSource`, `PlexMusicSource`, `ffmpegDecoder`, `decoderArgs`, `inputArgs`, `deezerTopTracks`, `MusicPlayer`, `musicTools`, `musicRules`, `musicState`, `whoAsked`, `cleanTitle`, `matchScore`, `soundOf`, `respell`, `songKey`, `trackKey`, `heatmapPeak`, `pickVideo`, `pickShort`, `versionsAsked`, `hasVersions`, `otherScript`, `isGenre`, `runProgram`, `Runner` | `music-speed.test.ts` (29), `music.test.ts` (15), `music-lookups.test.ts` (141), `music-requests.test.ts` (14), `music-polish.test.ts` (22), `music-taste.test.ts` (28) |
+| `taste.ts` | 186 | Per-person artist play scores (60-day half-life), likes and dislikes, her own taste; `music_taste` tool; `music-taste.json`. | `MusicTaste` | `music-taste.test.ts`, `music-commands.test.ts` |
 | `links.ts` | 152 | Pasted media links (YouTube, SoundCloud, Bandcamp, Spotify read through its page tags and searched on YouTube), recent links per person for "play that link". | `parseMediaLink`, `mediaLinksIn`, `MediaLink`, `PastedLink`, `RecentLinks`, `linksLine`, `PLAY_THAT_LINK`, `spotifyItem`, `SpotifyItem` | `links.test.ts` (7) |
 | `sounds.ts` | 44 | `play_sound`: a short YouTube clip, cut at 15 s, which is the whole answer (`endsTurn`); `SOUND_RULE`. | `soundTool`, `SOUND_RULE`, `SoundDeps` | `sounds.test.ts` (2), `textchat-read.test.ts` |
 | `quiz.ts` | 1047 | Music quiz: local start and command parsing, song lists (Deezer charts, YouTube Music playlists, artist top songs, room history), clip placement at the most replayed part, local guess matching, at most 2 tiny model judge calls per round; `music_quiz` tool. | `Quizzes`, `MusicQuiz`, `parseQuizCommand`, `judgeGuess`, `answerScore`, `artistNames`, `clipRange`, `quizSongs`, `modelJudge`, `GENRES`, `QUIZ_BUSY` | `quiz.test.ts` (40), `stack.test.ts` "a music quiz in the call" |
@@ -220,9 +226,9 @@ What must stay true: ffmpeg only gets whitelisted network protocols (`http,https
 | File | Lines | Purpose | Key exports | Tests |
 |---|---|---|---|---|
 | `handoff.ts` | 690 | What "that" means (recent links and songs per person), `pc_handoff` (`send_to_pc`, `music_to_pc`, `pc_to_call`), `tell_call`, who started the music in a room, `HANDOFF_RULE`. | `handoffTools`, `tellCallTool`, `LastThings`, `linksIn`, `noteMessage`, `MusicStarts`, `notingStarts`, `parsePlayers`, `callRequestFor`, `WindowLimiter`, `startsWithName`, `whichLine`, `confirmLine`, `HANDOFF_RULE` | `handoff.test.ts` (49) |
-| `handoff-discord.ts` | 169 | The Discord side: watches messages for links, builds `pc_handoff`, `tell_call` and `game_night` with the real client, per-feature gating. | `watchDiscord`, `pcDiscordTools` | `handoff-discord.test.ts` (7) |
+| `handoff-discord.ts` | 172 | The Discord side: watches messages for links, builds `pc_handoff`, `tell_call` and `game_night` with the real client, per-feature gating. | `watchDiscord`, `pcDiscordTools` | `handoff-discord.test.ts` (7) |
 | `textchannel.ts` | 76 | Picks the text channel for posts; visibility and post-permission checks; text that cannot ping. | `pickTextChannel`, `canSee`, `canPost`, `plainText`, `PostableChannel`, `ChannelChoice` | through `handoff.test.ts`, `gamenight.test.ts` |
-| `gamenight.ts` | 466 | `game_night`: who is free or playing, sign-ups (`game-night.json`), pings with cooldowns and order guards. | `gameNightTool`, `GameNightSignups`, `gameKey`, `sameGame`, `matchState`, `GAME_NIGHT_RULE` | `gamenight.test.ts` (30) |
+| `gamenight.ts` | 479 | `game_night`: who is free or playing, sign-ups (`game-night.json`), pings with cooldowns and order guards. | `gameNightTool`, `GameNightSignups`, `gameKey`, `sameGame`, `matchState`, `GAME_NIGHT_RULE` | `gamenight.test.ts` (30) |
 | `discordinfo.ts` | 447 | `server_info` lookups filtered to what the asker can see, and the `message_member` relay with read-backs and limits. | `discordTools`, `RelayLimiter`, `matchMembers`, `namesMember`, `allowedPings`, `describeActivity` | `discordinfo-tools.test.ts` (80), `discordinfo.test.ts` (5) |
 | `mcp.ts` | 287 | Minimal MCP client (streamable HTTP) that turns allowed server tools into home-control tools, owners only by default, with a yes before risky calls (locks, doors, garage ...). | `connectMcp`, `serverTools`, `McpClient`, `rpcMessages`, `toolName`, `describeCall`, `HOME_WORDS`, `McpServer`, `McpError` | `mcp.test.ts` (11) |
 | `helix.ts` | 258 | Client for the Helix game-server panel's token Automation API: exact headers, no redirects or cookies, one request at a time, local rate ceiling, capped bodies. | `HelixClient`, `HelixError`, `HelixFailure`, `readCapped`, `MAX_WAIT_SEC` | `servercontrol.test.ts` |
@@ -246,7 +252,7 @@ Only language-model tokens are counted. Speechify characters have their own mont
 
 | File | Lines | Purpose | Key exports | Tests |
 |---|---|---|---|---|
-| `pipeline.ts` | 331 | Per-user resampler and Silero VAD (0.25 s preroll, set in `speech/sherpa.ts`), drops clips under 0.3 s, Smart Turn hold and join at PCs (0.25 s gap between joined clips, 15 s cap), Parakeet decode started beside the turn check, text wake check, emits `heard`, `voiceActivity`, `error`. | `ListeningPipeline`, `ListeningPipelineEvents`, `HeardEvent`, `ClosedBy`, `TurnOptions`, `UserState`, `endsDangling` | `turn-hold.test.ts` (44), `stack.test.ts` |
+| `pipeline.ts` | 443 | Per-user resampler and Silero VAD (0.25 s preroll, set in `speech/sherpa.ts`), drops clips under 0.3 s, Smart Turn hold and join at PCs (0.25 s gap between joined clips, 15 s cap), Parakeet decode started beside the turn check, text wake check, emits `heard`, `voiceActivity`, `error`. At PCs a second Silero VAD with a 0.32 s wait (`EarlyOptions`) decodes early; its words are used only when the full wait closes the very same samples. | `ListeningPipeline`, `ListeningPipelineEvents`, `HeardEvent`, `ClosedBy`, `TurnOptions`, `EarlyOptions`, `CloseInfo`, `UserState`, `endsDangling` | `turn-hold.test.ts` (44), `early-listen.test.ts` (18), `stack.test.ts` |
 
 What must stay true: each user has their own VAD state (Discord streams are never mixed); one `heard` per clip (an epoch counter discards stale checks after a join); a Smart Turn failure never makes anyone wait; side talk is never held.
 
@@ -260,10 +266,10 @@ What must stay true: each user has their own VAD state (Discord streams are neve
 
 | File | Lines | Purpose | Key exports | Tests |
 |---|---|---|---|---|
-| `server.ts` | 131 | `ws` server at `/satellite`: hello within 5 s, token check before the per-address lockout (5 failures lock an address for 10 min, a correct token always gets in), one live connection per device, 30 s ping keep-alive, frame cap before the welcome. | `startSatelliteServer`, `SatelliteServerOptions` | `satellite.test.ts` (59), `quiet.test.ts`, `pc-senses.test.ts` |
-| `connection.ts` | 278 | One welcomed PC as a `VoiceTransport`: JSON and binary frames, `action()` with timeouts (15 s default), PCM out (stereo mixed to mono, 48 kHz s16le), `state`, `mode`, `transcript`, `alarms`, `audio_stop`. | `SatelliteConnection`, `SatelliteEvents`, `SatelliteMode`, `ActionResult`, `SMALL_FRAME` (256 KiB), `MAX_FRAME` (2 MiB + 64 KiB), `SAT_RATE`, `capFrames`, `frameBytes` | `satellite.test.ts`, `pc-senses.test.ts`, `quiet.test.ts` |
+| `server.ts` | 136 | `ws` server at `/satellite`: hello within 5 s, token check before the per-address lockout (5 failures lock an address for 10 min, a correct token always gets in), one live connection per device, 30 s ping keep-alive (`heartbeatMs`), frame cap before the welcome. `satellite disconnected` says how the link ended (`by`: pc, heartbeat, replaced, shutdown, server; close code, reason, link age, how long the PC was quiet). | `startSatelliteServer`, `SatelliteServerOptions` | `satellite.test.ts` (63), `quiet.test.ts`, `pc-senses.test.ts` |
+| `connection.ts` | 306 | One welcomed PC as a `VoiceTransport`: JSON and binary frames, `action()` with timeouts (15 s default), PCM out (stereo mixed to mono, 48 kHz s16le), `state`, `mode`, `transcript`, `alarms`, `audio_stop`. | `SatelliteConnection`, `SatelliteEvents`, `SatelliteMode`, `ActionResult`, `SMALL_FRAME` (256 KiB), `MAX_FRAME` (2 MiB + 64 KiB), `SAT_RATE`, `capFrames`, `frameBytes` | `satellite.test.ts`, `pc-senses.test.ts`, `quiet.test.ts` |
 | `devices.ts` | 63 | Pairing store `satellites.json`: issues `sat_` tokens, keeps only their SHA-256, constant-time verify. | `SatelliteDevices`, `Device` | `satellite.test.ts` |
-| `tools.ts` | 287 | The PC tools `pc_apps`, `pc_windows`, `pc_open`, `pc_media`, `pc_volume`, `pc_system`, `pc_info` (plus the two from `senses.ts`), `PC_RULE`, the spoken yes for sleep/restart/shutdown (`confirmed` is stripped from model arguments), the 30 s restart/shutdown cancel window, the server-side URL name check, spoken confirmations that skip the second model call. | `pcTools`, `PcToolDeps`, `PC_RULE`, `PowerDownWindow`, `webUrl`, `confirmation` | `satellite.test.ts`, `orchestrator-tools.test.ts` |
+| `tools.ts` | 339 | The PC tools `pc_apps`, `pc_windows`, `pc_open`, `pc_media`, `pc_volume`, `pc_system`, `pc_info` (plus the two from `senses.ts`), `PC_RULE`, the spoken yes for sleep/restart/shutdown (`confirmed` is stripped from model arguments), the 30 s restart/shutdown cancel window, the server-side URL name check, spoken confirmations that skip the second model call, and the house guard (`houseOrder`: an order about a door, the lights, the TV, the heat or anything else in the house never reaches the PC, unless the PC is named). | `pcTools`, `PcToolDeps`, `PC_RULE`, `PowerDownWindow`, `webUrl`, `confirmation`, `houseOrder` | `pc-house.test.ts` (6), `satellite.test.ts`, `orchestrator-tools.test.ts` |
 | `senses.ts` | 120 | `pc_clipboard` and `pc_screen` specs and rule, the model-facing result, log redaction for private tools, private-turn marks, detection of PC apps too old for the health check. | `SENSES_RULE`, `SENSES_SPECS`, `forModel`, `forLog`, `answerForLog`, `PRIVATE_TOOLS`, `PrivateTurns`, `beforeHealth`, `HEALTH_NEEDS_UPDATE` | `pc-senses.test.ts` (22) |
 | `images.ts` | 33 | Validates a `pc_screen` picture: type, base64 length before decoding, magic bytes, 1.5 MB. | `readImage`, `MAX_IMAGE_BYTES` | `pc-senses.test.ts` |
 | `quiet.ts` | 387 | Quiet while gaming: parses `activity`, holds PC reminders on disk (`held-while-gaming.json`; 50 per owner, 500 total, 12 h), releases them when the game ends without sending a DM twice, prompt lines. | `GameQuiet`, `GameQuietDeps`, `QuietPc`, `parseActivity`, `Activity`, `HeldItems`, `HeldItem`, `reminderBrief`, `messageBrief`, `releaseText`, `gamingLine`, `toldLine`, `HELD_MAX`, `HELD_TOTAL_MAX`, `HELD_TTL_MS`, `SETTLE_MS`, `LOST_MS` | `quiet.test.ts` (32) |
@@ -281,9 +287,9 @@ What must stay true: a PC tool only reaches the asker's own PC (`pcFor` filters 
 | `cloud-stt.ts` | 63 | Groq Whisper transcription over HTTPS: in-memory WAV, vocabulary prompt (600 chars), timeout. | `groqTranscribe`, `sttPrompt`, `wav`, `CloudSttOptions` | `cloud-stt.test.ts` (2), `stack.test.ts` |
 | `whisper.ts` | 40 | Local Whisper small int8 second pass for non-English speech; returns the detected language. Loaded on first use. | `WhisperStt` | `stack.test.ts` (mocked) |
 | `language.ts` | 100 | Reply languages (en, es, zh, ja, vi) with their voice and prompt line; English and Spanish checks; stripping a leading wake phrase. | `LANGS`, `LangInfo`, `ReplyLang`, `replyLang`, `looksSpanish`, `stripWakeLead`, `EnglishWords` | `language.test.ts` (3) |
-| `speechify.ts` | 245 | Speechify cloud voice with automatic local fallback, the monthly character budget (`voice-usage.json`), short-line cache, warm-up after 30 idle minutes, failure pause. | `SpeechifyTts`, `SpeechifyOptions`, `CharBudget`, `SpeechifyError`, `pcm16ToFloat`, `speechInput` | `speechify.test.ts` (20), `cloud-voice-defaults.test.ts` |
-| `kokoro.ts` | 153 | Kokoro-82M local voice (fp32), one engine per language created on first use, synthesis serialized; `levelChunk`, the shared leveling every voice goes through. | `KokoroTts`, `KokoroOptions`, `levelChunk`, `TARGET_LUFS`, `langOf`, `SpeechLang` | benches only (`tts-speed.mjs`, `level-check.mjs`) |
-| `piper.ts` | 81 | Piper VITS voice for Vietnamese, and `VoiceRouter`, which sends a voice name to Piper, the cloud voice or Kokoro. | `PiperTts`, `VoiceRouter` | benches only (`lang-e2e.mjs`) |
+| `speechify.ts` | 338 | Speechify cloud voice with automatic local fallback, the monthly character budget (`voice-usage.json`), short-line cache, warm-up after 30 idle minutes, failure pause. `stream()` plays sentences over 40 characters as their audio arrives (`timeoutMs` limits the wait for the first bytes and any stall); a failure before the first audio falls back to the local voice, a break mid-sentence ends that sentence. | `SpeechifyTts`, `SpeechifyOptions`, `CharBudget`, `SpeechifyError`, `pcm16ToFloat`, `speechInput` | `speechify.test.ts` (20), `speech-stream.test.ts` (12), `cloud-voice-defaults.test.ts` |
+| `kokoro.ts` | 157 | Kokoro-82M local voice (fp32), one engine per language created on first use, synthesis serialized; `levelChunk`, the shared leveling every voice goes through. | `KokoroTts`, `KokoroOptions`, `levelChunk`, `TARGET_LUFS`, `langOf`, `SpeechLang` | benches only (`tts-speed.mjs`, `level-check.mjs`) |
+| `piper.ts` | 92 | Piper VITS voice for Vietnamese, and `VoiceRouter`, which sends a voice name to Piper, the cloud voice or Kokoro, and streams when that voice can. | `PiperTts`, `VoiceRouter` | benches only (`lang-e2e.mjs`) |
 | `voices.ts` | 12 | The 54 Kokoro speaker names. The array index is the speaker id. Also the list `web/server.ts`, `web/settings.ts` and `adrian voice` (`cli/tool.ts`) validate against; `kokoro.ts` maps a name to its index. | `KOKORO_VOICES` | (no direct test) |
 
 What must stay true: never reorder, sort or insert into `KOKORO_VOICES`; every engine is leveled to -16 LUFS with the -2 dBFS limiter and voice volume 1.0 is never exceeded; a Speechify error never fails the answer; characters are counted only after audio arrived; Parakeet decodes stay serialized; nothing heavy goes back on the main thread. `src/types/sherpa-onnx-node.d.ts` must be updated with any sherpa-onnx-node bump.
@@ -292,7 +298,7 @@ What must stay true: never reorder, sort or insert into `KOKORO_VOICES`; every e
 
 | File | Lines | Purpose | Key exports | Tests |
 |---|---|---|---|---|
-| `discord.ts` | 400 | Joins with DAVE end-to-end encryption, one Opus receive stream per user (ended after `silenceMs`), playback (Opus 128 kbps, FEC, `maxMissedFrames: 50`), rejoin with backoff, kicks (stays out until `/join`), drags to other channels, redaction of voice debug lines. | `DiscordVoiceTransport`, `DiscordTransportOptions`, `redactVoiceDebug` | `transport-reconnect.test.ts` (20), `transport-kick.test.ts` (4), `redact.test.ts` (2) |
+| `discord.ts` | 444 | Joins with DAVE end-to-end encryption, one Opus receive stream per user (ended after `silenceMs`), playback (Opus 128 kbps, FEC, `maxMissedFrames: 50`), recovery (a resume that falls back to Signalling is rebuilt after 5 s there, Connecting keeps 30 s, an error rebuilds at once; `voice back` logs each recovery time), rejoin with backoff, kicks (stays out until `/join`), drags to other channels, redaction of voice debug lines. | `DiscordVoiceTransport`, `DiscordTransportOptions`, `redactVoiceDebug` | `transport-reconnect.test.ts` (26), `transport-kick.test.ts` (4), `redact.test.ts` (2) |
 
 `@discordjs/voice` is pinned to 0.19.2 and patched by `scripts/patch-voice.mjs`; upgrading it means re-checking that patch.
 
@@ -307,7 +313,7 @@ What must stay true: never reorder, sort or insert into `KOKORO_VOICES`; every e
 | File | Lines | Purpose | Key exports | Tests |
 |---|---|---|---|---|
 | `mixer.ts` | 401 | Mixes speech, one music channel and any number of alarms into one 48 kHz stereo stream in 20 ms frames on the wall clock with a 160 ms lead; ducks music for her voice, sounds, alarms and 8 s after a wake; stall handling; ends playback when idle; reports when her voice is audible (`onVoice`). | `Mixer`, `MixerOptions`, `FRAME_BYTES`, `LEAD_FRAMES`, `START_LEAD_FRAMES` | `mixer.test.ts` (22), `music-taste.test.ts`, `alarms.test.ts`; `bench/mixer-stall.mjs` |
-| `speaker.ts` | 113 | Streams answer chunks into one playback: synthesize, trim, pause by punctuation, resample to 48 kHz stereo. A stop cuts playback even after synthesis finished. | `Speaker`, `SpeakOptions`, `SpeakResult`, `toDiscordPcm` | `speaker.test.ts` (2) |
+| `speaker.ts` | 167 | Streams answer chunks into one playback: synthesize (or stream, when the voice can), resample to 48 kHz stereo, trim, pause by punctuation. Playback opens once 0.2 s of audio is in; a sentence with no audible audio is skipped. `synthMs` is the time to a sentence's first audio. A stop cuts playback even after synthesis finished. | `Speaker`, `SpeakOptions`, `SpeakResult`, `toDiscordPcm` | `speaker.test.ts` (2), `speech-stream.test.ts` |
 
 What must stay true: sound only plays on the full lead, a new playback opens with 3 silent frames, samples are clamped, not wrapped; music ducks only for her voice, sounds, alarms and wakes, never for people talking to each other. `Mixer.hold()` and `Speaker.warm()` have no production caller.
 
@@ -321,10 +327,11 @@ What must stay true: sound only plays on the full lead, a new playback opens wit
 
 | File | Lines | Purpose | Key exports | Tests |
 |---|---|---|---|---|
-| `server.ts` | 469 | Admin HTTP(S) server and JSON API under `/api/` (health, session, setup/claim, login, logout, status, settings, secrets, check/discord, check/channels, check/llm, check/search, check/hardware, voice-preview, restart, logs, password); static files from `web/`; security headers and CSP; Host check against DNS rebinding; body and per-socket request caps. | `createAdminServer`, `hostAllowed`, `WebDeps` | `web.test.ts` (27), `host-check.test.ts` (1) |
+| `server.ts` | 492 | Admin HTTP(S) server and JSON API under `/api/` (health, session, setup/claim, login, logout, status, settings, secrets, check/discord, check/channels, check/llm, check/search, check/hardware, voice-preview, restart, logs, password); static files from `web/`; security headers and CSP; Host check against DNS rebinding; body and per-socket request caps. | `createAdminServer`, `hostAllowed`, `WebDeps` | `web.test.ts` (31), `host-check.test.ts` (1) |
 | `auth.ts` | 225 | The single admin account (argon2id), one-time setup code, login and session cookies, CSRF token, rate limits with a shared trickle so the owner is never locked out. | `AdminAuth`, `Session`, `validPassword`, `validUsername`, `SETUP_CODE_TTL_MS`, `LIMIT_WINDOW_MS` | `auth.test.ts` (14) |
 | `settings.ts` | 173 | What the admin UI may change (strict schema, no paths), installer-owned paths, presets to brain config, the rule that a stored key only goes to its own preset's address. | `SettingsPatchSchema`, `SettingsPatch`, `CustomLlmSchema`, `applySettings`, `baseConfig`, `settingsView`, `keyRouteProblem`, `InstallPaths` | `web.test.ts`, `manager.test.ts`, `secret-purpose.test.ts` |
-| `checks.ts` | 256 | Wizard checks: Discord token, voice channels, language model (one short test answer with timing and an estimated cost), Tavily, hardware; the LLM presets with prices; the model folder layout; invite permissions. | `checkDiscordToken`, `listVoiceChannels`, `checkLlm`, `checkTavily`, `checkHardware`, `LLM_PRESETS`, `LlmPreset`, `MODEL_LAYOUT`, `INVITE_PERMISSIONS`, `DiscordCheck`, `LlmCheck`, `HardwareCheck` | `web.test.ts`, `stack.test.ts` |
+| `checks.ts` | 449 | Wizard checks in plain words: Discord token (cleans `Bot ` and quotes, names an Application ID, Public Key or Client Secret pasted by mistake, which privileged intents are on), voice channels, the bot's View/Connect/Speak in the picked channel (`checkVoiceAccess`, worked out from roles and overwrites), language model (one short test answer with timing and an estimated cost; a key for the wrong provider is refused before it's sent; no credit, rate limits, outages named), Tavily, hardware; the LLM presets with prices; the model folder layout; invite permissions; the setup-code command for native or Docker. | `checkDiscordToken`, `cleanToken`, `tokenShapeProblem`, `listVoiceChannels`, `checkVoiceAccess`, `checkLlm`, `llmError`, `keyMismatch`, `checkTavily`, `checkHardware`, `setupCodeCommand`, `LLM_PRESETS`, `LlmPreset`, `MODEL_LAYOUT`, `INVITE_PERMISSIONS`, `DiscordCheck`, `LlmCheck`, `HardwareCheck`, `VoiceAccess` | `setup-checks.test.ts` (21), `web.test.ts`, `stack.test.ts` |
+| `explain.ts` | 80 | Plain words for why the voice stack failed to start (11 rules: bad token, missing intents or permissions, models, DNS, EACCES, out of memory, bad config ...), shown on the dashboard, after Start and by `adrian doctor` (`tool.js explain-log`). | `explainStartError`, `lastStartFailure` | `setup-checks.test.ts` |
 | `secrets-file.ts` | 101 | The secrets file (write-only through the API) and atomic JSON and config writes that keep the file mode; a config file that does not parse is never treated as empty. | `SecretsFile`, `SECRET_NAME`, `readJsonFile`, `readConfigFile`, `writeJsonFile`, `writeConfigFile` | `config-file.test.ts` (18), `web.test.ts` |
 
 What must stay true: secrets are write-only over HTTP and never logged; a custom endpoint only ever gets a key pasted for that test; the browser can never set a file path; non-GET requests are same-origin and carry `X-CSRF-Token`; the Host header is an IP, `localhost` or in `server.allowedHosts`. The health JSON is compact and its field names (`ok`, `state`, `voiceReady`, `busy`) are read literally by every installed `adrian` CLI: renaming one breaks updates.
@@ -343,11 +350,11 @@ What must stay true: secrets are write-only over HTTP and never logged; a custom
 
 | File | Tests | Source under test | Covers |
 |---|---|---|---|
-| `alarms.test.ts` | 40 | `features/alarms`, `alarm-tools`, `alarm-tones`, `app/alarm-commands`, `app/alarm-ring`, `voice/mixer` | Words, DST, ring/snooze/missed/offline/restart/move, buttons, firm and math modes, undo, unreadable file, PC copy, tools, tones |
+| `alarms.test.ts` | 45 | `features/alarms`, `alarm-tools`, `alarm-tones`, `app/alarm-commands`, `app/alarm-ring`, `voice/mixer` | Words, DST, ring/snooze/missed/offline/restart/move, buttons, firm and math modes, undo, unreadable file, PC copy, tools, tones |
 | `anthropic.test.ts` | 3 | `brain/anthropic` | Claude message conversion, cache breakpoints, tool-turn replay |
 | `auth.test.ts` | 14 | `web/auth` | Login, setup code and password-change limits |
 | `automemory.test.ts` | 20 | `features/automemory`, `notes`, `brain/orchestrator` | Parsing, cadence, forget races, update/drop, background fallback and pricing |
-| `brain.test.ts` | 20 | `brain/*` | Splitter, `toSpeakable`, session memory, prompt tool lines, streaming, tool round, user isolation, retry, timeout, creator |
+| `brain.test.ts` | 21 | `brain/*` | Splitter, `toSpeakable`, session memory, prompt tool lines, streaming, tool round, user isolation, retry, timeout, creator |
 | `briefing.test.ts` | 13 | `features/briefing`, `weather`, `headlines`, `calendar`, `headsup`, `reminders` | Weather, headlines, private vs shared briefing, first-join briefing |
 | `cached-tool.test.ts` | 1 | `brain/tools` | Cached read-only tools |
 | `calendar.test.ts` | 8 | `features/calendar` | Zones, all-day, floating times, recurrence, URL rules, tool access |
@@ -355,43 +362,52 @@ What must stay true: secrets are write-only over HTTP and never logged; a custom
 | `cloud-voice-defaults.test.ts` | 3 | `config` | Cloud voice speed and character cap follow the model |
 | `commands.test.ts` | 19 | `app/commands` | `/join`, `/leave`, seat rules |
 | `config-file.test.ts` | 18 | `web/secrets-file` (and the CLI) | Atomic writes, modes, broken files, long IDs, `adrian config` and `adrian check` |
-| `config.test.ts` | 3 | `config` | Schema |
+| `config.test.ts` | 4 | `config` | Schema |
+| `confirm-lines.test.ts` | 9 | `features/alarm-tools`, `gamenight`, `taste`, `notes`, `brain/tools` | Tools that say their own confirmation (edit_alarm, alarm_options, game-night join/leave, taste, remember); `asksMore` sends the turn to the model; empty fields the model filled in aren't changes |
 | `controller.test.ts` | 86 | `conversation/controller` | Stops, listening windows, end of turn, repeated names, questions back, owners, quiet while gaming |
 | `digest.test.ts` | 20 | `features/digest`, `gameservers` | Line wording and word limit, "since" words, history paging, Plex fallback |
 | `discordinfo-tools.test.ts` | 80 | `features/discordinfo` | `message_member` limits, read-backs, threads, pings, names; `server_info` |
 | `discordinfo.test.ts` | 5 | `features/discordinfo` | Helpers |
 | `dm-talk.test.ts` | 6 | `brain/orchestrator`, `sessions`, `features/notes`, `automemory` | DMs stay out of public answers and memory |
 | `eager.test.ts` | 3 | `core/eager` | Eager stream draining |
+| `early-listen.test.ts` | 18 | `listen/pipeline` | The early listen at PCs: reuse only on identical samples, heard event identical with and without it, dropped on resumed speech, no decode for a second pause or speech being joined, window alignment, cancels |
 | `fallback.test.ts` | 9 | `brain/fallback` | When to switch, stall deadline, pictures |
 | `gamenight.test.ts` | 30 | `features/gamenight` | Presence or not, pings, cooldowns, order guards, sign-ups, channel choice |
 | `games.test.ts` | 5 | `features/games` | Party games |
 | `gameservers.test.ts` | 3 | `features/gameservers` | Ping parsing |
+| `get.test.ts` | 12 | `packaging/get.sh` (run in bash) | ARM/no-systemd refusal before anything, packages asked for, newest release with its checksum, rate-limit fallback, update instead of install, `--version`, `--reinstall` |
 | `handoff-discord.test.ts` | 7 | `features/handoff-discord`, `handoff` | Message watching, gating, closed schemas |
 | `handoff.test.ts` | 49 | `features/handoff`, `music` | Links memory, "which one", others' links, `music_to_pc` rights, `pc_to_call`, `tell_call` |
 | `headsup.test.ts` | 19 | `features/headsup`, `digest` | Gate, quiet wait, opt-out, servers that went down, `whats_new` |
 | `helix-config.test.ts` | 7 | `config`, `core/logger`, `brain/tool-router` | Helix URL rules, bearer-token redaction |
 | `host-check.test.ts` | 1 | `web/server` | Host header check |
 | `identity.test.ts` | 4 | `app/identity` | Creator lines, impostors, gender lines |
+| `install.test.ts` | 18 | `packaging/install.sh` (run in bash) | Every problem listed at once, `--check`, re-run over a live install keeps port and LAN, downgrade refused, foreign port refused, health accepts only her answer, cut-off downloads |
 | `intents.test.ts` | 30 | `conversation/intents` | Stop, hold and weak phrases, other languages, stop as an order, bare "play" |
 | `language.test.ts` | 3 | `speech/language` | English check, reply language, Spanish |
+| `latency-harness.test.ts` | 1 | `app/stack`, `listen/pipeline` | Off unless `LATENCY_HARNESS=1`: end of speech to first audio through the real stack with stubbed models at prod delays (`LATENCY_RUNS`, `LATENCY_STT_MS`); needs Silero and Kokoro (`ADRIAN_MODELS`) |
 | `ledger.test.ts` | 5 | `limits/usage-ledger` | Caps, hourly limit, owner exemption |
 | `links.test.ts` | 7 | `features/links` | Pasted links |
+| `local-voice.test.ts` | 5 | `app/local-voice` | Eager calibration when Kokoro is the English voice, nothing loaded when the cloud is primary, a failing cloud still gets the local voice, missing-model warning |
 | `loudness.test.ts` | 3 | `audio/loudness` | BS.1770 loudness, gain, limiter |
 | `manager.test.ts` | 14 | `app/manager`, `web/settings` | Start from config, failed start, retry, setup readiness |
 | `mature.test.ts` | 3 | `brain/mature` | Mature mode lines |
 | `mcp.test.ts` | 11 | `features/mcp` | JSON/SSE, sessions, paging, token errors, allow list, owners only, confirmations, reconnect |
 | `media.test.ts` | 4 | `features/media` | Read-only, each key to its own app |
+| `memory.test.ts` | 14 | `app/memory`, `app/manager` | meminfo parsing, the fit rule against real numbers, waiting until memory frees, loading anyway after 15 min, restarts skip the check |
 | `mixer.test.ts` | 22 | `voice/mixer` | Ducking, lead, stalls, clipping, wake duck |
 | `music-commands.test.ts` | 47 | `app/music-commands` | Definitions, cards, `/play`, `/music`, buttons, typed commands |
-| `music-lookups.test.ts` | 140 | `features/music` | Lookups, matching, misheard names, autoplay, stalls, YouTube video |
+| `music-lookups.test.ts` | 141 | `features/music` | Lookups, matching, misheard names, autoplay, stalls, YouTube video |
 | `music-polish.test.ts` | 22 | `features/music` | Lists, autoplay, who asked, unplayable songs, quiz clips, bare "play X" |
 | `music-requests.test.ts` | 14 | `features/music`, `conversation/intents` | Local orders vs vague requests |
+| `music-speed.test.ts` | 29 | `features/music` | Early yt-dlp start over stdin, the direct video search and its fallback, album and playlist ids, versions, other scripts, genres, lead wait, soft g, joined words |
 | `music-taste.test.ts` | 28 | `features/music`, `taste`, `voice/mixer` | Artist requests, Deezer top songs, taste |
 | `music.test.ts` | 15 | `features/music` | Prompt, titles, local commands, Plex, player |
 | `notes.test.ts` | 29 | `features/notes` | Privacy by place, full list rules, old file format |
 | `orchestrator-tools.test.ts` | 39 | `brain/orchestrator`, `satellite/tools`, `features/reminders` | Tool rounds, `speak`, fillers, stable prefix, stops, `asks`, planted orders, untrusted wrapping |
 | `packaging.test.ts` | 52 | `packaging/*` (run in bash) | Pinned downloads, restore, update and rollback, auto-update, Node swap, `package.sh`, unit file, help text |
 | `patch.test.ts` | 1 | `scripts/patch-voice.mjs` | DAVE patch applies |
+| `pc-house.test.ts` | 6 | `satellite/tools` | House orders never reach the PC (connected or not), PC orders with house words still do, look-alikes (DoorDash, GarageBand, "the doors on youtube") |
 | `pc-senses.test.ts` | 22 | `satellite/*`, `brain/images`, providers | Pictures, health, clipboard and screen, log redaction, private turns |
 | `pcm.test.ts` | 6 | `audio/pcm` | PCM helpers |
 | `pending-yes.test.ts` | 17 | `brain/tools` | Yes on the very next turn only |
@@ -402,23 +418,28 @@ What must stay true: secrets are write-only over HTTP and never logged; a custom
 | `redact.test.ts` | 2 | `transport/discord` | Voice debug redaction (media key, token, session id) |
 | `reminders.test.ts` | 21 | `features/reminders` | DST, delivery retry and give-up, PC room, read-back |
 | `room.test.ts` | 2 | `conversation/room` | Room talk |
-| `satellite.test.ts` | 59 | `satellite/server`, `connection`, `devices`, `tools` | Pairing, lockout, frames, bad frames, PC tools, URL rule, search, power yes, cancel window |
+| `satellite.test.ts` | 63 | `satellite/server`, `connection`, `devices`, `tools` | Pairing, lockout, frames, bad frames, PC tools, URL rule, search, power yes, cancel window |
 | `secret-purpose.test.ts` | 5 | `config`, `web/settings` | A setting only names a key meant for its job |
 | `servercontrol.test.ts` | 39 | `features/servercontrol`, `helix`, `gameservers` | Helix client and control flows |
+| `setup-checks.test.ts` | 21 | `web/checks`, `web/explain` | Token shape and cleaning, intents, channel access from roles and overwrites, wrong-provider keys, no credit, rate limits, start-failure explanations, setup-code command |
+| `shutdown.test.ts` | 9 | `app/shutdown` | Running vs starting vs setup/failed, a hanging or failing stop, a second signal, re-raise on Linux and Windows |
 | `sounds.test.ts` | 2 | `features/sounds` | Sound effects |
 | `speaker.test.ts` | 2 | `voice/speaker` | Stop after synthesis, plays to the end |
+| `speech-stream.test.ts` | 12 | `speech/speechify`, `speech/piper`, `voice/speaker`, `audio/*` | Streamed sentences: same samples as the whole-sentence path for any chunking, fallback before the first audio, a break mid-sentence, split 16-bit samples, timeouts |
+| `speech-text.test.ts` | 9 | `brain/speech-text` | `forSpeech` rules, links said as their site, emoji removed, splitter abbreviations, applying it twice |
 | `speechify.test.ts` | 20 | `speech/speechify` | API, cache, budget, SSML, warm-up, broken sockets |
-| `stack.test.ts` | 156 | `app/stack` and most of `src/` | The assembled bot: costs, PC requests, stops, follow-ups, rooms, timers, notes, DMs, quiz, alarms |
+| `stack.test.ts` | 169 | `app/stack` and most of `src/` | The assembled bot: costs, PC requests, stops, follow-ups, rooms, timers, notes, DMs, quiz, alarms |
 | `steam.test.ts` | 49 | `features/steam` | Accounts, caches, limits, every answer shape |
 | `textchat-read.test.ts` | 25 | `app/textchat` | History format, follow-ups, reply limits, pings |
 | `textchat.test.ts` | 2 | `app/textchat` | Reply splitting |
 | `tool-router.test.ts` | 4 | `brain/tool-router` | Routing groups |
 | `transport-kick.test.ts` | 4 | `transport/discord` | Kicks and own leave |
-| `transport-reconnect.test.ts` | 20 | `transport/discord` | Disconnects, stuck connections, long outages, failed joins |
+| `transport-reconnect.test.ts` | 26 | `transport/discord` | Disconnects, stuck connections, long outages, failed joins |
 | `turn-hold.test.ts` | 44 | `listen/pipeline`, `speech/sherpa` | Smart Turn hold and join, `endsDangling`, one heard per clip |
+| `update-safety.test.ts` | 10 | `packaging/adrian` (run in bash) | The update lock, the cut-off update note (keep, roll back or undo), the disk check, detaching from the terminal (Linux only: flock, setsid) |
 | `wake.test.ts` | 7 | `wake/text-wake` | Strict and loose wake, renamed bot, other languages |
-| `web-ui.test.ts` | 29 | `web/app.js` | Ended sessions, failing buttons, lost contact, wizard messages |
-| `web.test.ts` | 27 | `web/*`, `app/manager`, `core/logger` | Admin API, write-only secrets, key routing, paths, CSRF, headers |
+| `web-ui.test.ts` | 36 | `web/app.js` | Ended sessions, failing buttons, lost contact, wizard messages |
+| `web.test.ts` | 31 | `web/*`, `app/manager`, `core/logger` | Admin API, write-only secrets, key routing, paths, CSRF, headers |
 
 No unit test loads a real model; `speech/kokoro.ts`, `speech/piper.ts`, `speech/whisper.ts` and the real Parakeet path are checked by benches.
 
@@ -440,12 +461,12 @@ Benches answer "does this still work well with the real thing": real models, rea
 | `alarm-ring.mjs` | Real mixer plus `ringIn` on the wall clock: frames keep pace, memory stays flat | none |
 | `alarm-tones.mjs` | Renders each built-in tone for 20 s to WAV, for listening and loudness checks | none |
 | `alarm-words.mjs` | Stop, snooze and "I'm up" heard over every tone; tones alone give no alarm words | local models |
-| `answer-length.mjs` | Sentences and words of real answers; `--real` uses the production prompt and tools (partly out of step with `stack.ts`: no alarm tools or rules) | model key |
-| `asr-corpus.mjs` | Builds the speech-to-text shootout corpus (synthetic PC phrases with desk-mic damage, public corpora) | Kokoro, ffmpeg, optional Speechify key, downloaded corpora |
-| `asr-shootout.mjs` | Runs one speech-to-text model over the corpus | local models; `groq-*` models need a Groq key |
-| `asr-score.mjs` | Word error rate per set, key-word hit rate, latency | none |
+| `answer-length.mjs` | Sentences and words of real answers; `--real` uses the production prompt and tools from `prod-kit.mjs` | model key |
 | `asr-bark.py`, `asr-granite.py` | Other ASR models over the same corpus | Python venv (Granite needs torch) |
+| `asr-corpus.mjs` | Builds the speech-to-text shootout corpus (synthetic PC phrases with desk-mic damage, public corpora) | Kokoro, ffmpeg, optional Speechify key, downloaded corpora |
 | `asr-hotwords.py` | Writes a hotwords file for sherpa biasing | Python |
+| `asr-score.mjs` | Word error rate per set, key-word hit rate, latency | none |
+| `asr-shootout.mjs` | Runs one speech-to-text model over the corpus | local models; `groq-*` models need a Groq key |
 | `asr-speed.mjs` | Parakeet speed and memory | local model |
 | `cache-check.mjs` | Prompt-cache reads and writes over a conversation | model key |
 | `claude-vs.mjs` | Claude models vs Groq on the real prompt: first chunk, total, tokens, estimated cost | Anthropic and Groq keys |
@@ -453,28 +474,49 @@ Benches answer "does this still work well with the real thing": real models, rea
 | `creator-check.mjs` | The model credits the configured creator and refuses impostors | model key |
 | `desk-followup.mjs` | Follow-ups at a PC without the name are answered; show and game audio stays `SILENT` | model key |
 | `english-check.mjs` | Which utterances trigger the Whisper second pass | local models |
+| `everyday.mjs` | 30 household voice questions on the production prompt: right tool or none, content, length, no "Sure!" openers; `--holdout` (19 more), `--long` (where short is wrong), `--keep` (safety warnings and lists asked for) | model key |
 | `first-audio.mjs` | Time to first audio, whole first sentence vs first clause (the `stack.ts` comment cites medians of 1.26 s vs 1.39 s, so the whole sentence was kept) | model and Speechify keys |
+| `home-pc.mjs` | House orders (doors, lights, the TV ...) at the desk and in the call never reach the PC; PC orders with house words still do | model key |
+| `knows.mjs` | Notes asked about in a call, remember, search answers | model key |
 | `lang-e2e.mjs` | Per language: Parakeet, English check, Whisper, reply, that language's voice | configured brain key, local models |
 | `level-check.mjs` | Writes exactly what goes to Discord per sentence, for an ffmpeg loudness and true-peak check | Kokoro |
 | `link-check.mjs` | What pasted links would play | network, yt-dlp |
 | `llm-check.mjs` | Time to first token, first speakable chunk, total, tool use, cost | configured brain key |
+| `mem-start.mjs` | Memory at start per component (`--cloud`: the cloud voice primary; `--dist` measures another build; `--json`) | local models (`node --expose-gc bench/mem-start.mjs <models> --cloud`) |
 | `memory-check.mjs` | Roster, room talk, automatic memory and note privacy | model key |
 | `memory-update.mjs` | Automatic memory rewrites contradicted notes and ignores chatter and other people's news | model key |
+| `meter.mjs` | Helper (`node --import ./bench/meter.mjs bench/x.mjs ...`): per call tokens, cost and first-text time, per answer words and model calls, for any bench (`METER_OUT`) | (imported) |
 | `mixer-stall.mjs` | Music through the mixer into a Discord-like player under event-loop stalls | network, yt-dlp |
 | `multilang.mjs` | Speech per language, Whisper small vs turbo accuracy and speed | local models |
 | `music-check.mjs` | Real YouTube through ffmpeg and the mixer with a voice in the middle | network, yt-dlp, ffmpeg |
+| `music-compare.mjs` | Compares two `music-corpus.mjs` runs | none |
+| `music-corpus.json` | 63 judged song requests by class (titles, artists, misheard, versions, non-English, genres, ambiguous); `paired` marks the 16-request subset | (data) |
+| `music-corpus.mjs` | The music corpus through the real `classifyMusic`/`playNamed` path: hit rate, time to stream URL and first audio, lookups per request (`--routes` without network, `--record`/`--replay`) | network, yt-dlp, ffmpeg |
 | `music-e2e.mjs` | Model to `play_music` to real lookups | model key, network |
 | `music-follow-up.mjs` | Follow-ups without the name that start like music orders | model key, sherpa |
 | `music-intent.mjs` | Indirect music requests reach the music tools | model key |
 | `music-kinds.mjs` | Every request kind against real YouTube | network |
+| `music-paired.mjs` | Two builds alternating on the paired subset | network, yt-dlp, ffmpeg |
 | `music-search.mjs` | What YouTube search picks for a query | network |
 | `natural-samples.mjs` | Renders one answer across Kokoro voices (used to pick the default voice) | Kokoro |
 | `pc-orders.mjs` | PC orders: right PC tool and arguments with a stub PC, short confirmations, power actions in two turns | model key |
+| `prod-kit.mjs` | Helper: the live bot's tools and rule lines with stubs (`pc: 'connected' / 'absent'`, `runPc`, `onPc`), for the brain benches | (imported) |
+| `prompt-size.mjs` | The cached prompt prefix in tokens (`count_tokens`, free), `--each` for every tool and rule | model key |
+| `sabrina-render.mjs` | Renders changed lines in the Speechify voice, spaced 0.7 s apart | Speechify key (spends characters) |
 | `server-info-check.mjs` | `server_info` read-only against a real Discord server, then tool choice | model key, Discord token (sends nothing) |
+| `sidetalk-score.mjs` | Scores `dist/bench/sidetalk-bench.js` runs: wake recall, false wakes, CPU per segment, transcripts and decisions that differ | none |
 | `slow-speaker.mjs` | A long answer with a slow voice is not cut off by the time limit | model key |
 | `sound-check.mjs` | Sound-effect search and `play_sound` tool use | model key, network |
+| `speak-first-lines.json` | The 12 lines for `speak-first.mjs` | (data) |
+| `speak-first.mjs` | Time to first heard audio in the cloud voice for `speak-first-lines.json` (12 lines over 40 characters) | Speechify key (spends characters) |
+| `speech-changed.mjs` | Lines whose spoken text differs between two builds, for `sabrina-render.mjs` | none |
+| `speech-lines.json` | 80 lines (tool lines and model-style lines; every 4th held out) with their reference words, for `speech-words.mjs` | (data) |
+| `speech-score.mjs` | Word error rate helper for the speech benches | (imported) |
+| `speech-wavs.mjs` | Parakeet over rendered WAVs (the Sabrina check) | local models |
+| `speech-words.mjs` | Kokoro says each line, Parakeet hears it: word error rate of the spoken text (`--oracle` for the floor) | local models |
+| `stream-level.mjs` | Loudness of streamed cloud-voice sentences against the target | Speechify key (spends characters) |
 | `stt-compare.mjs` | Local Parakeet vs Groq whisper-large-v3-turbo on PC phrases with noise | local models, Groq key |
-| `taste-orders.mjs` | Taste requests, artist requests, saved opinions, Deezer to YouTube Music | model key, network |
+| `taste-orders.mjs` | Taste requests, artist requests, saved opinions; Deezer to YouTube Music lookups only with `--live` | model key (network with `--live`) |
 | `text-followup.mjs` | Text chat uses history, answers follow-ups, stays `SILENT` for side talk | model key |
 | `ttft-survey.mjs` | Time to first token across models on one OpenAI-compatible endpoint (`EXTRA='{...}'` adds body fields) | endpoint key |
 | `tts-speed.mjs` | Kokoro speed and memory | Kokoro |
@@ -490,11 +532,12 @@ All of this ships inside the release bundle except `package.sh`. The [install gu
 
 | File | Lines | Purpose |
 |---|---|---|
-| `install.sh` | 243 | Native installer and uninstaller (root): preflight (x86_64, glibc, systemd, 3 GB free under `/opt`, RAM warning under 4 GB, ffmpeg warning), `adrian` system user, directories with symlink refusal, pinned Node and models, release unpacked to `/opt/adrian/releases/<v>`, `current` symlink, first config, unit install, health wait, setup code. Options `--bundle`, `--yes`/`-y`, `--port`, `--lan`, `--no-start`, `--uninstall`, `--keep-data`, plus `--mode native` and `--profile recommended` (the only values accepted so far). Everything it creates is recorded in `/var/lib/adrian/install-manifest.json`, which `--uninstall` reads. |
-| `downloads.sh` | 103 | Sourced, not run. Pinned downloads with SHA-256 (Node 22.23.4, Silero VAD, Parakeet v3, Whisper small, Piper Vietnamese, Kokoro, Smart Turn v3.2, yt-dlp 2026.08.19), HTTPS and TLS 1.2 only, gives up on a stall but never on total time, atomic Node swap, `refuse_symlinks`. |
-| `upgrade-prep.sh` | 49 | Run from the new release by `adrian update`: models, service file (keeps the old one), update units, Node. |
+| `install.sh` | 411 | Native installer and uninstaller (root): preflight that lists every problem at once and changes nothing until all pass (x86_64, glibc 2.28+, systemd with the WSL fix, free space under `/opt` and `/var/lib` together on a shared disk, the download hosts reachable, missing tools as exact apt or dnf packages, RAM warning under 4 GB, ffmpeg warning, a `--port` another program holds, an older bundle than the installed one), `adrian` system user, directories with symlink refusal, pinned Node and models, release unpacked to `/opt/adrian/releases/<v>`, `current` symlink, first config, unit install, health wait (only her own answer counts; a lost port or out-of-memory is named from the journal), setup code. Safe to run again: keeps the config, keys, port and LAN setting, and restarts the service on the new files. Downloads go under `/opt/adrian/.install-*`, cleared by the next run. Options `--bundle`, `--yes`/`-y`, `--check` (check only, no root needed), `--port`, `--lan`, `--no-lan`, `--no-start`, `--allow-downgrade`, `--uninstall`, `--keep-data`, plus `--mode native` and `--profile recommended` (the only values accepted so far). Everything it creates is recorded in `/var/lib/adrian/install-manifest.json`, which `--uninstall` reads. |
+| `get.sh` | 145 | One-step install, fetched from `main` with curl: refuses ARM and no-systemd machines first, installs missing system packages after asking (`--yes`, `--no-packages`), finds the newest release (falls back to the release page's redirect when the GitHub API is rate-limited), downloads the bundle with its `.sha256` (refused without one), checks it and runs `install.sh`. On an installed machine it runs `adrian update` instead (`--reinstall` repairs). `--version X.Y.Z` pins a release; other options go to the installer. | 
+| `downloads.sh` | 107 | Sourced, not run. Pinned downloads with SHA-256 (Node 22.23.4, Silero VAD, Parakeet v3, Whisper small, Piper Vietnamese, Kokoro, Smart Turn v3.2, yt-dlp 2026.08.19), HTTPS and TLS 1.2 only, gives up on a stall but never on total time, atomic Node swap, `refuse_symlinks`. |
+| `upgrade-prep.sh` | 50 | Run from the new release by `adrian update`: models, service file (keeps the old one), update units, Node. |
 | `package.sh` | 41 | Builds `adrian-voice-<v>-linux-x64.tar.gz` and its `.sha256` on Linux x86_64. Refuses to build unless typecheck and tests pass; sets `ONNXRUNTIME_NODE_INSTALL=skip`; strips sources, tests, build folders and non-Linux onnxruntime binaries. |
-| `adrian` | 337 | The `adrian` management CLI (bash): status, logs, start/stop/restart, url, setup-code, reset-admin, secret, check, voice, config, satellite, doctor, backup, restore, update, auto-update, rollback, uninstall, version. Releases come from `ADRIAN_UPDATE_REPO` (default: this repo). |
+| `adrian` | 465 | The `adrian` management CLI (bash): status, logs, start/stop/restart, url, setup-code, reset-admin, secret, check, voice, config, satellite, doctor, backup, restore, update, auto-update, rollback, uninstall, version. Releases come from `ADRIAN_UPDATE_REPO` (default: this repo). `update` at a terminal runs in its own session (`setsid`) and the terminal follows `/opt/adrian/update.log`, so a dropped SSH connection or Ctrl+C can't stop it halfway (`ADRIAN_DETACH=0` runs it in the foreground); `flock` on `/opt/adrian/update.lock` keeps the timer, a manual update and `rollback` apart; it needs 500 MB free; `/opt/adrian/update-in-progress` lets the next update, rollback or hourly check finish or undo an update that was cut off. `doctor` explains a failed start, checks file ownership (prints the `chown`) and that discord.com and github.com can be reached. |
 | `adrian-voice.service` | 63 | Main systemd unit: user `adrian`, `Restart=always`, `CPUQuota=400%`, `MemoryHigh=4G`, `MemoryMax=5G`, full hardening (`ProtectSystem=strict`, empty capability set, `SystemCallFilter=@system-service`, ...). `MemoryDenyWriteExecute` is off on purpose (V8 JIT). |
 | `adrian-update.service` | 13 | Oneshot `adrian update --auto`, low priority, 2 h timeout. |
 | `adrian-update.timer` | 11 | 15 min after boot, then hourly, random delay up to 10 min. |
@@ -519,7 +562,7 @@ Served by `src/web/server.ts` from this folder. Plain browser JavaScript, no fra
 | File | Lines | Purpose |
 |---|---|---|
 | `index.html` | 19 | Shell: header, notice bar, `#app`, loads `app.js` as a module; sets `<meta name="color-scheme" content="light dark">`. |
-| `app.js` | 630 | The whole page: `h()` element helper, `api()` fetch wrapper (adds `X-CSRF-Token`, handles an ended session), claim view, login view, the 7-step wizard (Check, Discord, Language model, Search, Voice, Limits, Finish), the dashboard tabs (status, settings, keys, logs, account). |
+| `app.js` | 680 | The whole page: `h()` element helper, `api()` fetch wrapper (adds `X-CSRF-Token`, handles an ended session), claim view, login view, the 7-step wizard (Check, Discord, Language model, Search, Voice, Limits, Finish), the dashboard tabs (status, settings, keys, logs, account). |
 | `style.css` | 92 | Styles as CSS variables, light and dark (`@media (prefers-color-scheme: dark)`). |
 
 Tested by `web-ui.test.ts` (the real file in a fake DOM). Known key names for the Keys tab are listed in `app.js` (`dashKeys`). Static files are cached in memory until the service restarts.
@@ -529,8 +572,8 @@ Tested by `web-ui.test.ts` (the real file in a fake DOM). Known key names for th
 | Path | Purpose |
 |---|---|
 | `test-env/Dockerfile`, `entry.sh` | A systemd-as-PID-1 container (default base ubuntu:24.04) for installer tests. |
-| `test-env/clean-install-test.sh` | Fresh install, checks (service, permissions, loopback UI, setup code, voice preview under the unit's hardening, clean failure with fake credentials, no secrets in the journal), backup, uninstall with a file and user diff. |
-| `test-env/update-test.sh` | Update, automatic rollback of a broken release, manual rollback, bad checksum and same version refused. It assumes a base bundle version of `0.1.0`, so it needs updating before it works with a real bundle. |
+| `test-env/clean-install-test.sh` | Fresh install, checks (service, permissions, loopback UI, setup code, voice preview under the unit's hardening, clean failure with fake credentials, no secrets in the journal), backup, `install.sh --check`, doctor's "what to do" for the fake-token start, a re-run over the live install (keeps port, LAN setting, admin account and keys), uninstall with a file and user diff. |
+| `test-env/update-test.sh` | Update, automatic rollback of a broken release, manual rollback, bad checksum and same version refused, no update note or temp folders left behind, the update lock. Works with any base bundle version. |
 | `test-env/upgrade-0.7-test.sh` | The historic 0.6.x to 0.7.x upgrade path. |
 | `test-env/compose-test.sh` | Docker Compose mode on the host's Docker (project `adrian-cit`, port 8795). |
 | `assets/test-clip.ogg` | Clip for the proof-of-concept runner. |

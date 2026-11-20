@@ -64,7 +64,9 @@ Everything else goes to the language model.
 
 Ask anything: "what's the capital of Australia?", "how do I get rid of hiccups?", "who won the game last night?".
 
-- Answers are short by design: most are under twenty words. Ask for detail if you want more.
+- Answers are short by design: most are one sentence under twenty words, and how-to or why answers two short sentences with the main step, not every option. No offers or questions back unless it needs your answer, and when it can't do something it says so in a few words. Ask for detail ("in detail", "tell me more") if you want more.
+- Short never cuts a safety warning that matters (chemicals that mustn't be mixed, medicine doses, electricity, gas), and a list you asked for (your alarms, timers, reminders, the queue) gets every item.
+- Search answers are said as plain facts, going by the newest result. An answer from an older result says its day.
 - For anything recent (news, scores, prices, release dates) it searches the web first (`web_search`, needs a Tavily key). Without search it says its information may be out of date.
 - It treats web pages and anything else a tool returns as data, never as instructions.
 - It only does what its tools can do. It can't act on Discord, on the server or on anyone's accounts beyond the features on this page.
@@ -80,6 +82,8 @@ Ask anything: "what's the capital of Australia?", "how do I get rid of hiccups?"
 | "I love Frank Ocean", "I hate country", "forget that I like country" | It remembers (or forgets) it for next time. |
 | "Play the whole Graduation album" | The album in order. |
 | "Put on something chill for a late night drive" | Finds a matching public playlist and shuffles it. |
+| "Play some jazz", "play 90s r&b", "old school hip hop" | A bare genre or era plays a playlist, not a song with that name. For a song called "Jazz", say its artist too. |
+| "Play Tems Free Mind tiny desk", "Someone Like You live at the Royal Albert Hall", "Blinding Lights sped up" | A version said by name (tiny desk, live, acoustic, unplugged, remix, sped up, slowed, session, cover) plays that performance, not the studio song. Whole sets like a Tiny Desk concert play in full. |
 | "Play a playlist like that last song" / "more like this" | YouTube Music radio based on what was playing. |
 | "Play the newest Joe Rogan episode" | The newest playable episode of that podcast. |
 | "Play 10 hours of rain sounds" | Any YouTube video's audio, any length. |
@@ -265,10 +269,10 @@ Alarms and timers ring with a sound until you stop them, the way an alarm clock 
   - While you're in a game at your PC (quiet while gaming), a reminder set there waits, with its DM, until the game ends.
   - If it was offline when one was due, the reminder comes late, saying so.
 - **Notes:**
-  - "Remember that I'm allergic to peanuts", "forget my birthday", "forget everything". Up to 30 notes per person.
+  - "Remember that I'm allergic to peanuts", "forget my birthday", "forget everything". Up to 30 notes per person. A plain "remember ..." just gets "Got it."
   - It also notes useful facts on its own every few answers in voice (`autoMemory`), and keeps them true: "I quit Valorant" rewrites "plays Valorant" instead of keeping both, and a plan that was called off goes. Notes you asked it to remember are only reworded, never dropped by themselves.
   - Your notes are only ever used when **you** talk to it. It never tells anyone else what's in them.
-  - In a server, where others can hear or read the answer, it only uses notes you told it in that server, or the ones your own words ask about. In a DM or at your PC it uses them all. What it picked up by itself, and notes saved before this rule, count as private.
+  - In a server, where others can hear or read the answer, it only uses notes you told it in that server, or the ones your own words ask about ("where do I live?" finds "lives in ...", "what's my job?" finds "works at ..."). In a DM or at your PC it uses them all. What it picked up by itself, and notes saved before this rule, count as private.
   - "Forget" says how many notes went, not which ones. "Forget everything" also clears what it remembers of your recent conversation.
   - What people say out loud in the call is shared context: it can refer to it.
 - **Short-term memory:** it remembers your last 4 to 8 exchanges (up to 16 messages, cut back to the newest 8 when full) for an hour of quiet, shared between the call, your PC and server text chat. DMs have their own. A restart clears it.
@@ -280,11 +284,13 @@ With the PC app connected (setup: [pc-app.md](pc-app.md)), you can talk to it at
 **Talking to it there**
 
 - Say "Hey Adrian, …", hold **Ctrl+Alt+Space** and talk (no name needed), or type in the window. The window's stop button stops it.
-- At a PC the follow-up window is 20 seconds, and talking over it for 0.6 seconds cuts it off.
+- At a PC the follow-up window is 20 seconds, and talking over it for 0.6 seconds cuts it off. It starts working out what you said during the pause after you stop, so answers there come sooner when you say a request in one go.
 - **In its Discord call too?** While you're in its voice channel and not muted, the call answers instead of the PC, and the PC window shows "Answering in the Discord call." Push-to-talk, typing, and talking while muted in Discord stay with the PC.
 - **Quiet while gaming:** while a game is in front, every turn needs the name, push-to-talk or typing. Answers are one short sentence, and reminders set at that PC wait until the game ends. Timers and alarms still ring. "Quiet while I play" in the PC app's settings turns it off for that PC. Server-wide it's `satellite.quietWhileGaming` (on by default; `false` turns it off for every PC).
 
 **What it can do there**
+
+Orders about the house ("lock the front door", "shut the garage", "turn the TV down", "kill the lights", "turn the heat up") never reach your PC, even said at the PC. With home control set up they go there; otherwise she says she can't. Name the PC when you mean it ("turn off my monitors", "lock my PC, I'm heading out the front door"), and "pause the music, someone's at the door" still pauses the music. A TV show or Apple TV isn't the TV.
 
 | Area | Say | Notes |
 |---|---|---|
@@ -293,7 +299,7 @@ With the PC app connected (setup: [pc-app.md](pc-app.md)), you can talk to it at
 | Web, YouTube, Spotify, folders | "Open YouTube", "find the Firefox download page", "play lofi beats on YouTube", "search Spotify for Blinding Lights", "open my downloads" | A specific page is found with a web search, else a Google results page opens. Only public web pages open: never this PC or the home network. |
 | Media | "Pause", "skip", "what's playing?", "pause Spotify", "pause the YouTube tab" | Whatever is playing on the PC, through Windows' media controls. |
 | Volume | "Turn it down", "turn my music down", "set Spotify to 40", "mute Discord", "set the volume to 30", "what's the volume?" | "Turn it down" and "my music" lower only what you're listening to, never your game or voice chat. The master volume changes only when you ask for the PC's own volume. |
-| Power | "Lock my PC", "turn the screens off", "put the PC to sleep", "restart my PC", "shut down the computer" | Sleep, restart and shutdown ask first ("Restart the PC?") and need your own yes as your next words. Restart and shutdown wait 30 seconds; "cancel" or "stop" calls them off. |
+| Power | "Lock my PC", "turn the screens off", "put the PC to sleep", "restart my PC", "shut down the computer" (lock is the PC's sign-in screen and screens off its monitors, never a door or the TV) | Sleep, restart and shutdown ask first ("Restart the PC?") and need your own yes as your next words. Restart and shutdown wait 30 seconds; "cancel" or "stop" calls them off. |
 | PC health | "How's my PC doing?", "what's using all my memory?", "why is my PC slow?", "how hot is my GPU?", "how much space is left?" | A verdict first, then only the numbers that matter. GPU details need an NVIDIA card. |
 | Clipboard | "Summarize what I copied", "translate what I copied", "read what I copied" | Only when you ask. Up to 8,000 characters. Anything a password manager marked is refused. |
 | Screen | "What's this error?", "what does this window say?", "look at my screen" | Only when you ask. A picture of the window in front, or a named one; the whole monitor only if you ask for it. Never of games or full-screen apps. |

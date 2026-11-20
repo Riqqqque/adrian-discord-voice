@@ -74,11 +74,11 @@ For the file-by-file list see [codebase-map.md](codebase-map.md).
 | What | Where it runs | Notes |
 |---|---|---|
 | Event loop (main thread) | the Node process | Discord gateway and voice, the mixer's 20 ms frame clock, the satellite WebSocket, the admin HTTP server, Silero VAD (small 512-sample windows, synchronous), the controller, the orchestrator and tool calls. Anything that blocks it for more than the mixer's 160 ms lead makes music skip. |
-| sherpa-onnx native calls | native threads, off the event loop (`decodeAsync`, `generateAsync`) | Parakeet and Whisper (`listen.asrThreads`, default 4) and Kokoro and Piper (`voice.threads`, default 4) each have their own one-job-at-a-time queue. All rooms share these queues, but different engines can run at once (a Kokoro job beside a Piper job, a Parakeet decode beside a Whisper one). |
+| sherpa-onnx native calls | native threads, off the event loop (`decodeAsync`, `generateAsync`) | Parakeet (`listen.asrThreads`, default 2), Whisper (`listen.whisperThreads`, default 4) and Kokoro and Piper (`voice.threads`, default 4) each have their own one-job-at-a-time queue. onnxruntime's worker threads spin while they wait, so extra threads cost CPU even when they barely speed a decode up (`src/bench/sidetalk-bench.ts`). All rooms share these queues, but different engines can run at once (a Kokoro job beside a Piper job, a Parakeet decode beside a Whisper one). |
 | Smart Turn worker | `worker_threads` (`src/speech/smart-turn-worker.ts`) | End-of-turn model for PC rooms. onnxruntime with 1 intra-op and 1 inter-op thread. Moved off the main thread on 2026-11-08 (commit 43b548a): it had blocked the event loop for up to 172 ms per PC segment; on the worker it blocks it for 1 ms. |
 | Calendar worker | `worker_threads` (`src/features/calendar-worker.ts`) | Expands iCal recurrences. Started on first use, stopped after 5 idle minutes. A busy calendar took about half a second on the main thread. |
 | ffmpeg | child process | One per playing track, quiz clip, sound effect or alarm clip being saved. Killed with SIGKILL. |
-| yt-dlp | child process | One per lookup, 25 s timeout. Stopped with SIGTERM, never SIGKILL, so it can clean its temp folder. |
+| yt-dlp | child process | One per lookup, 25 s timeout. The stream lookup's yt-dlp starts beside the search and waits for the video address on stdin (`--batch-file -`), so Python's start-up is hidden behind the search; if nothing is found, stdin closes and it exits without asking YouTube anything. Runs with `--encoding utf-8`. Stopped with SIGTERM, never SIGKILL, so it can clean its temp folder. |
 | Periodic timers | event loop | Alarm clock tick 1 s, reminders tick 1 s, recap tick 60 s, quiet-while-gaming sweep 30 s, empty-call check 30 s (music stops after 2 min, leaves a non-home channel after 10 min), alarm list push to PCs hourly, satellite ping 30 s. |
 | Auto-update | separate systemd unit (`adrian-update.timer`) | Only when `adrian auto-update on`. Hourly, skips while `busy` ([install.md](install.md)). |
 
@@ -89,14 +89,14 @@ The systemd unit (`packaging/adrian-voice.service`) runs the process as user `ad
 `src/app/main.ts`:
 
 1. Paths: config from `argv[2]`, else `ADRIAN_CONFIG`, else `/etc/adrian/config.json`. Secrets from `secretsFile` in the config, else `ADRIAN_SECRETS`, else `secrets.env` next to the config. State from `ADRIAN_STATE`, else `/var/lib/adrian`. Models from `ADRIAN_MODELS`, else `<state>/models`.
-2. Usage ledger, admin auth, stack manager.
+2. Usage ledger, admin auth, stack manager, and the SIGINT/SIGTERM handlers (`src/app/shutdown.ts`). They go in before the voice stack starts, so a signal during model loading is logged (`shutting down` with the signal, state, uptime and memory) and exits at once instead of waiting for the load.
 3. Admin web server on `server.host:server.port` (default `127.0.0.1:8790`). If no admin account exists yet, it writes a setup code (`sudo adrian setup-code` shows it).
-4. `stack.restart()`: if the config is incomplete (no Discord token, no channel, no model or key, no model paths), the stack stays in `setup` and only the admin UI runs. Otherwise the voice stack starts.
+4. `stack.restart()`: if the config is incomplete (no Discord token, no channel, no model or key, no model paths), the stack stays in `setup` and only the admin UI runs. Otherwise the voice stack starts. On Linux, before the speech models load the first time, the manager reads `/proc/meminfo`: if available memory plus swap above earlyoom's floor, minus the estimated need (`startNeedMb`: about 1030 MB, 1550 MB with Kokoro at start), leaves less than 6% of RAM, the start is put off (`LowMemoryError`, retried with the usual backoff; after 15 minutes it loads anyway). A restart with the models already loaded skips this.
 
 `startVoiceStack` (`src/app/stack.ts`), in order:
 
 1. Checks the `listen` and `voice` sections and `DISCORD_TOKEN`. Asks Discord which privileged intents the portal allows; any doubt counts as off, because asking for an intent that is off fails the login.
-2. Speech: Parakeet, then Kokoro with a loudness calibration of the default voice, the Piper Vietnamese voice object (its model loads on first use), and the Speechify voice if there is a `cloudVoice` section with `enabled` (the default) and its key exists.
+2. Speech: Parakeet, the Kokoro voice object, the Piper Vietnamese voice object (its model loads on first use), and the Speechify voice if there is a `cloudVoice` section with `enabled` (the default) and its key exists. Then `prepareLocalVoice` (`src/app/local-voice.ts`): when Kokoro is the English voice (no cloud voice, or the month's characters already spent) it loads and calibrates the default voice's loudness now (`tts loaded and calibrated`); when the cloud voice speaks English, Kokoro loads on first use instead (`local voice loads on first use`), saving about 0.5 GB. The start log lines carry memory figures (`rssMb`, `availMb`, `swapFreeMb`).
 3. Mixer, `VoiceRouter` and `Speaker` (one set of voices for every room).
 4. Music sources: YouTube if the yt-dlp binary exists, Plex if `music.plexBackup` and `PLEX_TOKEN`. ffmpeg is probed with `-version`. Music exists only with ffmpeg and at least one source.
 5. Rooms, the PC recorder, the power-down window, quiet-while-gaming.
@@ -116,17 +116,17 @@ All model files are pinned by URL and SHA-256 in `packaging/downloads.sh` and li
 | Model | File or folder | Runs on | Loaded |
 |---|---|---|---|
 | Silero VAD | `silero_vad.onnx` | CPU, 1 thread per speaker stream | On the first audio from each person (one instance per person heard) |
-| Parakeet TDT 0.6B v3, int8 | `sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/` | CPU, `listen.asrThreads` (4) | At start. Kept across stack restarts (`SpeechModels`) |
-| Kokoro 82M multi-language, fp32 | `kokoro-multi-lang-v1_0/` | CPU, `voice.threads` (4) | The engine for the default voice's language at start; each other language prefix gets its own engine on first use |
+| Parakeet TDT 0.6B v3, int8 | `sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/` | CPU, `listen.asrThreads` (2) | At start. Kept across stack restarts (`SpeechModels`) |
+| Kokoro 82M multi-language, fp32 | `kokoro-multi-lang-v1_0/` | CPU, `voice.threads` (4) | The engine for the default voice's language at start when Kokoro is the English voice; with the cloud voice primary, the first time it stands in (or the wizard's first preview). Each other language prefix gets its own engine on first use |
 | Piper Vietnamese | `vits-piper-vi_VN-vais1000-medium/` | CPU | First Vietnamese answer |
-| Whisper small, int8 | `sherpa-onnx-whisper-small/` | CPU, `listen.asrThreads` | First question that looks neither English nor Spanish (needs `languages` on) |
+| Whisper small, int8 | `sherpa-onnx-whisper-small/` | CPU, `listen.whisperThreads` (4) | First question that looks neither English nor Spanish (needs `languages` on) |
 | Smart Turn v3.2 | `smart-turn-v3.2-cpu.onnx` | CPU, worker thread | After login, only with PC satellites and `satellite.unfinishedWaitMs > 0` |
 | yt-dlp | `yt-dlp_linux` (2026.08.19) | child process | Per lookup |
 | Language model | cloud (or a local OpenAI-compatible server) | | Per request |
 | Speechify `simba-3.5`, voice `sabrina` | cloud | | Per English sentence, with a `cloudVoice` section (`enabled`, the default) and its key |
 | Groq `whisper-large-v3-turbo` | cloud | | Per request for her, only when `cloudStt.enabled` |
 
-Memory: Whisper and the other languages' voices held about 1.3 GB when they loaded at every start, so since commit 43b548a (2026-11-08) they load on first use. The maintainer measured 1.52 to 1.64 GB of resident memory right after start across versions 0.15.4 to 0.17.1 (2026-11-08 to 2026-11-19). The admin wizard's hardware check warns under 4 CPU threads, under 4 GiB of memory and under 2 GiB of free disk.
+Memory: Whisper and the other languages' voices held about 1.3 GB when they loaded at every start, so since commit 43b548a (2026-11-08) they load on first use. The maintainer measured 1.52 to 1.64 GB of resident memory right after start across versions 0.15.4 to 0.17.1 (2026-11-08 to 2026-11-19). With the cloud voice primary, Kokoro (about 0.5 GB with its onnxruntime arena) no longer loads at start: `bench/mem-start.mjs` on Windows measured 1.59 GB before and 1.10 GB after, steady and peak alike; the server's figure is not measured yet. The admin wizard's hardware check warns under 4 CPU threads, under 4 GiB of memory and under 2 GiB of free disk.
 
 ## Rooms
 
@@ -193,9 +193,12 @@ Outside the home channel she leaves after 10 minutes with nobody else there.
    │  words, or asks a yes/no question, ends the turn without another model call
    ▼
  SentenceSplitter (whole sentences, at most 220 characters) → toSpeakable
+   │  (and forSpeech in the English voices: times, units, dates, symbols)
    ▼
  Speaker: per sentence, Speechify (English) or Kokoro / Piper → level to -16 LUFS,
-   │      trim silence, pause by punctuation, resample to 48 kHz stereo
+   │      trim silence, pause by punctuation, resample to 48 kHz stereo.
+   │      Speechify sentences over 40 characters stream: they play as their
+   │      audio arrives (playback opens once 0.2 s is in)
    ▼
  Mixer: speech at full level, music ducked to 0.2 under it, 20 ms frames on the
    │    wall clock with a 160 ms lead
@@ -208,6 +211,8 @@ Steps that matter when you change things:
 - **Wake on text, not sound.** The decision is made on the transcript (`src/wake/text-wake.ts`), so "Hadrian built a wall" or "Adrian's coming over" do not wake her. A loose wake (the name followed by "is", "was", "said" and so on) goes to the model as a follow-up that it may answer with `SILENT`.
 - **The window is judged from when the person started talking** (`startedAt`), not from when the transcript arrived.
 - **The model's text is read in as fast as it comes** (`src/core/eager.ts`) while earlier sentences are still being spoken. `brain.totalTimeoutMs` (20 s) limits generating the answer, not speaking it. A slow tool extends it to that tool's own timeout plus 8 s. Playback has a 2 minute hard cap.
+- **Short answers.** The stable prompt defines a short answer (one sentence under twenty words; at most two short sentences for how, why and what-should-I questions), and every spoken turn repeats the rule last, before the person's words (`SPOKEN_TURN` in `src/brain/orchestrator.ts`; text chat doesn't get it). A safety warning that matters and every item of a list they asked for are always kept.
+- **Confirmations say themselves.** Tools that only confirm (alarm edits and settings, game-night sign-ups, taste, remember, the PC tools and more) return their own spoken line, so the turn ends after one model call. When the person's words also ask something (`asksMore`), the model answers instead.
 - **A filler** ("One sec.", "Let me check.", "On it.") is said when a slow tool has not answered within 900 ms and nothing has been said yet.
 - **After the answer**: cost is added to the ledger, automatic memory may run (every 4 exchanges per person), an interrupted answer is marked in history so it isn't picked up again, and an `answered` log line records the timing fields below.
 - **Barge-in** (talking over her for `bargeInMs`: 2.5 s in a call, 0.6 s at a PC) counts only from the asker or a priority role, only once her voice is audible, and never while a tool is carrying out an order.
@@ -234,6 +239,9 @@ The PC app only gates the mic. Everything else (VAD, ASR, wake, turn-taking, the
  SatelliteConnection (acts as a VoiceTransport; the mic is the PC's owner)
    ▼
  Downsampler ─► Silero VAD, phrase closes after 0.8 s of silence
+   │  a second Silero VAD on the same audio closes after 0.32 s: that clip is
+   │  decoded at once and, if it's for her, the Groq listen starts too
+   │  (satellite.earlyListen); used only if the 0.8 s close has the same samples
    ▼
  Smart Turn check (worker thread) on the last 8 s, with Parakeet started beside it
    │  p > 0.5 "finished" → release now
@@ -261,7 +269,8 @@ The PC app only gates the mic. Everything else (VAD, ASR, wake, turn-taking, the
 
 PC-specific parts:
 
-- **PC tools.** The model has nine `pc_*` tools ([tools.md](tools.md)). Each call is sent as an `action` to the asker's own connected PC (`pcFor` in `stack.ts` filters on the owner; no tool argument can name a PC or a person). The PC checks it against its own local policy before doing anything; the server cannot change that policy. Sleep, restart and shutdown need the person's own spoken yes on their very next turn. Simple orders confirm in a fixed short line ("Spotify's open.") instead of a second model call.
+- **Early listen.** Both VAD waits are whole numbers of Silero windows (10 and 25 x 512 samples), so for speech said in one go the two cut at the same sample and the early words are the same words, about 0.5 s sooner when the Groq listen is on. A pause of 0.32-0.8 s inside the speech makes them differ: the early clip is dropped, its Groq request aborted, and timing is exactly as without it. A clip arriving while speech is held, or a second pause within the same speech, isn't decoded early. `pc heard` lines carry `early: true` when the words came from the early listen.
+- **PC tools.** The model has nine `pc_*` tools ([tools.md](tools.md)). Each call is sent as an `action` to the asker's own connected PC (`pcFor` in `stack.ts` filters on the owner; no tool argument can name a PC or a person). The PC checks it against its own local policy before doing anything; the server cannot change that policy. Sleep, restart and shutdown need the person's own spoken yes on their very next turn. Simple orders confirm in a fixed short line ("Spotify's open.") instead of a second model call. An order about the house (a door, the garage, the lights, the TV, the heat) never reaches the PC unless the PC is named: `houseOrder` in `src/satellite/tools.ts` refuses it before the PC is looked up, reading only the person's own words, and tells the model to use a home-control tool if there is one.
 - **Defer to the call.** If the PC's owner is audible in her Discord call (in her channel, not muted or deafened, voice link up), the call answers and the PC stays quiet. From a push-to-talk press until 3 s after the PC uses it (at most 15 s if unused), the call ignores that person's words, except stops.
 - **Quiet while gaming.** PC apps from 0.15.6 report `activity`. While a game is in front and `satellite.quietWhileGaming` is on, every turn needs her name, push-to-talk or typing, answers are kept to a sentence, and reminders are held until the match ends (`held-while-gaming.json`). Timers still ring.
 - **Speech end is measured differently.** At a PC, `speechEndToAudioMs` includes the 0.8 s silence wait, the Smart Turn check and any hold, so it reads about 1 s higher than the older figure that left those out (`stack.ts`, near the `AnswerRecord`).
@@ -277,9 +286,9 @@ Each answer logs an `answered` line with these fields. The admin dashboard shows
 | `sttLatencyMs` | Release of the clip (after any hold) to the transcript |
 | `turnCheckMs` | VAD close to Smart Turn's answer (PC only) |
 | `holdMs` | Smart Turn's answer to the release (PC only) |
-| `groqMs` | The part of the cloud listen not already covered by a hold |
+| `groqMs` | The part of the cloud listen still awaited after the words were ready: not covered by a hold or the early listen. It reads lower since the early listen (about 35-335 ms instead of about 520), but the Groq request itself is no faster |
 | `llmFirstChunkMs` | Start of `respond()` to the first speakable sentence. This includes tool rounds and second model calls; it is not the model's raw first token. |
-| `ttsFirstMs` | Synthesis time of the first sentence |
+| `ttsFirstMs` | Time to the first sentence's first audio, measured in the Speaker for every voice. For a streamed Speechify sentence that is the first piece, not the whole sentence, so it reads lower than before streaming without the answer being that much sooner: compare `speechEndToAudioMs` |
 | `speechEndToAudioMs` | VAD close to the first audio handed to playback, plus the silence the room waited out (`endSilenceMs`) |
 
 Stage costs, with their source:
@@ -289,15 +298,17 @@ Stage costs, with their source:
 | Silence before a phrase closes | 0.5 s (call, VAD), 0.8 s (call stream end, or PC) | config defaults |
 | Smart Turn check | 50 to 250 ms of compute per PC segment, now on a worker thread | `src/speech/smart-turn-worker.ts` header |
 | Smart Turn hold | 0 to 1.2 s, only for unfinished-sounding speech for her; used after the 0.8 s wait it halves mid-sentence cut-offs for about 0.2 s more waiting on average | `src/speech/smart-turn.ts` header (`bench/turn-bench.py`, 460 clips) |
-| Parakeet decode | about 0.1 to 0.3 s per phrase (median 170 ms on 4 threads, 2026-10-21) | maintainer measurement |
+| Parakeet decode | about 0.1 to 0.3 s per phrase (median 170 ms on 4 threads, 2026-10-21). On 2 threads (the `listen.asrThreads` default) the CPU per phrase halves and the decode takes 10-100 ms longer, depending on the machine's load | maintainer measurements, `src/bench/sidetalk-bench.ts` |
 | Whisper second pass (neither English nor Spanish) | about 1 s per clip on 4 threads | `src/speech/whisper.ts` header |
 | Model, first sentence | median about 1.3 s for Claude Haiku in a 2026-10-15 bench (`bench/claude-vs.mjs`) | maintainer bench |
 | First chunk: whole sentence vs cut at the first comma | median 1.26 s vs 1.39 s, so the whole sentence is kept | `stack.ts` comment, `bench/first-audio.mjs` (2026-10-16) |
+| Early listen at a PC | the decode and the Groq listen start 0.48 s before the 0.8 s wait ends; in the latency harness (stubbed models at the delays above) a PC request said in one go went from 3,425 to 2,945 ms end to end | `test/latency-harness.test.ts` |
+| Cloud voice, first audio | streamed sentences over 40 characters: median 253 ms against 382 ms whole (12 lines, 3 runs each) | `bench/speak-first.mjs` |
 | Mixer | 160 ms lead, plus 3 silent frames (60 ms) when a playback opens | `src/voice/mixer.ts` |
 
 End to end, from one deployment's `answered` lines (a sample of 20 answers ending 2026-11-20, so treat it as rough): median `speechEndToAudioMs` 3,535 ms, longest 5,620 ms; median `llmFirstChunkMs` 1,360 ms, `ttsFirstMs` 428 ms, `turnCheckMs` 155 ms. The model's first sentence is the largest single part. Live `llmFirstChunkMs` runs above a plain model bench because it includes any tool rounds before the first sentence.
 
-Music is slower than speech: the direct YouTube Music song search takes about 0.5 s instead of 1.8 s through yt-dlp (commit bcb60cd, 2026-11-01), and an album or podcast lookup takes 5 to 8 s (`src/app/music-commands.ts` comment). Bench scripts live in `bench/`; see [development.md](development.md).
+Music is slower than speech: the direct YouTube Music song search takes about 0.5 s instead of 1.8 s through yt-dlp (commit bcb60cd, 2026-11-01). In `bench/music-corpus.mjs` (63 requests, from a Windows PC), request to stream URL went from a median 3.1 s to 2.6 s (p90 5.4 to 3.5 s) once the stream's yt-dlp started early, video searches used YouTube's own search API, and albums and playlists came from YouTube Music's API (an album lookup about 4 s instead of 8). Bench scripts live in `bench/`; see [development.md](development.md).
 
 ## Text chat
 
@@ -311,13 +322,18 @@ Music is slower than speech: the direct YouTube Music song search takes about 0.
  /play, !play            ─┘     │
                                 ├─ song: YouTube Music search (direct API, 1.5 s timeout)
                                 │        → yt-dlp search fallback; weak match → wider
-                                │          YouTube and Tavily search for the spelling
-                                ├─ artist: Deezer top songs (shuffled), radio fill
-                                ├─ album, playlist, vibe, similar, podcast, video, link
+                                │          YouTube search (YouTube's own search API,
+                                │          2 s, then yt-dlp) and Tavily for the spelling
+                                ├─ artist: Deezer top songs (shuffled), radio fill; the
+                                │          artist's own top song waits up to 3 s
+                                ├─ a bare genre or era ("jazz", "90s r&b"): a playlist
+                                ├─ album, playlist (YouTube Music's API), vibe, similar,
+                                │  podcast, video, link
                                 └─ Plex backup (when asked, when YouTube finds nothing,
                                    or while YouTube is paused)
                                 ▼
-                        yt-dlp resolves a stream URL (next track prepared ahead)
+                        yt-dlp resolves a stream URL (started beside the search,
+                        address on stdin; next track prepared ahead)
                                 ▼
                         ffmpeg: soxr to 48 kHz, -6 dB, limiter, s16le stereo
                                 ▼
@@ -330,6 +346,7 @@ Music is slower than speech: the direct YouTube Music song search takes about 0.
 - Clear orders ("play X", "skip", "pause", "volume 40 percent") are handled by `classifyMusic` in `src/conversation/intents.ts` without the model and cost nothing. Vague ones ("something chill", "an album") go to the model's `play_music` tool.
 - Each room has its own player, queue (`music.maxQueue`, 25) and autoplay. Queues, volumes and history are memory only. A PC's player goes away when it disconnects.
 - At a PC, "pause", "skip" and "what's playing" go to the PC's own media (`pc_media`) unless her music is playing there.
+- Matching: a version named in the request (tiny desk, live, acoustic, remix, sped up, session, cover ...) must appear in a result that replaces the catalog song; whole sets (tiny desk, concert, session, unplugged) may run up to 40 minutes. A catalog answer in another script (夜に駆ける for "yoru ni kakeru") is kept. Sound-alike matching treats a soft g like j and two words as one name ("me goes" = Migos).
 - A YouTube "Sign in to confirm" bot check pauses YouTube for 30 minutes; requests then go to Plex, or she says "I can't reach YouTube right now."
 - ffmpeg inputs are limited to `http,https,tls,tcp,crypto`, so a track URL can never read local files. The Plex token goes only in a header, and only to the Plex origin.
 - With nobody human in the call for 2 minutes, music and any quiz stop (see [Rooms](#rooms) for leaving an empty channel).
@@ -439,18 +456,20 @@ Microphone audio is never written to disk, except opt-in PC recordings. Transcri
 | Config incomplete | Stack stays in `setup`; the admin UI lists the problems | `configProblems`, `src/app/manager.ts` |
 | Start fails for a reason that can pass (DNS, refused connection, timeouts, HTTP 5xx) | Retried after 30 s, doubling to 5 min; a success resets it. A bad token or missing model stays `failed` with its reason. | `canRecover`, `manager.ts` |
 | Process exits for any reason | systemd restarts it after 20 s (`Restart=always`) | `packaging/adrian-voice.service` |
-| Discord voice drops | Waits 5 s, then up to 30 s for Ready, then rebuilds with backoff (5 tries at 1, 2, 4, 8, 16 s plus up to 0.5 s jitter), then retries every 5 minutes. A kick stays out until `/join`; a drag to another channel is followed. | `src/transport/discord.ts` |
+| Too little memory for a first start | The start is put off and retried (30 s, doubling to 5 min); after 15 min it loads anyway. The state shows `failed` with the reason meanwhile | `src/app/memory.ts`, `manager.ts` |
+| SIGTERM or SIGINT | Logged with state and memory. While `starting`: admin UI closed, ledger flushed, the signal re-raised. While running: a clean stop, capped at 20 s. A second signal exits at once | `src/app/shutdown.ts` |
+| Discord voice drops | Waits 5 s, then for Ready: up to 30 s while the library resumes (Connecting), but only 5 s in Signalling, where a failed resume otherwise waited for an answer Discord rarely sends; a connection error rebuilds at once. `voice back` logs each recovery's time and path. Then rebuilds with backoff (5 tries at 1, 2, 4, 8, 16 s plus up to 0.5 s jitter), then retries every 5 minutes. A kick stays out until `/join`; a drag to another channel is followed. | `src/transport/discord.ts` |
 | Main model fails before its first event | The same round goes to `brain.fallback`. No switch once words have streamed. | `src/brain/fallback.ts` |
 | Transient model error (429, 5xx, first-event timeout) before anything was said | One retry after 250-750 ms | `src/brain/orchestrator.ts` |
 | Model says nothing, or fails | "Sorry, I didn't get that. Could you say it again?" or a short apology | `stack.ts` |
 | Spend cap or hourly limit reached | A short notice once per reason per 10 minutes, then silence | `usage-ledger.ts`, `stack.ts` |
-| Speechify times out or errors | That sentence uses Kokoro. Timeouts, 401/403/408/429 and 5xx pause the cloud voice for 60 s; past `monthlyChars` it stays local until next month. | `src/speech/speechify.ts` |
+| Speechify times out or errors | That sentence uses Kokoro (loaded on the spot the first time, when the cloud voice is primary). A streamed sentence that breaks off after its first audio ends there (a second voice would repeat its start). `cloudVoice.timeoutMs` limits the wait for the first bytes and any stall after them. Timeouts, 401/403/408/429 and 5xx pause the cloud voice for 60 s; past `monthlyChars` it stays local until next month. | `src/speech/speechify.ts` |
 | Groq times out, errors or returns nothing | The local words are used. 429 or 5xx pauses it for 60 s. | `stack.ts` |
 | Smart Turn fails | Treated as "finished": nobody waits | `src/listen/pipeline.ts` |
 | Whisper fails to load | English only, logged | `stack.ts` |
 | YouTube bot check | YouTube paused 30 min; Plex or a spoken notice | `src/features/music.ts` |
 | A track stalls or won't play | 30 s without audio moves on; up to 2 other uploads are tried; 5 failures in a row end the list | `music.ts` |
-| PC disconnects | Pending actions answer "The PC disconnected."; the room's answers, music and mixer stop; the room is removed. The PC reconnects with backoff, and keeps ringing alarms itself. | `src/satellite/*`, `stack.ts` |
+| PC disconnects | `satellite disconnected` logs who ended it (`by`: pc, heartbeat, replaced, shutdown, server), the close code and reason, the link's age and how long the PC was quiet. Pending actions answer "The PC disconnected."; the room's answers, music and mixer stop; the room is removed. The PC reconnects with backoff, and keeps ringing alarms itself. | `src/satellite/*`, `stack.ts` |
 | PC action takes too long | "The PC didn't answer in time." after 15 s (19 s for screenshots) | `src/satellite/connection.ts` |
 | Bad satellite frames or tokens | Closed. A wrong token or no hello counts as a failure; 5 per address lock it out for 10 minutes, but a correct token always gets in. Oversized first frames are closed without counting. | `src/satellite/server.ts` |
 | An update does worse than the old version | `adrian update` rolls back; auto-update skips that version for 24 h | `packaging/adrian` |

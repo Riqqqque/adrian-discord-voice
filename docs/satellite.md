@@ -428,6 +428,7 @@ Listening differs from the Discord call in a few ways (`src/app/stack.ts`):
 | Talking over her stops her after | 600 ms | 2.5 s |
 | Silence that ends speech | `listen.minSilence`, at least 0.8 s | `listen.minSilence` (default 0.5 s) |
 | Wait for a sentence that sounds unfinished (Smart Turn) | up to `satellite.unfinishedWaitMs` (default 1200 ms) | none |
+| Early listen: recognize (and start the cloud listen) 0.32 s into the pause, used only if the full wait closes the same audio (`satellite.earlyListen`) | yes, by default | none |
 | Cloud second listen (`cloudStt`) | yes, when enabled | only for PC owners whose PC is connected, or everyone with `cloudStt.rooms all` |
 
 At a PC, bare "pause", "skip", "what's playing" and "turn it down" go to
@@ -436,7 +437,11 @@ At a PC, bare "pause", "skip", "what's playing" and "turn it down" go to
 ## Logs and recordings
 
 `pc heard` is always logged for PC rooms, without words: length, woke,
-for-her, how the segment closed, turn-check and hold times. The two options
+for-her, how the segment closed, turn-check and hold times, and `early: true`
+when the words came from the early listen (`satellite.earlyListen`, in the table above).
+`satellite disconnected` says how each link ended: `by` (`pc`, `heartbeat`,
+`replaced`, `shutdown`, `server`), the close `code` and `reason`, `linkS` (how
+long the link lasted) and `quietS` (how long the PC had been silent). The two options
 below are off by default; both record what people said, so treat them as
 personal data.
 

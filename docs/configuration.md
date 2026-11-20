@@ -100,7 +100,7 @@ Every key not in the file takes its default from the tables below.
 |---|---|---|---|---|
 | `listen.vadModel` | path | installer-owned | Silero VAD model file | - |
 | `listen.asrModelDir` | path | installer-owned | Parakeet speech-recognition model folder | - |
-| `listen.asrThreads` | integer 1-8 | `2` | CPU threads for Parakeet. Everything anyone says goes through it, side talk included. onnxruntime's idle threads spin, so 4 threads cost about twice the CPU of 2 for the same words and answer only 10-50 ms sooner. 1 saves more CPU but adds about 100 ms per phrase | `1` |
+| `listen.asrThreads` | integer 1-8 | `2` | CPU threads for Parakeet. Everything anyone says goes through it, side talk included. onnxruntime's idle threads spin, so 4 threads cost about twice the CPU of 2 for the same words. The price is slower words: 10-50 ms per phrase in one measurement, about 100 ms (median) in another on a busy machine. Set `4` if you have CPU to spare and want the quickest words; 1 saves more CPU again but adds about 100 ms more | `4` |
 | `listen.whisperThreads` | integer 1-8 | `4` | CPU threads for Whisper, the second listen to questions that aren't in English (only when `languages` is on) | `2` |
 | `listen.vadThreshold` | number 0.1-0.95 | `0.5` | Voice detection sensitivity. Higher ignores more background noise but can miss quiet speech | `0.6` |
 | `listen.minSilence` | seconds 0.1-3 | `0.5` | Pause that ends a phrase. PC rooms always use at least 0.8 | `0.7` |
@@ -323,7 +323,7 @@ Speechify for English replies, with the local voice as the fallback. The block i
 | `cloudVoice.model` | string | `"simba-3.5"` | Speechify model. `simba-3.2` is the older, slower one | `"simba-3.2"` |
 | `cloudVoice.apiKeySecret` | key name (voice) | `"SPEECHIFY_API_KEY"` | Key in `secrets.env` | `"SPEECHIFY_API_KEY"` |
 | `cloudVoice.monthlyChars` | integer 0+ | unset: 950,000 for `simba-3.5*`, 1,900,000 otherwise | Characters per calendar month (in `timezone`) before she switches to the local voice for the rest of the month; 0 means no cap. Speechify's Starter plan covers 1.9M characters a month, and simba-3.5 counts each one twice from 21 Nov 2026. Usage is kept in `<state>/voice-usage.json` | `500000` |
-| `cloudVoice.timeoutMs` | integer 500-15000 | `4000` | Slower than this: that sentence uses the local voice | `3000` |
+| `cloudVoice.timeoutMs` | integer 500-15000 | `4000` | Longest wait for a sentence's first audio, and for any stall after it in a streamed sentence. Past it before any audio: that sentence uses the local voice; past it mid-sentence: the rest of that sentence is dropped. Either way the cloud voice pauses for 60 s | `3000` |
 | `cloudVoice.speed` | number 0.75-1.5 | unset: 1.2 for `simba-3.2*`, 1 otherwise | Rate for the cloud voice only, on top of `voice.speed`. simba-3.2 speaks about 133 words a minute, simba-3.5 about 200 | `1.1` |
 
 Turn the cloud voice on (with `SPEECHIFY_API_KEY` saved):
