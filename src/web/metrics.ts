@@ -8,7 +8,10 @@
 // slots, short rings for errors and restarts, at most 32 PCs tracked. Saved in
 // the state folder every few minutes and at shutdown, so an update doesn't wipe
 // the week. Nothing here leaves the server, and nothing kept names a person:
-// no user IDs, device names, addresses or words.
+// no user IDs, device names or keys. Error text is kept for what failed and
+// its code; addresses, host names, links, emails, home folders, long IDs,
+// tokens and anything quoted (often someone's words) are masked first. Words
+// in an error without quotes stay as logged.
 
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
@@ -197,12 +200,60 @@ const SAVE_EVERY_MS = 5 * 60_000;
 /** A disconnect this soon after a channel move is the move itself. */
 const MOVE_MS = 5_000;
 
-/** Discord IDs (17-20 digit snowflakes) and secrets out, length capped. */
+// What clean() masks, in order. Each pattern starts only where its kind of
+// text can start (a lookbehind) and is skipped when its marker isn't there
+// at all, so a long line without addresses costs a few scans.
+const HEX = '[0-9a-f]{1,4}';
+const V4 = '\\d{1,3}(?:\\.\\d{1,3}){3}';
+const V6 = `(?:(?:${HEX}:){7}${HEX}|(?:${HEX}(?::${HEX}){0,6})?::(?:(?:${HEX}:){0,5}${V4}|${HEX}(?::${HEX}){0,6})?)`;
+const withPort = (_m: string, port?: string) => (port ? `[address]:${port}` : '[address]');
+const MASKS: [marker: string | RegExp | undefined, pattern: RegExp, to: string | ((m: string, ...g: string[]) => string)][] = [
+  // Links: the scheme says what kind of call it was; the rest goes.
+  ['://', /\b([a-z][a-z0-9+.-]{1,15}):\/\/[^\s"'<>)\]]+/gi, '$1://[host]'],
+  ['@', /(?<![\w.+-])[\w.+-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)+/gi, '[email]'],
+  // Node's lookup errors name the host without a port.
+  [undefined, /\b(E(?:NOTFOUND|AI_AGAIN|AI_FAIL|AI_NONAME)) (?!\[)[^\s,;)'"]+/g, '$1 [host]'],
+  // IPv6 (bracketed, with a zone, IPv4-mapped, or "::" itself), then IPv4. The port stays: it says which service.
+  [':', new RegExp(`(?<![\\w:.])\\[?${V6}(?:%[\\w.-]+)?\\]?(?::(\\d{1,5}))?(?![\\w:])`, 'gi'), withPort],
+  ['.', new RegExp(`(?<![\\w.])${V4}(?::(\\d{1,5}))?(?![\\w])`, 'g'), withPort],
+  // A name with a port ("nas:8123", "hass.example.lan:8123"); it must have a letter, so "12:30" stays.
+  [':', /(?<![\w.@/\\:-])(?=[\w.-]*[a-z])[a-z0-9](?:[\w.-]*[a-z0-9])?:(\d{1,5})(?![\w.:])/gi, '[host]:$1'],
+  [/home|users/i, /(?<=[\\/](?:home|Users)[\\/])[^\\/\s"',;:]+/gi, '[user]'],
+  // Discord IDs and other long numbers, inside words too ("user_1000…").
+  [undefined, /(?<!\d)\d{15,}(?!\d)/g, '[id]'],
+  // Tokens the redactor has no shape for: JWTs, and long runs of letters and digits.
+  ['eyJ', /\beyJ[\w-]{8,}\.[\w-]{8,}\.[\w-]{8,}/g, '[redacted]'],
+  [undefined, /(?<![\w-])[\w-]{32,}(?![\w-])/g, (m) => (/\d/.test(m) && /[a-z]/i.test(m) ? '[redacted]' : m)],
+  // Anything quoted, to the end if the closing quote was cut off. An
+  // apostrophe inside a word ("isn't") neither opens nor closes one.
+  ['"', /"[^"]*(?:"|$)/g, '"…"'],
+  ['“', /“[^”]*(?:”|$)/g, '"…"'],
+  ['‘', /‘(?:[^’]|’(?=\w))*(?:’|$)/g, '"…"'],
+  ["'", /(?<!\w)'(?:[^']|'(?=\w))*(?:'|$)/g, '"…"'],
+];
+
+/** Error text fit to keep: secrets, IDs, addresses and quoted words out, length capped. */
 function clean(s: unknown): string | undefined {
   if (typeof s !== 'string' && typeof s !== 'number') return undefined;
   // Only the first characters are ever shown, so a cut past them can't leave a secret in view.
-  const t = redact(String(s).slice(0, 4000)).replace(/\b\d{17,20}\b/g, '…');
+  let t = redact(String(s).slice(0, 4000));
+  for (const [marker, re, to] of MASKS) {
+    if (marker !== undefined && !(typeof marker === 'string' ? t.includes(marker) : marker.test(t))) continue;
+    t = typeof to === 'string' ? t.replace(re, to) : t.replace(re, to);
+  }
   return t.length > TEXT ? `${t.slice(0, TEXT - 1)}…` : t;
+}
+
+/** What a crash threw, as text; never throws itself. */
+function thrownText(e: unknown): string | undefined {
+  try {
+    if (e instanceof Error) return e.message || e.name;
+    if (typeof e === 'string') return e;
+    const m = (e as { message?: unknown } | null | undefined)?.message;
+    return typeof m === 'string' ? m : `threw ${String(e)}`;
+  } catch {
+    return undefined; // String() of an object without a prototype throws
+  }
 }
 
 const num = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : undefined);
@@ -303,7 +354,13 @@ export class Metrics {
                 return { t: e.t, level: e.level === 'error' ? 'error' : 'warn', msg: clean(e.msg) ?? '', ...(detail ? { detail } : {}), n: num(e.n) ?? 1 };
               });
           }
-          if (Array.isArray(f.restarts)) this.restarts = f.restarts.slice(-MAX_RESTARTS).filter((r) => typeof r?.why === 'string');
+          // Re-masked on the way in, so a file from an older version is cleaned too.
+          if (Array.isArray(f.restarts)) {
+            this.restarts = f.restarts
+              .slice(-MAX_RESTARTS)
+              .filter((r) => typeof r?.why === 'string')
+              .map((r) => ({ ...r, why: clean(r.why) ?? '' }));
+          }
           if (num(f.since)) this.since = f.since;
         }
       } catch {
@@ -319,7 +376,8 @@ export class Metrics {
     let why: string;
     if (!p) why = 'first start with these counters';
     else if (p.running) {
-      why = p.crash ? `crashed: ${p.crash}` : 'did not shut down cleanly (killed, out of memory, a power cut or a crash)';
+      const crash = clean(p.crash);
+      why = crash ? `crashed: ${crash}` : 'did not shut down cleanly (killed, out of memory, a power cut or a crash)';
       this.daily.add(this.now(), 'unclean');
       this.hourly.add(this.now(), 'unclean');
     } else if (v && p.appVersion && p.appVersion !== v) why = `updated from ${p.appVersion}`;
@@ -425,10 +483,16 @@ export class Metrics {
     if (keys.length > MAX_DAYS) for (const k of keys.sort().slice(0, keys.length - MAX_DAYS)) delete this.days[k];
   };
 
-  /** An exception is about to end the process: say so in the file. */
-  crashed(message: string): void {
-    this.crash = clean(message) ?? 'unknown error';
-    this.save(true);
+  /** An exception is about to end the process: say so in the file. Takes
+   *  whatever was thrown (`throw null` included) and never throws itself,
+   *  or Node would exit with 7 and lose the original error. */
+  crashed(thrown: unknown): void {
+    try {
+      this.crash = clean(thrownText(thrown)) || 'unknown error';
+      this.save(true);
+    } catch {
+      /* the crash itself still gets reported by Node */
+    }
   }
 
   /** Save now; `clean` at a normal shutdown. */

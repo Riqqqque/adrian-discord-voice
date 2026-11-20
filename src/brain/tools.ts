@@ -3,7 +3,7 @@
 // Also the check every tool with real consequences shares: the person's own
 // yes, which nothing planted in the prompt can give.
 
-import { noteCall } from '../core/calls.js';
+import { countedFetch } from '../core/calls.js';
 import type { Tool, ToolContext } from '../core/interfaces.js';
 
 export function timeTool(timezone: string): Tool {
@@ -33,13 +33,12 @@ export function timeTool(timezone: string): Tool {
 /** Tavily web search (basic depth, 1 credit per call). */
 /** The address of the best web result for a description ("JEI mod on modrinth"). */
 export async function topResultUrl(apiKey: string, query: string, signal: AbortSignal): Promise<string | undefined> {
-  const res = await fetch('https://api.tavily.com/search', {
+  const res = await countedFetch('tavily', 'https://api.tavily.com/search', {
     method: 'POST',
     headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
     body: JSON.stringify({ query: query.slice(0, 200), search_depth: 'basic', max_results: 3, include_answer: false }),
     signal,
   });
-  noteCall('tavily', res.status);
   if (!res.ok) return undefined;
   const j = (await res.json()) as { results?: { url?: string }[] };
   return j.results?.map((r) => r.url).find((u): u is string => typeof u === 'string' && /^https?:\/\//i.test(u));
@@ -49,13 +48,12 @@ export async function topResultUrl(apiKey: string, query: string, signal: AbortS
  *  A search engine reads past misspelled names ("emmy blues loba") that
  *  YouTube's own search takes literally. */
 export async function webYoutubeVideos(apiKey: string, query: string, signal: AbortSignal): Promise<{ id: string; title: string }[]> {
-  const res = await fetch('https://api.tavily.com/search', {
+  const res = await countedFetch('tavily', 'https://api.tavily.com/search', {
     method: 'POST',
     headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
     body: JSON.stringify({ query: query.slice(0, 200), search_depth: 'basic', max_results: 5, include_answer: false, include_domains: ['youtube.com', 'music.youtube.com'] }),
     signal,
   });
-  noteCall('tavily', res.status);
   if (!res.ok) throw new Error(`web search answered ${res.status}`);
   const j = (await res.json()) as { results?: { url?: unknown; title?: unknown }[] } | null;
   const out: { id: string; title: string }[] = [];
@@ -103,7 +101,7 @@ export function tavilySearchTool(apiKey: string, maxResults = 4): Tool {
     async run(args, signal) {
       const query = String(args.query ?? '').slice(0, 200);
       if (!query) return 'No query given.';
-      const res = await fetch('https://api.tavily.com/search', {
+      const res = await countedFetch('tavily', 'https://api.tavily.com/search', {
         method: 'POST',
         headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
         // No AI summary: it was measured to state guesses as facts (e.g. a
@@ -111,7 +109,6 @@ export function tavilySearchTool(apiKey: string, maxResults = 4): Tool {
         body: JSON.stringify({ query, search_depth: 'basic', max_results: maxResults, include_answer: false }),
         signal,
       });
-      noteCall('tavily', res.status);
       if (!res.ok) return `Search failed (HTTP ${res.status}).`;
       const j: any = await res.json();
       const lines: string[] = [];

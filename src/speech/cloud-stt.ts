@@ -2,7 +2,7 @@
 // turbo on Groq. The local model still does all the listening (wake phrase,
 // side talk); only speech meant for her is sent here.
 
-import { noteCall } from '../core/calls.js';
+import { countedFetch } from '../core/calls.js';
 
 /** 16-bit mono WAV in memory. */
 export function wav(samples: Float32Array, rate: number): Uint8Array {
@@ -53,13 +53,12 @@ export async function groqTranscribe(apiKey: string, samples: Float32Array, rate
   form.append('temperature', '0');
   if (o.prompt) form.append('prompt', o.prompt);
   if (o.language) form.append('language', o.language);
-  const res = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+  const res = await countedFetch('groq-stt', 'https://api.groq.com/openai/v1/audio/transcriptions', {
     method: 'POST',
     headers: { authorization: `Bearer ${apiKey}` },
     body: form,
     ...(o.signal ? { signal: o.signal } : {}),
   });
-  noteCall('groq-stt', res.status);
   if (!res.ok) throw new Error(`Groq STT HTTP ${res.status}`);
   const j = (await res.json()) as { text?: string };
   return (j.text ?? '').trim();
