@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { PocConfigSchema } from '../src/config.js';
+import { ConversationOrchestrator } from '../src/brain/orchestrator.js';
+import { SessionMemory } from '../src/brain/sessions.js';
 import { routeTools } from '../src/brain/tool-router.js';
 import type { ToolContext } from '../src/core/interfaces.js';
 import {
@@ -14,6 +16,9 @@ import {
   WISHLIST_CAP,
   type SteamOptions,
 } from '../src/features/steam.js';
+// Imported up front: a first import inside a test spends that test's time limit.
+import { gameNightTool } from '../src/features/gamenight.js';
+import { gameServerTool } from '../src/features/gameservers.js';
 
 // Made-up IDs only.
 const ME = '123456789012345678';
@@ -648,10 +653,8 @@ describe('steam tools', () => {
     expect(friends.spec.description).toMatch(/own Steam friends/);
     expect(friends.spec.description).toMatch(/Not for people in this Discord server \(game_night who_playing\)/);
     expect(friends.spec.description).not.toMatch(/"is anyone playing/);
-    const { gameServerTool } = await import('../src/features/gameservers.js');
     const mc = gameServerTool([{ name: 'Survival', host: '127.0.0.1', port: 25565, kind: 'minecraft' }]);
     expect(mc.spec.description).toMatch(/which players are on them \(only Minecraft; who in this Discord server is playing a game is game_night\)/);
-    const { gameNightTool } = await import('../src/features/gamenight.js');
     const night = gameNightTool({ guild: () => undefined, allowedGuilds: [], presences: false, signups: {} as never, lastText: () => undefined, voiceChannel: () => undefined, cooldownMs: 1, maxMentions: 10, perUserPerHour: 4 });
     expect(night.spec.description).toMatch(/who in this Discord server is playing what right now \(their Discord status\).*not Steam friends \(steam_friends\) or players on a Minecraft server \(game_server_status\)/);
   });
@@ -676,8 +679,6 @@ describe('steam tools', () => {
 
 describe('through the orchestrator', () => {
   it('a Steam answer is said as is, with no second model call, and text chat gets the written form', async () => {
-    const { ConversationOrchestrator } = await import('../src/brain/orchestrator.js');
-    const { SessionMemory } = await import('../src/brain/sessions.js');
     let rounds = 0;
     const llm = {
       model: 'fake',

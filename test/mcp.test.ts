@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { routeTools } from '../src/brain/tool-router.js';
 import type { Tool } from '../src/core/interfaces.js';
 import { connectMcp, HOME_WORDS, McpClient, rpcMessages, serverTools, toolName, type McpServer } from '../src/features/mcp.js';
@@ -159,8 +159,7 @@ describe('connecting at start', () => {
     await new Promise((r) => setTimeout(r, 30));
     expect(into).toEqual([]);
     up = true;
-    await new Promise((r) => setTimeout(r, 80));
-    expect(into.map((t) => t.spec.name)).toEqual(['home_HassTurnOn', 'home_HassTurnOff', 'home_HassLockUnlock']);
+    await vi.waitFor(() => expect(into.map((t) => t.spec.name)).toEqual(['home_HassTurnOn', 'home_HassTurnOff', 'home_HassLockUnlock']), { timeout: 10_000, interval: 2 });
     expect(added).toHaveLength(1);
     c.stop();
   });

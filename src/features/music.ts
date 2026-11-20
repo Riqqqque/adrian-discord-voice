@@ -468,6 +468,7 @@ export class YoutubeSource implements MusicSource {
   private readonly startEarly: boolean;
 
   /** `searchApi`: search YouTube Music directly (see YTM_API); without it, yt-dlp does.
+   *  `searchTimeoutMs`: how long that search may take (YTM_TIMEOUT_MS; tests).
    *  `findVideos`: a web search for YouTube videos, asked only when the song
    *  catalog's answer barely matches the words (a misheard or rare name).
    *  `webApi`: where YouTube's own video search is asked directly (default:
@@ -481,6 +482,7 @@ export class YoutubeSource implements MusicSource {
       node?: string;
       timeoutMs?: number;
       searchApi?: string;
+      searchTimeoutMs?: number;
       webApi?: string;
       directSearch?: boolean;
       webTimeoutMs?: number;
@@ -538,7 +540,7 @@ export class YoutubeSource implements MusicSource {
   /** One search request to YouTube Music or YouTube, the way their web pages
    *  ask. The API isn't documented: anything odd (an error, a timeout) is
    *  undefined, and yt-dlp does it instead. */
-  private async api<T>(base: string, web: boolean, query: string, params: string, sig: AbortSignal, timeoutMs = web ? WEB_TIMEOUT : YTM_TIMEOUT_MS): Promise<T | undefined> {
+  private async api<T>(base: string, web: boolean, query: string, params: string, sig: AbortSignal, timeoutMs = web ? WEB_TIMEOUT : (this.o.searchTimeoutMs ?? YTM_TIMEOUT_MS)): Promise<T | undefined> {
     if (this.paused) throw new YoutubePaused();
     const [client, name, version, origin] = web ? ['WEB', '1', WEB_VERSION, YT_WEB] : ['WEB_REMIX', '67', YTM_VERSION, YTM_API];
     try {
