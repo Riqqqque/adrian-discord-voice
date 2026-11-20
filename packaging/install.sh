@@ -167,10 +167,10 @@ existing() { local d=$1; while [ ! -e "$d" ]; do d=$(dirname "$d"); done; echo "
 gb() { awk -v m="$1" 'BEGIN{printf "%.1f GB", m/1024}'; }
 # Hosts the downloads still needed come from (nothing for files already in place or in the cache).
 pending_hosts() {
-  local m name url sha kind
+  local m name url sha
   { [ -x "$OPT/node-v$NODE_VERSION/bin/node" ] || [ -f "${ADRIAN_DOWNLOAD_CACHE:-/nonexistent}/$(basename "$NODE_URL")" ] || echo "$NODE_URL"
     for m in "${MODELS[@]}"; do
-      IFS='|' read -r name url sha kind _ <<<"$m"
+      IFS='|' read -r name url sha _ <<<"$m"
       model_installed "$VAR/models" "$name" "$sha" && continue
       [ -f "${ADRIAN_DOWNLOAD_CACHE:-/nonexistent}/$(basename "$url")" ] && continue
       echo "$url"
