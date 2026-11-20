@@ -101,6 +101,15 @@ describe('alarm words', () => {
     expect(ringWord('snooze for ten minutes')).toEqual({ action: 'snooze', minutes: 10 });
     expect(ringWord('five more minutes')).toEqual({ action: 'snooze', minutes: 5 });
     expect(ringWord('give me 15 minutes')).toEqual({ action: 'snooze', minutes: 15 });
+    // Heard at the PC on 0.17.0's first live ring: the local model's slip.
+    expect(ringWord('Hey Adrian, stop the t timer.')).toEqual({ action: 'stop' });
+    expect(ringWord('stop the the alarm')).toEqual({ action: 'stop' });
+    expect(ringWord('i am up')).toEqual({ action: 'up' });
+    expect(ringWord('give me a few more minutes')).toEqual({ action: 'snooze' });
+    expect(ringWord('snooze for a couple minutes')).toEqual({ action: 'snooze' });
+    expect(ringWord('snooze for a bit')).toEqual({ action: 'snooze' });
+    expect(ringWord('a little longer')).toEqual({ action: 'snooze' });
+    expect(ringWord('snooze for banana minutes')).toBeUndefined();
     expect(ringWord('stop by the store later')).toBeUndefined();
     expect(ringWord('play stop and stare')).toBeUndefined();
     expect(ringWord("what's the weather")).toBeUndefined();

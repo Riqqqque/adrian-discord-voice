@@ -281,7 +281,10 @@ const clean = (t: string) =>
     .toLowerCase()
     .replace(/[’']/g, '')
     .replace(/[^a-z0-9\s]/g, ' ')
+    // Speech-to-text slips: a stray letter ("stop the t timer") or a word said twice ("stop the the alarm").
+    .replace(/(?<=^|\s)[b-hj-z](?=\s|$)/g, ' ')
     .replace(/\s+/g, ' ')
+    .replace(/\b(\w+)(?: \1\b)+/g, '$1')
     .trim();
 
 const FILL = /^(?:(?:hey|ok|okay|yo|um+|uh+|oh|ah+|alright|all right|please|just|so|god|ugh|man|bro|dude|adrian|adriane|adrien|aiden|adrianne)\s+)*/;
@@ -299,7 +302,9 @@ const UP_WORDS = new Set([
   'im up', 'i am up', 'im awake', 'i am awake', 'im getting up', 'i am getting up', 'im out of bed', 'i got up', 'im up now', 'ok im up', 'okay im up', 'yes im up',
   'im awake now', 'got it im up', 'alright im up', 'all right im up', 'i heard it', 'i hear it',
 ]);
-const SNOOZE = /^(?:snooze(?: it| the alarm| my alarm| that)?(?: (?:for )?(.+?) (?:more )?minutes?)?|(.+?) more minutes?|give me (.+?)(?: more)? minutes?|(?:wake me|ring|remind me)(?: again)? in (.+?) minutes?|later|not yet|not now|in a bit|five more|10 more|ten more)$/;
+const SNOOZE = /^(?:snooze(?: it| the alarm| my alarm| that)?(?: (?:for )?(.+?) (?:more )?minutes?)?|(.+?) more minutes?|give me (.+?)(?: more)? minutes?|(?:wake me|ring|remind me)(?: again)? in (.+?) minutes?|later|not yet|not now|in a bit|five more|10 more|ten more|(?:snooze(?: it| that)? )?(?:for )?a (?:bit|while|little(?: bit| while)?)(?: longer| more)?)$/;
+/** "a few", "a couple": snooze, for their usual length. */
+const VAGUE = /^(?:give me )?(?:a )?(?:few|couple(?: of)?|bit|little|little bit|while)$/;
 const BACK = /^(?:wait|no|oh no|oops|whoops)?\s*(?:turn (?:it|the alarm) back on|put (?:it|the alarm) back|i wasnt (?:up|awake)|im not (?:up|awake)|undo( that)?|snooze( it| that)?)$/;
 
 /** What a whole utterance means to a ringing alarm, if anything. Only whole
@@ -315,7 +320,7 @@ export function ringWord(text: string): RingWord | undefined {
   if (m) {
     const n = m[1] ?? m[2] ?? m[3] ?? m[4];
     const minutes = n ? firstNumber(n) : /^(five|10|ten) more$/.test(t) ? firstNumber(t) : undefined;
-    if (n && minutes === undefined) return undefined; // "snooze for a while more minutes"?
+    if (n && minutes === undefined) return VAGUE.test(n) ? { action: 'snooze' } : undefined; // "snooze for banana minutes"?
     return { action: 'snooze', ...(minutes !== undefined ? { minutes } : {}) };
   }
   return undefined;
