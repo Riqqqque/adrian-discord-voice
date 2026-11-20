@@ -21,6 +21,7 @@ const NIGHTS = { title: 'Nights', artist: 'Frank Ocean', source: 'youtube', ref:
 const player = new Proxy({}, {
   get: (_t, k) => {
     if (k === 'nowPlaying') return NIGHTS;
+    if (k === 'lent') return undefined; // no music quiz going
     if (k === 'upNext' || k === 'recent') return [];
     if (k === 'paused' || k === 'youtubePaused') return false;
     if (k === 'autoplay') return true;
