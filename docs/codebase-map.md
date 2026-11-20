@@ -354,7 +354,9 @@ What must stay true: secrets are write-only over HTTP and never logged; a custom
 
 | File | Tests | Source under test | Covers |
 |---|---|---|---|
-| `alarms.test.ts` | 46 | `features/alarms`, `alarm-tools`, `alarm-tones`, `app/alarm-commands`, `app/alarm-ring`, `voice/mixer` | Words, DST, ring/snooze/missed/offline/restart/move, buttons, firm and math modes, undo, unreadable file, PC copy, tools, tones |
+| `alarm-clips.test.ts` | 9 | `app/alarm-commands` (`saveClip`), `alarm-tools`, `app/alarm-ring` | Saving a YouTube clip with yt-dlp and ffmpeg stubbed: found, nothing found, too long, decode failures, silence, name clashes, 10-sound limit, a full disk; an empty clip rings the classic tone |
+| `alarm-commands.test.ts` | 47 | `app/alarm-commands`, `features/alarms`, `alarm-tools` | `/alarm` and the DM buttons through real discord.js interactions (gateway payloads in, REST calls faked): every subcommand and option, reply timing and flags, bad input, time zones and DST, owners and other people, stale, repeated, expired and pre-restart button presses; a validator for the command definition |
+| `alarms.test.ts` | 40 | `features/alarms`, `alarm-tools`, `alarm-tones`, `app/alarm-commands`, `app/alarm-ring`, `voice/mixer` | Words, DST, ring/snooze/missed/offline/restart/move, buttons, firm and math modes, undo, unreadable file, PC copy, tools, tones |
 | `anthropic.test.ts` | 3 | `brain/anthropic` | Claude message conversion, cache breakpoints, tool-turn replay |
 | `auth.test.ts` | 14 | `web/auth` | Login, setup code and password-change limits |
 | `automemory.test.ts` | 20 | `features/automemory`, `notes`, `brain/orchestrator` | Parsing, cadence, forget races, update/drop, background fallback and pricing |

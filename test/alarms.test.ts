@@ -562,6 +562,18 @@ describe('alarm tools', () => {
     r.advance(60_000);
     expect((alarmState(r.clock, 'u1', r.now()).ringing as unknown[]).length).toBe(1);
   });
+
+  it("tells the PC an alarm's own snooze length", async () => {
+    const r = rig();
+    await r.call('set_alarm', { time: '13:01' });
+    await r.call('set_alarm', { time: '13:02' });
+    r.clock.forUser('u1')[1]!.snoozeMin = 4;
+    const s = alarmState(r.clock, 'u1', r.now());
+    expect((s.list as { snoozeMin?: number }[]).map((a) => a.snoozeMin)).toEqual([undefined, 4]);
+    expect(s.snoozeMin).toBe(9);
+    r.advance(2 * 60_000);
+    expect((alarmState(r.clock, 'u1', r.now()).ringing as { snoozeMin?: number }[]).map((a) => a.snoozeMin)).toEqual([undefined, 4]);
+  });
 });
 
 describe('alarm sounds', () => {
@@ -694,5 +706,197 @@ describe('changes that say themselves (no second model call)', () => {
     const set = tools.find((t) => t.spec.name === 'alarm_options')!;
     const raw = (await set.run({ action: 'set', snooze_minutes: 15 }, sig(), ctx)) as string;
     expect(set.speak?.({ action: 'set' }, raw, ctx)).toBeUndefined();
+  });
+});
+
+describe('answers from a PC', () => {
+  const MIN = 60_000;
+  const answer = (r: ReturnType<typeof rig>, a: { id: string; base: number }, action: 'stop' | 'snooze', at = r.now()) => r.clock.answeredElsewhere('u1', { id: a.id, base: a.base, action, at });
+
+  it("a Stop from a PC whose clock ran ahead doesn't cancel an alarm that hasn't rung yet", async () => {
+    const r = rig();
+    await r.call('set_alarm', { time: '14:00' }); // once, an hour from now
+    const a = { ...r.clock.forUser('u1')[0]! };
+    // The PC rang it early: by its clock (and its stamp) it's 2 PM already.
+    expect(answer(r, a, 'stop', a.base + 30_000)).toBe(false);
+    expect(answer(r, a, 'stop')).toBe(false);
+    expect(answer(r, a, 'snooze')).toBe(false);
+    expect(r.logs.filter((l) => l === 'alarm answer from a PC ignored')).toHaveLength(3);
+    const still = r.clock.forUser('u1')[0]!;
+    expect(still.at).toBe(a.base);
+    expect(still.snoozed).toBeUndefined();
+    r.advance(a.base - r.now());
+    expect(r.clock.ringingFor('u1')).toHaveLength(1);
+  });
+
+  it('the same for a timer, and a minute early still counts', async () => {
+    const r = rig();
+    await r.call('set_timer', { minutes: 30 });
+    const t = { ...r.clock.forUser('u1')[0]! };
+    expect(answer(r, t, 'stop')).toBe(false);
+    r.advance(t.base - r.now() - 30_000); // half a minute before it's due
+    expect(answer(r, t, 'stop')).toBe(true);
+    expect(r.clock.forUser('u1')).toHaveLength(0);
+  });
+
+  it('an answer stamped ahead of the server clock is ignored, even while it rings', async () => {
+    const r = rig();
+    await r.call('set_alarm', { time: '13:01' });
+    r.advance(MIN);
+    const a = { ...r.clock.forUser('u1')[0]! };
+    expect(answer(r, a, 'stop', r.now() + 60 * MIN)).toBe(false);
+    expect(r.clock.ringingFor('u1')).toHaveLength(1);
+    expect(answer(r, a, 'stop')).toBe(true);
+  });
+
+  it('a turned-off alarm is left alone', async () => {
+    const r = rig();
+    await r.call('set_alarm', { time: '13:01' });
+    const a = r.clock.forUser('u1')[0]!;
+    a.enabled = false;
+    r.advance(5 * MIN);
+    expect(answer(r, a, 'stop')).toBe(false);
+    expect(r.clock.forUser('u1')).toHaveLength(1);
+  });
+
+  it('a snooze sent twice snoozes once: the repeat does not cut the next ring', async () => {
+    const r = rig();
+    await r.call('set_alarm', { time: '13:01' });
+    r.advance(MIN);
+    const a = { ...r.clock.forUser('u1')[0]! };
+    const at = r.now() + 10_000;
+    r.advance(10_000);
+    expect(answer(r, a, 'snooze', at)).toBe(true);
+    r.advance(9 * MIN);
+    const ringing = r.clock.ringingFor('u1');
+    expect(ringing).toHaveLength(1);
+    const since = ringing[0]!.ringingSince;
+    // The PC sends it again after a reconnect.
+    expect(answer(r, a, 'snooze', at)).toBe(false);
+    expect(r.clock.ringingFor('u1')[0]?.ringingSince).toBe(since);
+    expect(r.rings.at(-1)!.handle.stopped).toBe(false);
+    // A second, real snooze of that ring still counts.
+    expect(answer(r, a, 'snooze')).toBe(true);
+    expect(r.clock.ringingFor('u1')).toHaveLength(0);
+  });
+
+  it('a repeated snooze after a later snooze here does not pull the alarm back', async () => {
+    const r = rig();
+    await r.call('set_alarm', { time: '13:01' });
+    r.advance(MIN);
+    const a = { ...r.clock.forUser('u1')[0]! };
+    const at = r.now();
+    expect(answer(r, a, 'snooze', at)).toBe(true);
+    r.advance(9 * MIN);
+    expect(r.clock.control('u1', 'snooze').done).toBe(true);
+    const later = r.clock.forUser('u1')[0]!.at;
+    expect(answer(r, a, 'snooze', at)).toBe(false);
+    expect(r.clock.forUser('u1')[0]!.at).toBe(later);
+  });
+
+  it('a PC answer older than a snooze given here loses to it', async () => {
+    const r = rig();
+    await r.call('set_alarm', { time: '13:01' });
+    r.advance(MIN);
+    const a = { ...r.clock.forUser('u1')[0]! };
+    const pressed = r.now() + 10_000;
+    r.advance(30_000);
+    r.clock.control('u1', 'snooze');
+    expect(answer(r, a, 'stop', pressed)).toBe(false);
+    expect(r.clock.forUser('u1')[0]!.snoozed).toBe(true);
+  });
+
+  it('a late Stop for a ring the server snoozed by itself still turns it off', async () => {
+    const r = rig();
+    await r.call('set_alarm', { time: '13:01' });
+    r.advance(MIN);
+    const a = { ...r.clock.forUser('u1')[0]! };
+    const pressed = r.now() + 30_000;
+    r.advance(10 * MIN); // nobody answered here: snoozed itself
+    expect(r.clock.forUser('u1')[0]!.snoozed).toBe(true);
+    expect(answer(r, a, 'stop', pressed)).toBe(true);
+    expect(r.clock.forUser('u1')).toHaveLength(0);
+    const rings = r.rings.length;
+    r.advance(30 * MIN);
+    expect(r.rings.length).toBe(rings);
+  });
+
+  it('a late Stop after the occurrence moved on changes nothing', async () => {
+    const r = rig();
+    await r.call('set_alarm', { time: '13:01', repeat: 'daily' });
+    const a = { ...r.clock.forUser('u1')[0]! };
+    r.advance(MIN);
+    const pressed = r.now() + 30_000;
+    for (let i = 0; i < 6; i++) r.advance(10 * MIN); // rings out all its rounds, with snoozes between
+    expect(r.clock.forUser('u1')[0]!.base).toBe(a.base + 86_400_000);
+    expect(answer(r, a, 'stop', pressed)).toBe(false);
+    expect(r.clock.forUser('u1')[0]!.base).toBe(a.base + 86_400_000);
+  });
+
+  it('a Stop for a one-off that was removed brings nothing back', async () => {
+    const r = rig();
+    await r.call('set_alarm', { time: '13:01' });
+    const a = { ...r.clock.forUser('u1')[0]! };
+    r.advance(MIN);
+    r.clock.remove([a.id]);
+    expect(answer(r, a, 'stop')).toBe(false);
+    expect(answer(r, a, 'snooze')).toBe(false);
+    expect(r.clock.forUser('u1')).toHaveLength(0);
+  });
+
+  it('snooze then stop: both count, in order', async () => {
+    const r = rig();
+    await r.call('set_alarm', { time: '13:01', repeat: 'daily' });
+    r.advance(MIN);
+    const a = { ...r.clock.forUser('u1')[0]! };
+    expect(answer(r, a, 'snooze', r.now())).toBe(true);
+    r.advance(9 * MIN + 20_000);
+    expect(answer(r, a, 'stop', r.now())).toBe(true);
+    expect(r.clock.forUser('u1')[0]!.base).toBe(a.base + 86_400_000);
+    expect(r.clock.forUser('u1')[0]!.snoozed).toBeUndefined();
+  });
+
+  it('a late Stop from before "turn it back on" leaves it back on', async () => {
+    const r = rig();
+    await r.call('set_alarm', { time: '13:01' });
+    r.advance(MIN);
+    const a = { ...r.clock.forUser('u1')[0]! };
+    const pressed = r.now() + 5_000;
+    r.advance(10_000);
+    expect(r.clock.control('u1', 'stop').done).toBe(true);
+    expect(r.clock.control('u1', 'snooze').done).toBe(true); // "wait, I'm not up"
+    expect(answer(r, a, 'stop', pressed)).toBe(false);
+    expect(r.clock.forUser('u1')[0]!.snoozed).toBe(true);
+  });
+
+  it('stop then a stale snooze: the snooze is ignored, repeating or once', async () => {
+    for (const repeat of ['daily', undefined]) {
+      const r = rig();
+      await r.call('set_alarm', { time: '13:01', ...(repeat ? { repeat } : {}) });
+      r.advance(MIN);
+      const a = { ...r.clock.forUser('u1')[0]! };
+      const t = r.now();
+      expect(answer(r, a, 'stop', t + 5_000)).toBe(true);
+      expect(answer(r, a, 'snooze', t)).toBe(false);
+      expect(answer(r, a, 'stop', t + 5_000)).toBe(false);
+      const left = r.clock.forUser('u1');
+      if (repeat) expect(left[0]!.base).toBe(a.base + 86_400_000);
+      else expect(left).toHaveLength(0);
+      expect(left.some((x) => x.snoozed)).toBe(false);
+    }
+  });
+});
+
+describe('saved sounds', () => {
+  it('a sound file is deleted only once alarms.json no longer names it', () => {
+    for (const saves of [false, true]) {
+      const gone: string[] = [];
+      const file = saves ? undefined : mkdtempSync(join(tmpdir(), 'alarms-')); // a folder: every save fails
+      const c = new AlarmClock(file, TZ, { placeFor: () => undefined, ring: () => undefined, dm: async () => true, soundGone: (f) => void gone.push(f) }, () => Date.UTC(2026, 10, 18, 20, 0));
+      c.addSound({ name: 'horn', owner: 'u1', file: 'a.pcm', seconds: 3 });
+      c.addSound({ name: 'horn', owner: 'u1', file: 'b.pcm', seconds: 3 }); // replaced
+      c.removeSound('u1', 'horn');
+      expect(gone).toEqual(saves ? ['a.pcm', 'b.pcm'] : []);
+    }
   });
 });
