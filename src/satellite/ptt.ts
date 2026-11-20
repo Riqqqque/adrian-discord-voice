@@ -10,8 +10,9 @@
 export interface PttHooks {
   /** A segment that closed at `closedAt` (performance.now()) was said with the
    *  key. `first`: the first in this press, which needs no name. A one-shot
-   *  press (older apps) is used up by whatever comes next. */
-  said(closedAt: number): { ptt: boolean; first: boolean };
+   *  press (older apps) is used up by whatever comes next. `press`: which held
+   *  press it belongs to, so segments of one press can be kept in order. */
+  said(closedAt: number): { ptt: boolean; first: boolean; press?: number };
   /** The key is down now, or a one-shot press is waiting. */
   open(): boolean;
   /** The key went up a moment ago: what they said is complete. */
@@ -38,6 +39,7 @@ export interface PcPushToTalkDeps {
 }
 
 interface Press {
+  id: number;
   at: number;
   /** The key went up (before the release cut). */
   upAt?: number;
@@ -48,7 +50,12 @@ interface Press {
 
 export class PcPushToTalk implements PttHooks {
   private oneShotUntil = 0;
+  /** When the waiting one-shot press came: only what closes after it is theirs. */
+  private oneShotAt = 0;
   private press: Press | undefined;
+  /** The press before it: its last words can land after the next one began. */
+  private last: Press | undefined;
+  private presses = 0;
   private timer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(private readonly d: PcPushToTalkDeps) {}
@@ -60,14 +67,19 @@ export class PcPushToTalk implements PttHooks {
   /** The key went down. `hold`: a key-up will follow. */
   down(hold: boolean): void {
     if (!hold) {
-      this.oneShotUntil = this.now() + PTT_ONE_SHOT_MS;
+      this.oneShotAt = this.now();
+      this.oneShotUntil = this.oneShotAt + PTT_ONE_SHOT_MS;
       this.d.wordsHereUntil(this.oneShotUntil);
       return;
     }
     clearTimeout(this.timer);
-    // Whatever was being heard before the press closes now, as not theirs.
+    // Whatever was being heard before the press closes now: the end of the last
+    // press if it hadn't closed yet (pressed again within its release cut), else not theirs.
     this.d.cut();
-    const p: Press = { at: this.now(), used: false };
+    const old = this.press;
+    if (old && old.end === undefined) old.end = this.now();
+    if (old) this.last = old;
+    const p: Press = { id: ++this.presses, at: this.now(), used: false };
     this.press = p;
     this.d.wordsHereUntil(p.at + PTT_MAX_HOLD_MS);
     this.timer = setTimeout(() => this.up(), PTT_MAX_HOLD_MS);
@@ -87,17 +99,21 @@ export class PcPushToTalk implements PttHooks {
     }, PTT_RELEASE_MS);
   }
 
-  said(closedAt: number): { ptt: boolean; first: boolean } {
+  said(closedAt: number): { ptt: boolean; first: boolean; press?: number } {
     const now = this.now();
-    const p = this.press;
-    if (p && closedAt > p.at && (p.end === undefined || closedAt <= p.end)) {
+    const within = (p: Press | undefined): p is Press => !!p && closedAt > p.at && (p.end === undefined || closedAt <= p.end);
+    const p = within(this.press) ? this.press : within(this.last) ? this.last : undefined;
+    if (p) {
       const first = !p.used;
       p.used = true;
-      // Still held: the press's own time stands.
-      if (p.end !== undefined) this.d.wordsHereUntil(now + CALL_COPY_MS);
-      return { ptt: true, first };
+      // A press still held keeps its own time.
+      if (this.press?.end !== undefined) this.d.wordsHereUntil(now + CALL_COPY_MS);
+      return { ptt: true, first, press: p.id };
     }
-    const on = now < this.oneShotUntil;
+    // Older apps: the next thing heard, if it closed after the press. What was
+    // already said (a voice in a call, held by Smart Turn or queued) isn't theirs.
+    const on = now < this.oneShotUntil && closedAt >= this.oneShotAt;
+    if (now < this.oneShotUntil && !on) return { ptt: false, first: false };
     this.oneShotUntil = 0;
     if (on) this.d.wordsHereUntil(now + CALL_COPY_MS);
     return { ptt: on, first: on };
@@ -117,6 +133,7 @@ export class PcPushToTalk implements PttHooks {
   close(): void {
     clearTimeout(this.timer);
     this.press = undefined;
+    this.last = undefined;
     this.oneShotUntil = 0;
   }
 }
