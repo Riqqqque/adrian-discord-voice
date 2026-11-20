@@ -289,9 +289,10 @@ export function alarmTools(d: AlarmToolDeps): Tool[] {
       if (hit.ringingSince !== undefined && (str(a.time) || a.repeat !== undefined || typeof a.add_minutes === 'number')) c.unring(hit);
       if (typeof a.add_minutes === 'number' && a.add_minutes !== 0) {
         if (hit.kind !== 'timer') return 'add_minutes is for timers; change an alarm with time.';
-        hit.at = Math.max(t + 1000, hit.at + a.add_minutes * 60_000);
+        // Whole ms: the base goes into button ids, and "1/6 of a minute" must not break them.
+        hit.at = Math.round(Math.max(t + 1000, hit.at + a.add_minutes * 60_000));
         hit.base = hit.at;
-        hit.durationMs = (hit.durationMs ?? 0) + a.add_minutes * 60_000;
+        hit.durationMs = Math.round((hit.durationMs ?? 0) + a.add_minutes * 60_000);
         said.push(`${spokenDuration(hit.at - t)} left`);
       }
       if (hit.kind === 'alarm') {

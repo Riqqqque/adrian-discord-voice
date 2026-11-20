@@ -56,6 +56,10 @@ export interface Alarm {
   snoozed?: boolean;
   /** The ring round a "nobody could hear it" message went out for. */
   dmRound?: number;
+  /** When this occurrence was last stopped or snoozed (epoch ms; a PC's
+   *  answer is stamped with its own estimate of this server's clock). An
+   *  answer from a PC stamped no later than this is old news. */
+  answered?: number;
 }
 
 export interface AlarmPrefs {
@@ -91,6 +95,10 @@ interface FileShape {
   prefs: Record<UserId, AlarmPrefs>;
   sounds: SavedSound[];
 }
+
+/** How far a PC's answer may be off this clock: a PC stamps it with its own
+ *  estimate of this server's time, and may answer up to this long before due. */
+const PC_SLACK_MS = 60_000;
 
 export const LIMITS = {
   perUser: 30,
@@ -381,6 +389,8 @@ export interface ControlResult {
   done: boolean;
   /** What she says. */
   say: string;
+  /** It stopped or snoozed something ringing: worth saying where it rang. */
+  rang?: boolean;
 }
 
 export class AlarmClock {
@@ -518,8 +528,8 @@ export class AlarmClock {
     const old = this.savedSound(s.owner, s.name);
     this.data.sounds = this.data.sounds.filter((x) => x !== old);
     this.data.sounds.push(s);
-    this.save();
-    if (old && old.file !== s.file) this.soundGone(old.file);
+    // Only once the file no longer names it: after a failed save it still does.
+    if (this.save() && old && old.file !== s.file) this.soundGone(old.file);
   }
 
   removeSound(userId: UserId, name: string): SavedSound | undefined {
@@ -531,8 +541,7 @@ export class AlarmClock {
     const p = this.data.prefs[userId];
     if (p?.sound === `clip:${s.name}`) delete p.sound;
     if (p?.timerSound === `clip:${s.name}`) delete p.timerSound;
-    this.save();
-    this.soundGone(s.file);
+    if (this.save()) this.soundGone(s.file);
     return s;
   }
 
@@ -579,6 +588,11 @@ export class AlarmClock {
 
   remove(ids: readonly string[]): Alarm[] {
     const set = new Set(ids);
+    // Deleted is deleted: "wait, I'm not up" must not bring one back.
+    for (const [u, off] of this.lastOff) {
+      off.alarms = off.alarms.filter((a) => !set.has(a.id));
+      if (!off.alarms.length) this.lastOff.delete(u);
+    }
     const gone = this.data.alarms.filter((a) => set.has(a.id));
     if (!gone.length) return gone;
     this.data.alarms = this.data.alarms.filter((a) => !set.has(a.id));
@@ -589,6 +603,7 @@ export class AlarmClock {
 
   /** Move a repeating alarm to its next planned time, or take a one-off away. */
   private finish(a: Alarm, now: number): void {
+    delete a.answered;
     delete a.ringingSince;
     delete a.unanswered;
     delete a.snoozed;
@@ -762,11 +777,14 @@ export class AlarmClock {
    *  between snoozes isn't one: firm mode would be skipped). */
   control(userId: UserId, action: 'stop' | 'snooze', minutes?: number, o: { only?: { id: string; base?: number }; typed?: boolean } = {}): ControlResult {
     const now = this.now();
-    const list = this.ringingFor(userId);
     const only = o.only;
-    const same = (a: Alarm) => !!only && a.id === only.id && (only.base === undefined || a.base === only.base);
+    // Compared rounded: a button id carries a whole number of ms.
+    const same = (a: Alarm) => !!only && a.id === only.id && (only.base === undefined || Math.round(a.base) === Math.round(only.base));
+    const all = this.ringingFor(userId);
+    // A button acts on its own alarm only, never on others ringing with it.
+    const list = only ? all.filter(same) : all;
     const snoozed = () => this.data.alarms.filter((a) => a.userId === userId && a.enabled && a.snoozed && a.ringingSince === undefined && (!only || same(a)));
-    if (only && !list.some(same)) {
+    if (only && !list.length) {
       const waiting = snoozed();
       if (waiting.length) return action === 'stop' ? this.offSnoozed(userId, waiting, now) : { done: false, say: `It's snoozed until ${clockText(waiting[0]!.at, waiting[0]!.tz)}.` };
       // Snooze just after a stop: the same "put it back" as saying it.
@@ -791,6 +809,7 @@ export class AlarmClock {
         delete a.dmRound;
         a.unanswered = 0;
         a.snoozed = true;
+        a.answered = now;
         a.at = now + (min !== undefined ? min * 60_000 : this.snoozeMs(a));
       }
       this.save();
@@ -799,7 +818,7 @@ export class AlarmClock {
       const first = list[0]!;
       const timer = list.every((a) => a.kind === 'timer');
       this.deps.log?.('alarm snoozed', { user: userId, alarms: list.length, minutes: Math.round((first.at - now) / 60_000) });
-      return { done: true, say: timer ? `Okay, ${spokenDuration(first.at - now)} more.` : `Snoozed until ${clockText(first.at, first.tz)}.` };
+      return { done: true, rang: true, say: timer ? `Okay, ${spokenDuration(first.at - now)} more.` : `Snoozed until ${clockText(first.at, first.tz)}.` };
     }
     this.lastOff.set(userId, { at: now, alarms: list.map((a) => ({ ...a })) });
     const say = offLine(list, now, (a) => this.nextLine(a, now));
@@ -808,7 +827,7 @@ export class AlarmClock {
     this.drive(now);
     this.deps.changed?.(userId);
     this.deps.log?.('alarm stopped', { user: userId, alarms: list.length });
-    return { done: true, say };
+    return { done: true, rang: true, say };
   }
 
   /** Turn off alarms waiting out a snooze, as if they were ringing. */
@@ -824,17 +843,37 @@ export class AlarmClock {
   }
 
   /** A PC rang this one by itself (the link was down) and it was answered
-   *  there. Applied only if it's still that occurrence. */
+   *  there. Applied only if it's still that occurrence, the server has rung it
+   *  (or is about to), and nothing newer answered it: a PC whose clock ran
+   *  ahead can ring early, and its Stop must not cancel the real ring. The
+   *  answer may come late (after a reconnect) or twice. */
   answeredElsewhere(userId: UserId, r: { id: string; base: number; action: 'stop' | 'snooze'; at: number; minutes?: number }): boolean {
     const a = this.data.alarms.find((x) => x.id === r.id && x.userId === userId);
-    if (!a || a.base !== r.base) return false;
     const now = this.now();
+    const why = !a
+      ? 'gone'
+      : a.base !== r.base
+        ? 'moved on'
+        : !a.enabled
+          ? 'turned off'
+          : r.at > now + PC_SLACK_MS
+            ? 'stamped ahead of this clock'
+            : a.ringingSince === undefined && !a.snoozed && (now < a.at - PC_SLACK_MS || r.at < a.at - PC_SLACK_MS)
+              ? 'not due yet'
+              : typeof a.answered === 'number' && r.at <= a.answered
+                ? 'already answered'
+                : undefined;
+    if (!a || why) {
+      this.deps.log?.('alarm answer from a PC ignored', { user: userId, id: r.id, action: r.action, why, early: a ? Math.round(a.at - now) : undefined });
+      return false;
+    }
     if (r.action === 'stop') this.finish(a, now);
     else {
       delete a.ringingSince;
       delete a.dmRound;
       a.unanswered = 0;
       a.snoozed = true;
+      a.answered = r.at;
       const min = clampInt(r.minutes, LIMITS.snoozeMin, undefined);
       a.at = Math.max(now + 1_000, Math.min(now + 60 * 60_000, r.at + (min !== undefined ? min * 60_000 : this.snoozeMs(a))));
     }
@@ -870,11 +909,11 @@ export class AlarmClock {
       if (live) {
         // A repeating one already moved on: ring this occurrence again, then carry on.
         const { days: _days, ringingSince: _r, dmRound: _d, skip: _s, ...rest } = was;
-        const copy: Alarm = { ...rest, id: randomUUID().slice(0, 8), at, snoozed: true, unanswered: 0 };
+        const copy: Alarm = { ...rest, id: randomUUID().slice(0, 8), at, snoozed: true, unanswered: 0, answered: now };
         this.data.alarms.push(copy);
         first ??= copy;
       } else {
-        const back: Alarm = { ...was, at, snoozed: true, unanswered: 0 };
+        const back: Alarm = { ...was, at, snoozed: true, unanswered: 0, answered: now };
         delete back.ringingSince;
         delete back.dmRound;
         this.data.alarms.push(back);
