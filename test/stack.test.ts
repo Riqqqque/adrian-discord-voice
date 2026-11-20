@@ -2567,9 +2567,17 @@ describe('the local voice at start', () => {
 
   it('stays unloaded while the cloud voice works: answers, fixed replies and the short lines all go to the cloud', async () => {
     const cloudSaid: string[] = [];
+    // Audible samples: the Speaker drops a sentence that is all silence, and the
+    // stack then says its "didn't get that" line. Sentences over 40 characters
+    // stream, so the stream is the cloud's too.
+    const tone = () => Float32Array.from({ length: 960 }, (_, i) => 0.3 * Math.sin(i / 4));
     vi.spyOn(SpeechifyTts.prototype, 'synthesize').mockImplementation(async (t: string) => {
       cloudSaid.push(t);
-      return { samples: new Float32Array(960), sampleRate: 48_000, synthMs: 1 } as never;
+      return { samples: tone(), sampleRate: 48_000, synthMs: 1 } as never;
+    });
+    vi.spyOn(SpeechifyTts.prototype, 'stream').mockImplementation(async function* (t: string) {
+      cloudSaid.push(t);
+      yield { samples: tone(), sampleRate: 48_000 };
     });
     const r = await rig({ cloudVoice: { enabled: true } }, { prepare: kokoroFile });
     r.loggedIn();
