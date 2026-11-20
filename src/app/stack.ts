@@ -1561,7 +1561,8 @@ export async function startVoiceStack(
         log.info('second pass', { user: e.userId, lang: w.lang, decodeMs: w.decodeMs });
         if (w.text) {
           const m = wakeDetector.matchLoose(w.text);
-          e = { ...e, text: w.text, command: e.woke ? (m.woke ? m.remainder : stripWakeLead(w.text)) : '' };
+          // As with the cloud: a loose wake keeps its words unless these wake her too.
+          if (!e.woke || !e.loose || m.woke) e = { ...e, text: w.text, command: e.woke ? (m.woke ? m.remainder : stripWakeLead(w.text)) : '' };
         }
       } else {
         userLang.set(e.userId, 'en');
