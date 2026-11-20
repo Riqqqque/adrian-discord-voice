@@ -7,6 +7,7 @@
 import sherpa from 'sherpa-onnx-node';
 import type { TextToSpeech } from '../core/interfaces.js';
 import { gainAndLimit, integratedLoudness } from '../audio/loudness.js';
+import { forSpeech } from '../brain/speech-text.js';
 
 import { KOKORO_VOICES } from './voices.js';
 
@@ -51,7 +52,7 @@ export const TARGET_LUFS = -16 - 3.01;
  *  words like "Yes?" read hotter than the calibration sentences). */
 const MAX_OVER_LU = 1.5;
 /** Sample-peak ceiling; leaves ~1 dB for inter-sample peaks → < −1 dBTP. */
-const CEILING_DB = -2;
+export const CEILING_DB = -2;
 const CALIBRATION = [
   "Sure, here's what I found. It's seventy two degrees and clear right now.",
   'The capital of Australia is Canberra, which surprises a lot of people.',
@@ -147,7 +148,10 @@ export class KokoroTts implements TextToSpeech {
 
   async synthesize(text: string, opts: { voice: string; speed: number }, signal?: AbortSignal) {
     const gain = await this.gainFor(opts.voice, opts.speed);
-    const r = await this.raw(text, opts.voice, opts.speed, signal);
+    // English voices get times, units and symbols in words (forSpeech).
+    const lang = langOf(opts.voice);
+    const said = lang === 'us' || lang === 'gb' ? forSpeech(text) : text;
+    const r = await this.raw(said, opts.voice, opts.speed, signal);
     return { ...r, samples: levelChunk(r.samples, r.sampleRate, gain) };
   }
 }

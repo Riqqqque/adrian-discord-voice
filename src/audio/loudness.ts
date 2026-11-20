@@ -117,3 +117,64 @@ export function gainAndLimit(x: Float32Array, rate: number, gainDb: number, ceil
   }
   return out;
 }
+
+/** gainAndLimit for audio that arrives in pieces: the same output, sample for
+ *  sample, as running gainAndLimit on all of it at once. Holds back the 2 ms
+ *  look-ahead until the next piece (or end()) shows what follows. */
+export class StreamLimiter {
+  private readonly g: number;
+  private readonly ceil: number;
+  private readonly look: number;
+  private readonly releasePerSample: number;
+  private env = 1;
+  /** Input not yet output (the look-ahead), and its required reduction. */
+  private held = new Float32Array(0);
+  private need = new Float32Array(0);
+
+  constructor(rate: number, gainDb: number, ceilingDb = -2) {
+    this.g = 10 ** (gainDb / 20);
+    this.ceil = 10 ** (ceilingDb / 20);
+    this.look = Math.max(1, Math.round(0.002 * rate));
+    this.releasePerSample = 1 - Math.exp(-1 / (0.05 * rate));
+  }
+
+  push(x: Float32Array): Float32Array {
+    const held = new Float32Array(this.held.length + x.length);
+    held.set(this.held);
+    held.set(x, this.held.length);
+    const need = new Float32Array(held.length);
+    need.set(this.need);
+    for (let i = this.need.length; i < held.length; i++) {
+      const a = Math.abs(held[i]! * this.g);
+      need[i] = a > this.ceil ? this.ceil / a : 1;
+    }
+    // A sample is final once its whole look-ahead window has arrived.
+    const ready = Math.max(0, held.length - this.look + 1);
+    const out = this.run(held, need, ready, held.length);
+    this.held = held.subarray(ready);
+    this.need = need.subarray(ready);
+    return out;
+  }
+
+  /** The held tail, now that nothing follows it. */
+  end(): Float32Array {
+    const out = this.run(this.held, this.need, this.held.length, this.held.length);
+    this.held = new Float32Array(0);
+    this.need = new Float32Array(0);
+    return out;
+  }
+
+  private run(x: Float32Array, need: Float32Array, count: number, n: number): Float32Array {
+    const out = new Float32Array(count);
+    for (let i = 0; i < count; i++) {
+      let target = 1;
+      for (let j = i; j < Math.min(n, i + this.look); j++) target = Math.min(target, need[j]!);
+      this.env = target < this.env ? target : this.env + (target - this.env) * this.releasePerSample;
+      let v = x[i]! * this.g * this.env;
+      if (v > this.ceil) v = this.ceil;
+      else if (v < -this.ceil) v = -this.ceil;
+      out[i] = v;
+    }
+    return out;
+  }
+}
