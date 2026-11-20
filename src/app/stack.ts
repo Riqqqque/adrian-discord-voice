@@ -1544,7 +1544,8 @@ export async function startVoiceStack(
           log.info('pc deferred to discord', { room: rm.key });
           rm.ui!.transcript('her', 'Answering in the Discord call.');
         }
-      } else if (e.woke) {
+      } else if (e.woke || (alarms.ringingFor(e.userId).length > 0 && (stop || !!ringWord(e.text)))) {
+        // On her name, or on words for their ringing alarm: otherwise a stop there would just go unheard.
         log.info('pc hears the call', { room: rm.key });
         rm.ui!.transcript('her', CALL_PLAYS_HERE);
       }
