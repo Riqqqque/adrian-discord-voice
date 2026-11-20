@@ -58,7 +58,7 @@ for (let r = 0; r < reps; r++) {
         }
         const answered = !silent && !!out;
         if (usage) cost += (usage.inputTokens - usage.cachedTokens) * IN + usage.cachedTokens * IN * 0.1 + usage.outputTokens * OUT;
-        const rec = { rep: r, desk, variant, said: line.said, for: line.for, answered, right: answered === line.for, out: out.slice(0, 140) };
+        const rec = { rep: r, desk, variant, said: WHOLE ? line.whole : line.said, for: line.for, answered, right: answered === line.for, out: out.slice(0, 140) };
         results.push(rec);
         console.log(JSON.stringify(rec));
         writeFileSync(outFile, JSON.stringify(results, null, 1));
