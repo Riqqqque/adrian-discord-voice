@@ -424,7 +424,13 @@ export function gameNightTool(d: GameNightDeps): Tool {
     timeoutMs: 12_000,
     // "Which game?" is a question back: their answer must still be heard.
     acts: (a) => (a.action === 'ping' && !!String(a.game ?? '').trim()) || a.action === 'join' || a.action === 'leave',
-    speak: (a, raw, ctx) => (raw.startsWith('Ping ') && raw.endsWith('?') ? raw : a.action === 'ping' && raw.startsWith('Pinged ') && !raw.includes('(') ? 'Pinged them.' : (d.english?.(ctx.userId) ?? true) && !asksMore(ctx.said) ? signupLine(raw) : undefined),
+    speak: (a, raw, ctx) => {
+      if (raw.startsWith('Ping ') && raw.endsWith('?')) return raw;
+      // A line of its own only when that was all they asked: "ping the squad and play some music" goes on to the model.
+      if (!(d.english?.(ctx.userId) ?? true) || asksMore(ctx.said)) return undefined;
+      if (a.action === 'ping') return raw.startsWith('Pinged ') && !raw.includes('(') ? 'Pinged them.' : undefined;
+      return signupLine(raw);
+    },
     asks: (raw) => raw.startsWith('Ping ') && raw.endsWith('?'),
     run: async (a, _signal, ctx) => {
       const action = String(a.action ?? '');

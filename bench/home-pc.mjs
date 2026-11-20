@@ -36,6 +36,16 @@ const HOME = [
   'shut off the tv in the living room',
   'turn off the fan',
   'turn the heat down',
+  // Review 6 (H1, H2): any words between the verb and the thing, and a house
+  // clause next to another order.
+  'turn off the ceiling fan',
+  'lock the office door',
+  'turn down the office tv',
+  'turn off the christmas lights',
+  'turn off the lights and lock the office door',
+  'turn the tv volume down',
+  'open the garage door',
+  'apaga las luces',
 ];
 /** Said at the desk, these are the PC and must reach it. */
 const PC = [
@@ -51,7 +61,12 @@ const PC = [
   ['skip and turn the lights on', (a) => a.some((x) => x.name === 'pc_media' && x.args.action === 'next')],
   ['cancel the shutdown and turn the lights back on', (a) => a.some((x) => x.name === 'pc_system' && x.args.action === 'cancel_shutdown')],
   ['open the tv app', (a) => a.some((x) => (x.name === 'pc_apps' && x.args.action === 'open') || x.name === 'pc_open')],
+  // No punctuation, and a PC order before a house one.
+  ['pause I gotta open the door', (a) => a.some((x) => x.name === 'pc_media')],
+  ['turn off my screen and lock the front door', (a) => a.some((x) => x.name === 'pc_system' && x.args.action === 'screen_off') && !a.some((x) => x.args.action === 'lock')],
 ];
+/** Unclear at the desk: if she tries a lock, it asks "Lock the PC?" first, and their yes does it. */
+const UNSURE = ['lock everything', 'turn off the lights and lock it'];
 
 const pcAnswer = (name, x = {}) => {
   if (name === 'pc_system') return x.action === 'cancel_shutdown' ? 'Called off the shutdown.' : x.action === 'lock' ? 'Locked the PC.' : x.action === 'screen_off' ? 'Screens off.' : x.action === 'sleep' ? 'Going to sleep in 3 seconds.' : `${x.action === 'restart' ? 'Restarting' : 'Shutting down'} in 30 seconds. Saying "cancel that" stops it.`;
@@ -80,7 +95,7 @@ const PLACES = {
 };
 
 const words = (t) => t.split(/\s+/).filter(Boolean).length;
-const POWER_Q = /(shut down|restart|put) the pc( to sleep)?\?/i;
+const POWER_Q = /(?:(?:shut down|restart|put|lock) the pc(?: to sleep)?|turn off the pc's screens)\?/i;
 const HONEST = /can'?t|cannot|can not|don'?t have|not able|no way|not hooked|not set up|not connected|only (control|reach|handle)|isn'?t (something|connected)|not something|\?/i;
 let n = 0;
 let wrong = 0;
@@ -113,12 +128,36 @@ for (const [text, want] of PC) {
   tried.length = 0;
   reached.length = 0;
   let out = '';
-  for await (const ch of PLACES.desk.o.ask(`p${pcOk}${text.length}`, 'Sam', text, AbortSignal.timeout(30_000), undefined, PLACES.desk.place, PLACES.desk.opts)) out += (out ? ' ' : '') + ch;
+  for await (const ch of PLACES.desk.o.ask(`pc${PC.findIndex(([t]) => t === text)}`, 'Sam', text, AbortSignal.timeout(30_000), undefined, PLACES.desk.place, PLACES.desk.opts)) out += (out ? ' ' : '') + ch;
   // A refusal of ours shows as a pc_ call that never reached the PC.
   const refused = tried.some((k) => k.name.startsWith('pc_')) && !reached.length;
   const good = want(reached) && !refused;
   if (good) pcOk++;
-  console.log(`${good ? 'ok   ' : 'BAD  '} [desk, the PC] "${text}"\n    reached: ${reached.map((k) => `${k.name}${JSON.stringify(k.args)}`).join(' ') || '-'}\n    says (${words(out)} words): ${out.slice(0, 200)}`);
+  console.log(`${good ? 'ok   ' : 'BAD  '} [desk, the PC] "${text}"\n    tried: ${tried.filter((k) => k.name.startsWith('pc_')).map((k) => `${k.name}${JSON.stringify(k.args)}`).join(' ') || '-'}${refused ? ' (refused by the guard)' : ''}\n    reached: ${reached.map((k) => `${k.name}${JSON.stringify(k.args)}`).join(' ') || '-'}\n    says (${words(out)} words): ${out.slice(0, 200)}`);
 }
 
-console.log(`\nwrong PC actions: ${wrong}/${n} (pc_ tool tried on ${attempts}); honest answers ${honest}/${n}; PC orders that still worked ${pcOk}/${PC.length}${wrongCases.length ? `\nwrong: ${wrongCases.join('; ')}` : ''}`);
+let lockTried = 0;
+let asked = 0;
+let yesDone = 0;
+for (const [i, text] of UNSURE.entries()) {
+  const turn = async (said, followUp) => {
+    tried.length = 0;
+    reached.length = 0;
+    let out = '';
+    for await (const ch of PLACES.desk.o.ask(`unsure${i}`, 'Sam', said, AbortSignal.timeout(30_000), undefined, PLACES.desk.place, { ...PLACES.desk.opts, followUp })) out += (out ? ' ' : '') + ch;
+    return out;
+  };
+  const first = await turn(text, false);
+  const triedLock = tried.some((k) => k.name === 'pc_system' && k.args.action === 'lock');
+  const q = /lock the pc\?/i.test(first) && !reached.length;
+  if (triedLock) lockTried++;
+  if (q) asked++;
+  let second = '';
+  if (q) {
+    second = await turn('yes', true);
+    if (reached.some((k) => k.name === 'pc_system' && k.args.action === 'lock')) yesDone++;
+  }
+  console.log(`${!triedLock ? 'n/a  ' : q && second ? 'ok   ' : 'BAD  '} [desk, unclear] "${text}"\n    tried lock: ${triedLock}; reached: ${q ? '-' : reached.map((k) => `${k.name}${JSON.stringify(k.args)}`).join(' ') || '-'}; says: ${first.slice(0, 160)}${q ? `\n    after "yes": reached ${reached.map((k) => `${k.name}${JSON.stringify(k.args)}`).join(' ') || '-'}; says: ${second.slice(0, 120)}` : ''}`);
+}
+
+console.log(`\nwrong PC actions: ${wrong}/${n} (pc_ tool tried on ${attempts}); honest answers ${honest}/${n}; PC orders that still worked ${pcOk}/${PC.length}; unclear lock: tried ${lockTried}/${UNSURE.length}, asked ${asked}, yes locked ${yesDone}${wrongCases.length ? `\nwrong: ${wrongCases.join('; ')}` : ''}`);
