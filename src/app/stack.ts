@@ -71,7 +71,7 @@ import { linksLine, PLAY_THAT_LINK, RecentLinks } from '../features/links.js';
 import { CloudBudget } from '../speech/cloud-budget.js';
 import { ParakeetStt } from '../speech/sherpa.js';
 import { prepareLocalVoice } from './local-voice.js';
-import { rssMb } from './memory.js';
+import { LOCAL_VOICE_MB, readMemInfo, rssMb, tooLittleMemory } from './memory.js';
 import { DiscordVoiceTransport } from '../transport/discord.js';
 import { Speaker } from '../voice/speaker.js';
 import { TextWakeDetector } from '../wake/text-wake.js';
@@ -198,7 +198,7 @@ export async function startVoiceStack(
   const voiceBudget = new CharBudget(stateDir ? join(stateDir, 'voice-usage.json') : undefined, cv?.monthlyChars ?? 0, config.timezone);
   const cloud =
     cv && cloudKey
-      ? new SpeechifyTts({ apiKey: cloudKey, voiceId: cv.voiceId, model: cv.model, timeoutMs: cv.timeoutMs, speed: cv.speed, budget: voiceBudget, log }, tts, voice.voice)
+      ? new SpeechifyTts({ apiKey: cloudKey, voiceId: cv.voiceId, model: cv.model, timeoutMs: cv.timeoutMs, speed: cv.speed, budget: voiceBudget, log, memoryShort: () => tooLittleMemory(LOCAL_VOICE_MB, readMemInfo()), roomSpeed: voice.speed }, tts, voice.voice)
       : undefined;
   if (cloud) log.info('cloud voice', { provider: cv!.provider, voice: cv!.voiceId, usedChars: voiceBudget.used(), monthlyChars: cv!.monthlyChars });
   // Kokoro loads now only when it speaks English; as the cloud's stand-in it loads on first use.
