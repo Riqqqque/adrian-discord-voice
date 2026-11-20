@@ -672,8 +672,9 @@ export function judge(said: string | undefined, name: string, action: string): J
       if (!system) return { go: true };
       ask = true;
     } else if (ts.some((t) => t.to === 'mixed')) {
+      const m = ts.find((t) => t.to === 'mixed');
       if (system) ask = true;
-      else thing ??= ts.find((t) => t.to === 'mixed')!.thing ?? 'house';
+      else thing ??= (m?.to === 'mixed' ? m.thing : undefined) ?? 'house';
     } else {
       const h = ts.find((t) => t.to === 'house');
       if (h?.to === 'house') thing ??= h.thing;
