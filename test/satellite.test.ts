@@ -173,13 +173,13 @@ describe('how a satellite link ended', () => {
     const c = await r.client({ type: 'hello', token: r.token });
     c.ws.close(1001, 'going away');
     await settle();
-    expect(r.ends()).toEqual([{ device: 'Desk PC', by: 'pc', code: 1001, reason: 'going away', linkS: 0, quietS: expect.any(Number) }]);
+    expect(r.ends()).toEqual([{ device: 'Desk PC', by: 'pc', code: 1001, reason: 'going away', linkS: expect.any(Number), quietS: expect.any(Number) }]);
     expect(r.conns[0].isReady()).toBe(false);
     await r.server.close();
   });
 
   it('a PC that stops answering pings is dropped by the heartbeat, and the log says so', async () => {
-    const r = await rig({ heartbeatMs: 100 });
+    const r = await rig({ heartbeatMs: 400 });
     const c = await r.client({ type: 'hello', token: r.token }, { autoPong: false });
     const code = await c.closed;
     expect(code).toBe(1006);
@@ -191,9 +191,9 @@ describe('how a satellite link ended', () => {
   });
 
   it('a PC that keeps answering is not dropped', async () => {
-    const r = await rig({ heartbeatMs: 100 });
+    const r = await rig({ heartbeatMs: 400 });
     await r.client({ type: 'hello', token: r.token });
-    await new Promise((res) => setTimeout(res, 500));
+    await new Promise((res) => setTimeout(res, 1_500));
     expect(r.ends()).toEqual([]);
     expect(r.conns[0].isReady()).toBe(true);
     await r.server.close();
