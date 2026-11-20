@@ -147,6 +147,7 @@ Alarms and timers ring with a sound until you stop them, the way an alarm clock 
   - Music goes down while it rings. When she talks over it (the time, or an answer), the alarm turns down for her.
 - **Turning it off:** say "stop", "turn it off" or "I'm up". "Snooze", "five more minutes" or "snooze for 10 minutes" snoozes it. You don't need her name.
   - Only you can stop your alarm by voice. An owner can stop anyone's, but only with her name ("Adrian, stop the alarm").
+  - At your PC while you're muted in her call, your speakers play the call, so what the PC hears might be someone else: use push-to-talk, or the window's buttons.
   - Only whole sentences count: "stop by the store later" or a song called *Stop* does nothing to it, and neither do music commands or "stop listening".
   - "Wait, I'm not up" or "turn it back on" within 3 minutes of a stop puts it back, snoozed.
   - Also from the Stop and Snooze buttons in the PC app's window and tray, the DM buttons, or `/alarm stop`.
