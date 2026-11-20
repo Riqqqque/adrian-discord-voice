@@ -21,11 +21,13 @@ class El {
   scrollHeight = 0;
   classList = { contains: (c: string) => this.className.split(' ').includes(c) };
   constructor(readonly tag: string) {}
-  append(...kids: Kid[]) {
-    this.children.push(...kids);
+  // As the DOM does: anything that isn't a node becomes text (an array too,
+  // which is how a select can end up with no options in a real browser).
+  append(...kids: unknown[]) {
+    this.children.push(...kids.map((k) => (k instanceof El ? k : String(k))));
   }
-  replaceChildren(...kids: Kid[]) {
-    this.children = kids;
+  replaceChildren(...kids: unknown[]) {
+    this.children = kids.map((k) => (k instanceof El ? k : String(k)));
   }
   addEventListener(type: string, f: (e: unknown) => unknown) {
     (this.listeners[type] ??= []).push(f);
@@ -141,6 +143,7 @@ async function page(routes: Record<string, Route> = {}, search = '', settings: u
     radios: () => app.all().filter((e) => e.attrs.type === 'radio'),
     keyBoxes: () => app.all().filter((e) => e.attrs.type === 'password'),
     form: () => app.all().find((e) => e.tag === 'form')!,
+    elements: () => app.all(),
     logOut: async () => {
       await els.who!.all().find((e) => e.tag === 'button')!.click();
       await settle();
@@ -427,5 +430,77 @@ describe('what the wizard says', () => {
   it('does not claim only the question goes to the model', () => {
     expect(source).not.toContain('Only the transcribed question');
     for (const what of ['saved notes', 'channel messages', 'said in the call']) expect(source).toContain(what);
+  });
+});
+
+describe('first-run setup, for someone new to it', () => {
+  const discordOk = (guilds: { id: string; name: string }[]) => () => ({ body: { ok: true, botTag: 'A.D.R.I.A.N.#0671', guilds, inviteUrl: 'https://x.test', publicBot: false, intents: { messageContent: false, members: true, presences: false } } });
+
+  it('the claim page names the command that shows the setup code where it runs', async () => {
+    const p = await page({ '/api/session': () => ({ body: { loggedIn: false, setupNeeded: true, setupCodeCommand: 'docker compose exec adrian node dist/cli/tool.js setup-code' } }) });
+    expect(p.text()).toContain('docker compose exec adrian node dist/cli/tool.js setup-code');
+    expect(p.text()).toContain('Lost it, or it expired');
+  });
+
+  it('says which optional Discord features are on', async () => {
+    const p = await page({ '/api/check/discord': discordOk([{ id: '100000000000000010', name: 'Test' }]) }, '?step=1', SETTINGS, ['DISCORD_TOKEN']);
+    await p.settle();
+    expect(p.text()).toContain('Message Content is off');
+    expect(p.text()).toContain('Server Members is on');
+  });
+
+  it('notices by itself when the bot has been added to a server', async () => {
+    let guilds: { id: string; name: string }[] = [];
+    const p = await page({ '/api/check/discord': () => discordOk(guilds)() }, '?step=1', SETTINGS, ['DISCORD_TOKEN']);
+    await p.settle();
+    expect(p.text()).toContain('The bot is not in any server yet');
+    guilds = [{ id: '100000000000000010', name: 'Our Server' }];
+    await p.tick();
+    expect(p.text()).toContain('Our Server');
+    expect(p.text()).not.toContain('The bot is not in any server yet');
+  });
+
+  it("warns, without blocking the save, when the bot can't speak in the chosen channel", async () => {
+    const access = '/api/check/voice-access?guild=100000000000000010&channel=100000000000000020';
+    const p = await page(
+      {
+        '/api/check/discord': discordOk([{ id: '100000000000000010', name: 'Test' }]),
+        '/api/check/channels?guild=100000000000000010': () => ({ body: { channels: [{ id: '100000000000000020', name: 'Lounge' }] } }),
+        [access]: () => ({ body: { ok: false, missing: ['Speak'], error: "The bot can't Speak in Lounge, so it can't be heard there." } }),
+      },
+      '?step=1',
+      SETTINGS,
+      ['DISCORD_TOKEN'],
+    );
+    await p.settle();
+    const selects = p.elements().filter((e) => e.tag === 'select');
+    selects[0]!.value = '100000000000000010';
+    await Promise.all(selects[0]!.listeners.change!.map((f) => f({})));
+    await p.settle();
+    // The channel list is there to choose from.
+    expect(selects[1]!.children.map((c) => (typeof c === 'string' ? `text:${c}` : c.textContent))).toEqual(['Choose a voice channel', 'Lounge']);
+    selects[1]!.value = '100000000000000020';
+    await Promise.all(selects[1]!.listeners.change!.map((f) => f({})));
+    await p.settle();
+    expect(p.text()).toContain("can't Speak in Lounge");
+    await p.press('Save and continue');
+    expect(p.puts()).toEqual([{ guildId: '100000000000000010', channelId: '100000000000000020' }]);
+  });
+
+  it('leaves search off on a first run without a key, so Save goes on', async () => {
+    const p = await page({}, '?step=3', { ...SETTINGS, llm: null, search: false }, []);
+    await p.press('Save and continue');
+    expect(p.puts()).toEqual([{ search: false }]);
+  });
+
+  it('says what to do when the bot will not start', async () => {
+    const p = await page({ '/api/restart': () => ({ body: { state: 'failed', error: 'An invalid token was provided.', fix: 'Reset Token, then paste it.', problems: [] } }) }, '?step=6');
+    await p.press('Start A.D.R.I.A.N.');
+    expect(p.text()).toContain('What to do: Reset Token, then paste it.');
+  });
+
+  it('the status page says what to do about a failed start', async () => {
+    const p = await page({ '/api/status': () => ({ body: { ...STATUS, state: 'failed', error: 'An invalid token was provided.', fix: 'Reset Token, then paste it.' } }) });
+    expect(p.text()).toContain('What to do: Reset Token, then paste it.');
   });
 });

@@ -11,7 +11,7 @@
 //   key only goes to a preset's address or one the config already pairs it with.
 // - Login, setup-code and password-change attempts are rate limited.
 
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { createServer as createHttp, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { createServer as createHttps } from 'node:https';
 import { isIP } from 'node:net';
@@ -22,7 +22,8 @@ import { recentLogLines } from '../core/logger.js';
 import type { UsageLedger } from '../limits/usage-ledger.js';
 import { KOKORO_VOICES } from '../speech/voices.js';
 import { type AdminAuth, LIMIT_WINDOW_MS, type Session } from './auth.js';
-import { checkDiscordToken, checkHardware, checkLlm, checkTavily, LLM_PRESETS, listVoiceChannels } from './checks.js';
+import { checkDiscordToken, checkHardware, checkLlm, checkTavily, checkVoiceAccess, cleanToken, keyMismatch, LLM_PRESETS, listVoiceChannels } from './checks.js';
+import { explainStartError } from './explain.js';
 import { SECRET_NAME, type SecretsFile, writeConfigFile } from './secrets-file.js';
 import { applySettings, CustomLlmSchema, type InstallPaths, keyRouteProblem, SettingsPatchSchema, settingsView } from './settings.js';
 
@@ -40,6 +41,14 @@ export interface WebDeps {
   voicePreview(voice: string, speed: number): Promise<Buffer>;
   tls?: { cert: string; key: string };
   fetch?: typeof fetch;
+  /** Running in the Docker image (default: whether /.dockerenv exists): changes
+   *  the commands the page tells people to run. */
+  docker?: boolean;
+}
+
+/** The command that shows the one-time setup code, where this runs. */
+export function setupCodeCommand(docker: boolean): string {
+  return docker ? 'docker compose exec adrian node dist/cli/tool.js setup-code' : 'sudo adrian setup-code';
 }
 
 const COOKIE = 'adrian_session';
@@ -135,6 +144,7 @@ function pct(xs: number[], p: number): number | null {
 
 export function createAdminServer(d: WebDeps): Server {
   const tls = !!d.tls;
+  const codeCommand = setupCodeCommand(d.docker ?? existsSync('/.dockerenv'));
   const f = d.fetch ?? fetch;
   const handler = (req: IncomingMessage, res: ServerResponse) => {
     securityHeaders(res, tls);
@@ -215,6 +225,7 @@ export function createAdminServer(d: WebDeps): Server {
     if (path === '/api/session' && method === 'GET') {
       return json(res, 200, {
         setupNeeded: !d.auth.hasAdmin(),
+        setupCodeCommand: codeCommand,
         loggedIn: !!session,
         ...(session ? { username: session.username, csrf: session.csrf } : {}),
       });
@@ -224,7 +235,7 @@ export function createAdminServer(d: WebDeps): Server {
       const r = await d.auth.claim(clientIp(req), b.code, b.username, b.password);
       if (!r.ok) {
         if (r.status !== 404) logRefused('setup claim refused', r.status);
-        throw new HttpError(r.status, r.error);
+        throw new HttpError(r.status, r.status === 403 ? `${r.error}. Get the current one on the server with: ${codeCommand}` : r.error);
       }
       d.log.info('admin account created', { username: r.session.username });
       setCookie(res, r.token, 7 * 24 * 3600);
@@ -293,6 +304,7 @@ export function createAdminServer(d: WebDeps): Server {
         version: d.version,
         state: s.state,
         error: s.error ?? null,
+        fix: explainStartError(s.error) ?? null,
         problems: s.state === 'setup' ? setupProblems() : [],
         warnings: setupWarnings(),
         voiceReady: s.current?.voiceReady() ?? false,
@@ -343,7 +355,8 @@ export function createAdminServer(d: WebDeps): Server {
     if (path === '/api/check/discord' && method === 'POST') {
       // Verify a pasted token (saved only if valid) or the stored one.
       const b = await body(req);
-      const given = typeof b.token === 'string' ? b.token.trim() : '';
+      // Saved as Discord wants it: a pasted "Bot ..." or quoted token works too.
+      const given = typeof b.token === 'string' ? cleanToken(b.token) : '';
       const tok = given || d.secrets.read().get('DISCORD_TOKEN');
       if (!tok) throw new HttpError(400, 'paste the bot token first');
       const r = await checkDiscordToken(tok, f);
@@ -363,6 +376,11 @@ export function createAdminServer(d: WebDeps): Server {
         throw new HttpError(502, (e as Error).message);
       }
     }
+    if (path === '/api/check/voice-access' && method === 'GET') {
+      const tok = d.secrets.read().get('DISCORD_TOKEN');
+      if (!tok) throw new HttpError(400, 'Discord token not set');
+      return json(res, 200, await checkVoiceAccess(tok, url.searchParams.get('guild') ?? '', url.searchParams.get('channel') ?? '', f));
+    }
     if (path === '/api/check/llm' && method === 'POST') {
       // Test a provider with a pasted key (saved only if it works) or the stored
       // one. A custom endpoint only ever gets a pasted key: its address comes from
@@ -374,6 +392,9 @@ export function createAdminServer(d: WebDeps): Server {
       const c = custom?.success ? custom.data : undefined;
       const keySecret = preset?.keySecret ?? c!.keySecret;
       const given = typeof b.key === 'string' ? b.key.trim() : '';
+      // Another service's key is never sent to this one.
+      const wrong = given && preset ? keyMismatch(preset.id, given) : undefined;
+      if (wrong) return json(res, 200, { ok: false, error: wrong });
       const key = given || (preset ? d.secrets.read().get(keySecret) : undefined);
       const r = await checkLlm(
         {
@@ -398,6 +419,8 @@ export function createAdminServer(d: WebDeps): Server {
       const given = typeof b.key === 'string' ? b.key.trim() : '';
       const key = given || d.secrets.read().get('TAVILY_API_KEY');
       if (!key) throw new HttpError(400, 'paste the Tavily key first');
+      const wrong = given ? keyMismatch('search', given) : undefined;
+      if (wrong) return json(res, 200, { ok: false, error: wrong });
       const r = await checkTavily(key, f);
       if (r.ok && given) {
         d.secrets.set('TAVILY_API_KEY', given);
@@ -422,7 +445,7 @@ export function createAdminServer(d: WebDeps): Server {
     if (path === '/api/restart' && method === 'POST') {
       d.log.info('restart requested', { by: session.username });
       const state = await s.restart();
-      return json(res, 200, { state, error: s.error ?? null, problems: state === 'setup' ? setupProblems() : [] });
+      return json(res, 200, { state, error: s.error ?? null, fix: explainStartError(s.error) ?? null, problems: state === 'setup' ? setupProblems() : [] });
     }
     if (path === '/api/logs' && method === 'GET') {
       return json(res, 200, { lines: recentLogLines().slice(-200) });
