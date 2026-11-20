@@ -2548,6 +2548,35 @@ describe('the cloud listen during the silence wait', () => {
     await r.stack.stop();
   });
 
+  it("warms the model's cached prompt where the early listen starts, once, and not for music, the time or a PC that takes only push-to-talk", async () => {
+    const prewarm = vi.spyOn(ConversationOrchestrator.prototype, 'prewarm');
+    try {
+      const r = await rig(cloud);
+      const { pipe } = r.connect();
+      r.groq.reply = QUESTION;
+      const samples = new Float32Array(16_000);
+      say(earlyOf(pipe)!, 'hey adrian what is the capital of australia', samples);
+      expect(prewarm.mock.calls).toEqual([['early']]);
+      await until(() => r.groq.calls === 1, 'the cloud listen');
+      // The clip reused in heard(): its listen is already done, so no second warm-up there.
+      r.heard(pipe, OWNER, 'hey adrian what is the capital of australia', 'what is the capital of australia', 1, { samples });
+      await until(() => r.llmBodies.length === 1, 'the model');
+      expect(prewarm).toHaveBeenCalledTimes(1);
+      say(earlyOf(pipe)!, 'hey adrian pause the music');
+      expect(prewarm).toHaveBeenCalledTimes(1);
+      say(earlyOf(pipe)!, 'hey adrian what time is it');
+      expect(prewarm).toHaveBeenCalledTimes(1);
+      r.voiceStates.set(OWNER, { channelId: OTHER_CALL, mute: false, deaf: false });
+      say(earlyOf(pipe)!, 'hey adrian how far away is the moon');
+      await sleep(30);
+      expect(prewarm.mock.calls).toEqual([['early']]);
+      expect(r.groq.calls).toBe(3); // music and the time still get their listen; the guarded PC doesn't
+      await r.stack.stop();
+    } finally {
+      prewarm.mockRestore();
+    }
+  });
+
   it('a hold on the same clip does not ask again', async () => {
     const { r, pipe, turn } = await holding(cloud);
     r.groq.reply = QUESTION;
