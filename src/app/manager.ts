@@ -106,6 +106,8 @@ export class StackManager {
   /** When the current wait for memory began. */
   private lowMemorySince: number | undefined;
   private _waitingFor: 'memory' | undefined;
+  /** stop() was called: a restart still in the chain starts nothing new. */
+  private stopping = false;
   readonly models = new SpeechModels();
 
   constructor(
@@ -175,6 +177,8 @@ export class StackManager {
           this.log.warn('stop failed', { error: (e as Error).message });
         }
       }
+      // Shutting down: a whole new start (login, Smart Turn, the PC server) would only be stopped again.
+      if (this.stopping) return (this._state = 'stopped');
       try {
         const problems = this.problems(); // throws on a config file that can't be read
         if (problems.length) {
@@ -247,7 +251,12 @@ export class StackManager {
   }
 
   async stop(): Promise<void> {
-    await this.chain; // a start still running can leave a retry behind
+    this.stopping = true;
+    try {
+      await this.chain; // a start still running can leave a retry behind
+    } finally {
+      this.stopping = false; // a later restart() starts again
+    }
     clearTimeout(this.retryTimer);
     const s = this.stack;
     this.stack = undefined;
