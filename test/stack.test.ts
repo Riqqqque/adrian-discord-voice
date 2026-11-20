@@ -565,6 +565,15 @@ describe('speech waiting on the cloud listen', () => {
     await r.stack.stop();
   });
 
+  it("a loose wake keeps its own words when the cloud's don't wake her (a stop to a friend)", async () => {
+    const r = await rig(cloud);
+    r.groq.reply = 'Can you stop, Adrian?';
+    r.heard(r.discordPipe, SAM, 'Can you stomp, Adrian?', 'Can you stomp', 1, { loose: true });
+    await until(() => r.llmBodies.length === 1, 'the model judging it');
+    expect(JSON.stringify(r.llmBodies[0].messages.at(-1).content)).toContain('Can you stomp, Adrian?');
+    await r.stack.stop();
+  });
+
   it('speech not meant for her never reaches the cloud', async () => {
     const r = await rig(cloud);
     r.heard(r.discordPipe, SAM, 'random side talk about dinner');

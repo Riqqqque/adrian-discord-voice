@@ -67,7 +67,7 @@ export interface HeardInput {
   /** When they started saying it (default: now). The listening windows are
    *  judged at this moment, not when the transcript lands. */
   startedAt?: number;
-  /** Woken loosely (bare name / mid-sentence): the model decides. */
+  /** Woken loosely (bare name / mid-sentence): the model decides, from `text`. */
   loose?: boolean;
 }
 
@@ -284,7 +284,9 @@ export class ConversationController {
     const wasExpecting = (this.expecting.get(e.userId) ?? 0) > spokenAt;
     if (!e.woke && !wasExpecting && !this.followUpOpen(e.userId, spokenAt)) return;
     // Nothing but her name, however many times: the quick "Yes?", not the model.
-    const command = e.woke ? (classify(e.command)?.kind === 'name' ? '' : e.command) : text;
+    // A loose wake goes to the model as they said it, name and all: "can you
+    // heal Adrian?" without the name would read as a question to her.
+    const command = e.woke ? (classify(e.command)?.kind === 'name' ? '' : e.loose && e.command.trim() && text ? text : e.command) : text;
 
     // Several people waking at once: only the first valid wake counts.
     if (
