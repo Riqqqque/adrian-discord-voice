@@ -3,6 +3,7 @@
 // DeepSeek, Groq, Mistral, or a local server (llama.cpp, vLLM, Ollama).
 
 import type { ChatMessage, LlmEvent, LlmProvider, ToolCall, ToolSpec } from '../core/interfaces.js';
+import { cloud } from '../core/http.js';
 import { IMAGE_UNREADABLE } from './images.js';
 
 export interface OpenAiCompatibleOptions {
@@ -75,7 +76,7 @@ export class OpenAiCompatibleLlm implements LlmProvider {
         : {}),
       ...this.o.extraBody,
     };
-    const res = await fetch(this.url, {
+    const res = await cloud.fetch(this.url, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',

@@ -9,6 +9,7 @@ import { dirname } from 'node:path';
 import type { TextToSpeech } from '../core/interfaces.js';
 import { integratedLoudness } from '../audio/loudness.js';
 import { levelChunk, TARGET_LUFS } from './kokoro.js';
+import { cloud } from '../core/http.js';
 
 const API = 'https://api.speechify.ai/v1/audio/stream';
 const RATE = 24_000;
@@ -110,6 +111,7 @@ export interface SpeechifyOptions {
   speed?: number;
   budget: CharBudget;
   log: { info(m: string, f?: object): void; warn(m: string, f?: object): void };
+  /** Default: the shared provider connections (core/http.ts). */
   fetch?: typeof fetch;
   now?: () => number;
 }
@@ -128,7 +130,9 @@ export class SpeechifyTts implements TextToSpeech {
     /** Local engine and voice used whenever the cloud voice can't be. */
     private readonly fallback: TextToSpeech,
     private readonly fallbackVoice: string,
-  ) {}
+  ) {
+    if (!o.fetch) cloud.register(API);
+  }
 
   private now(): number {
     return (this.o.now ?? Date.now)();
@@ -147,7 +151,7 @@ export class SpeechifyTts implements TextToSpeech {
 
   /** One try at the API: the raw PCM bytes. */
   private async post(text: string, speed: number, signal: AbortSignal): Promise<Buffer> {
-    const r = await (this.o.fetch ?? fetch)(API, {
+    const r = await (this.o.fetch ?? cloud.fetchOnce)(API, {
       method: 'POST',
       headers: { Authorization: `Bearer ${this.o.apiKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({

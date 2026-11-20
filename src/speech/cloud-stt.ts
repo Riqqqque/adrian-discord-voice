@@ -2,6 +2,10 @@
 // turbo on Groq. The local model still does all the listening (wake phrase,
 // side talk); only speech meant for her is sent here.
 
+import { cloud } from '../core/http.js';
+
+const GROQ_STT = 'https://api.groq.com/openai/v1/audio/transcriptions';
+
 /** 16-bit mono WAV in memory. */
 export function wav(samples: Float32Array, rate: number): Uint8Array {
   const data = new DataView(new ArrayBuffer(44 + samples.length * 2));
@@ -40,6 +44,8 @@ export interface CloudSttOptions {
   /** ISO language when known ('en'); unset lets Whisper detect it. */
   language?: string;
   signal?: AbortSignal;
+  /** Default: the shared provider connections (core/http.ts). */
+  fetch?: typeof fetch;
 }
 
 /** Transcribe 16 kHz mono audio with Groq's Whisper. Throws on any failure. */
@@ -51,7 +57,8 @@ export async function groqTranscribe(apiKey: string, samples: Float32Array, rate
   form.append('temperature', '0');
   if (o.prompt) form.append('prompt', o.prompt);
   if (o.language) form.append('language', o.language);
-  const res = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+  if (!o.fetch) cloud.register(GROQ_STT);
+  const res = await (o.fetch ?? cloud.fetch)(GROQ_STT, {
     method: 'POST',
     headers: { authorization: `Bearer ${apiKey}` },
     body: form,
