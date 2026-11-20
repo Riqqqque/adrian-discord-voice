@@ -7,7 +7,8 @@
 // Discord or a PC returns a canned answer from `answers[name](args)` (or
 // "Nothing found."). `record(name, args)` sees every call.
 // `pc`: 'connected' (a PC answers with `answers`), 'absent' (the PC tools and
-// rule are there, as live, but this person has no PC connected), or false.
+// rule are there, as live, but this person has no PC connected: the pc_ tools
+// run and say so), or false.
 import { genderLines } from '../dist/app/identity.js';
 import { matureContext } from '../dist/brain/mature.js';
 import { tavilySearchTool, timeTool } from '../dist/brain/tools.js';
@@ -93,7 +94,7 @@ export function prodKit(c, { record = () => {}, answers = {}, pc = 'connected', 
     run: async (args, signal, ctx) => {
       record(t.spec.name, args);
       if (answers[t.spec.name]) return answers[t.spec.name](args);
-      if (LOCAL.has(t.spec.name)) return t.run(args, signal, ctx);
+      if (LOCAL.has(t.spec.name) || (pc === 'absent' && t.spec.name.startsWith('pc_'))) return t.run(args, signal, ctx);
       return 'Nothing found.';
     },
   }));
