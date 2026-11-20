@@ -335,6 +335,20 @@ describe.skipIf(!hasBash)('install.sh run again on a live install', () => {
     expect(m.exists('opt/releases/1.0.1')).toBe(false);
     expect(m.exists('opt/.prep-abc')).toBe(false);
     expect(m.exists('opt/releases/1.0.0')).toBe(true);
+    // Cut off before it switched: nothing failed, so nothing is remembered.
+    expect(m.exists('opt/update-failed')).toBe(false);
+  }, 60_000);
+
+  it('remembers the failed version when it takes the place of a rollback that was cut off', () => {
+    const m = live();
+    m.put('opt/releases/1.0.1/half', '');
+    m.put('opt/update-in-progress', '1.0.0 1.0.1 rollback -\n');
+    m.put('opt/update-in-progress.unit', 'unit of 1.0.0\n');
+    const r = m.install(['--yes', '--bundle', m.bundle('1.0.2')]);
+    expect(r.code).toBe(0);
+    expect(m.read('opt/update-failed')).toBe('1.0.1\n');
+    expect(m.exists('opt/update-in-progress')).toBe(false);
+    expect(m.exists('opt/releases/1.0.1')).toBe(false);
   }, 60_000);
 
   it.runIf(hasFlock)('waits for an update that is running: changes nothing under it', () => {
@@ -357,7 +371,10 @@ describe.skipIf(!hasBash)('install.sh run again on a live install', () => {
     const m = live();
     const r = m.install(['--yes', '--bundle', m.bundle('1.0.1', { sha: false })]);
     expect(r.code).toBe(0);
-    expect(r.err).toContain('NOT CHECKED');
+    expect(r.err).toContain('warning: NOT CHECKED');
+    // Plain text into a log (no terminal here), and no raw control bytes in the source.
+    expect(r.err).not.toContain('\x1b');
+    expect(readFileSync(`${packaging}install.sh`, 'utf8')).not.toContain('\x1b');
     const strict = m.install(['--yes', '--require-checksum', '--bundle', m.bundle('1.0.2', { sha: false })]);
     expect(strict.code).not.toBe(0);
     expect(strict.err).toContain('--require-checksum');

@@ -4,7 +4,7 @@
 // the rest are stand-ins (as in packaging.test.ts).
 
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -92,15 +92,23 @@ function machine(o: Opts = {}) {
     systemd-run() {
       echo "systemd-run $*" >>"${root}/log"
       [ ! -f "${root}/systemd-run-fails" ] || return 1
-      local envs=() e
-      while [ $# -gt 0 ]; do case "$1" in -E) envs+=("$2"); shift 2 ;; --*) shift ;; *) break ;; esac; done
-      ( for e in "\${envs[@]}"; do export "$e"; done; exec "$@" ) </dev/null >/dev/null 2>&1 &
+      local envs=() e envfile=
+      while [ $# -gt 0 ]; do
+        case "$1" in
+          -E) envs+=("$2"); shift 2 ;;
+          -p) case "$2" in EnvironmentFile=*) envfile=\${2#EnvironmentFile=}; cp "$envfile" "${root}/envfile.seen"; stat -c %a "$envfile" >"${root}/envfile.mode" ;; esac; shift 2 ;;
+          --*) shift ;;
+          *) break ;;
+        esac
+      done
+      ( for e in "\${envs[@]}"; do export "$e"; done; if [ -n "$envfile" ]; then set -a; . "$envfile"; set +a; fi; exec "$@" ) </dev/null >/dev/null 2>&1 &
       echo $! >"${root}/unit.pid"
     }
     runuser() { case "$*" in *" port") echo "http 127.0.0.1 8790" ;; *" check") echo "Config is complete." ;; esac; }
     curl() {
       local url= a; for a; do case "$a" in http*) url=$a ;; esac; done
       echo "curl $url" >>"${root}/log"
+      [ -z "\${https_proxy:-}" ] || echo "via proxy $https_proxy" >>"${root}/log"
       case "$url" in
         https://github.com/*/releases/latest) printf 'https://github.com/x/y/releases/tag/v${NEW}' ;;
         */releases/latest) ${o.rateLimited ? 'return 22' : `printf '{"tag_name":"v${NEW}"}'`} ;;
@@ -186,6 +194,37 @@ describe.skipIf(!hasBash)('an update that was cut off', { timeout: 60_000 }, () 
     expect(m.read('opt/update-failed').trim()).toBe(NEW);
     expect(m.exists(`opt/releases/${NEW}`)).toBe(false);
     expect(m.previous()).not.toBe(NEW);
+  });
+
+  // After a power cut during the watch, `adrian status` shows the new version
+  // failing, and the person runs the documented `sudo adrian rollback`.
+  it('adrian rollback after a cut-off update goes back to the old version, not the one before it', () => {
+    const m = machine({ current: NEW, previous: OLD, mark: `${OLD} ${NEW} switched releases/0.9.0`, health: { [OLD]: healthy(OLD) } });
+    const r = m.run(['rollback']);
+    expect(r.code).toBe(0);
+    expect(r.out + r.err).not.toContain('Switching');
+    expect(r.out).toContain(`The cut-off update to ${NEW} is undone, so she's on ${OLD} again. Nothing else was switched; run sudo adrian rollback again to go back further.`);
+    expect(m.version()).toBe(OLD);
+    expect(m.previous()).toBe('0.9.0');
+    expect(m.read('opt/update-failed').trim()).toBe(NEW);
+    // Asked again, it goes one further.
+    expect(m.run(['rollback']).out).toContain(`Switching ${OLD} -> 0.9.0`);
+  });
+
+  it('adrian rollback after a cut-off rollback stops once that one is finished', () => {
+    const m = machine({ current: OLD, previous: '0.9.0', mark: `${OLD} ${NEW} rollback releases/0.9.0` });
+    const r = m.run(['rollback']);
+    expect(r.out + r.err).not.toContain('Switching');
+    expect(m.version()).toBe(OLD);
+    expect(m.previous()).toBe('0.9.0');
+  });
+
+  it('adrian rollback after a cut-off update that turns out healthy: it stays, and the person is told how to go back', () => {
+    const m = machine({ current: NEW, previous: OLD, mark: `${OLD} ${NEW} switched releases/0.9.0` });
+    const r = m.run(['rollback']);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain(`The cut-off update to ${NEW} was finished and ${NEW} stays. Nothing else was switched; run sudo adrian rollback again to go back to ${OLD}.`);
+    expect(m.version()).toBe(NEW);
   });
 
   it('between the switch and the restart: the old process still answering doesn\'t pass for the new version', () => {
@@ -326,14 +365,22 @@ describe.skipIf(!hasBash)('adrian update around it', { timeout: 60_000 }, () => 
   it('by hand, runs as a systemd unit of its own where systemd can, and says where its log is', () => {
     const m = machine({ systemdRun: 'works' });
     m.put('opt/update.log', 'an earlier run\n');
-    const r = m.run(['update'], { ADRIAN_DETACH: '1', ADRIAN_UPDATE_REPO: 'example/repo', https_proxy: 'http://proxy.invalid:3128' });
+    const proxy = 'http://someone:secret@proxy.invalid:3128';
+    const r = m.run(['update'], { ADRIAN_DETACH: '1', ADRIAN_UPDATE_REPO: 'example/repo', https_proxy: proxy });
     expect(r.out).toContain('Updating in the background (as its own service, adrian-update-by-hand-');
     expect(r.out).toContain(`Its log: ${m.root}/opt/update.log (follow it from anywhere: sudo tail -f ${m.root}/opt/update.log)`);
     const call = m.log().split('\n').find((l) => l.startsWith('systemd-run ')) ?? '';
     expect(call).toMatch(/--unit=adrian-update-by-hand-\S+ --collect/);
-    // A unit starts with systemd's environment: what the update needs is handed over.
-    expect(call).toContain('-E ADRIAN_UPDATE_REPO=example/repo');
-    expect(call).toContain('-E https_proxy=http://proxy.invalid:3128');
+    // A unit starts with systemd's environment: what the update needs is handed over,
+    // but not on the command line, which any user can read back (systemctl show).
+    expect(call).not.toContain('secret');
+    expect(call).not.toContain('example/repo');
+    expect(call).toMatch(/-p EnvironmentFile=\S+\/opt\/\.update-env-/);
+    expect(m.read('envfile.seen')).toContain(`https_proxy="${proxy}"`);
+    expect(m.read('envfile.seen')).toContain('ADRIAN_UPDATE_REPO="example/repo"');
+    if (process.platform !== 'win32') expect(m.read('envfile.mode').trim()).toBe('600');
+    expect(m.log()).toContain(`via proxy ${proxy}`); // the update itself got it
+    expect(readdirSync(join(m.root, 'opt')).filter((f) => f.startsWith('.update-env-'))).toEqual([]); // and deleted the file
     // It ran (the download fails here), its log is its own, and its exit code is this command's.
     const log = m.read('opt/update.log');
     expect(log).toMatch(/^== Update started /);

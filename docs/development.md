@@ -76,6 +76,13 @@ These run against real models and services. Most take the path to a config with 
 2. Update the `yt-dlp_linux` line.
 3. Ship a release.
 
+Upstream sometimes replaces a speech model file in place (both Parakeet and Kokoro were re-uploaded in 2026), and every fresh install then stops at the checksum. To accept the new upload:
+1. Download it, check it comes from the project's own release, and compare it with the old files (what changed, and the ASR and speech benches).
+2. Put its SHA-256 first in that model's checksum field, keeping the old one after a comma. A model already installed from either one is kept, so existing servers download nothing.
+3. Update the entry's `ARCHIVE:PEAK:KEPT` sizes if they moved, and ship a release.
+
+`ADRIAN_DOWNLOAD_MIRRORS` (or `/opt/adrian/download-mirrors`, one https URL per line) lists places to try after the original site, as `<mirror>/<file name>`. A mirror's files must still match a listed checksum.
+
 ## Conventions
 
 - **Strict TypeScript.** Zod validates all config, and every setting has a default.

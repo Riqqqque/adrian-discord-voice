@@ -33,6 +33,9 @@ ADRIAN_DOWNLOAD_CACHE=/dl bash /tmp/inst/packaging/install.sh --yes --mode nativ
 rc=$?
 echo "install exit $rc in $(( $(date +%s) - t0 )) s"; sed 's/^/  | /' /tmp/install.log | grep -v "Setup code" | tail -12
 [ $rc = 0 ] && ok "install.sh --yes" || bad "install.sh --yes"
+echo "  fetched: $(grep -oE 'Downloading [^ ]+( from the mirror [^ ]+)?' /tmp/install.log | sed 's/^Downloading //' | tr '\n' ' ')"
+check "every model is from a file with one of its known checksums" bash -c '. /tmp/inst/packaging/downloads.sh; for m in "${MODELS[@]}"; do IFS="|" read -r n u s _ <<<"$m"; model_installed /var/lib/adrian/models "$n" "$s" || { echo "$n"; exit 1; }; done'
+for m in sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8 kokoro-multi-lang-v1_0; do echo "  $m marker: $(cat /var/lib/adrian/models/.$m.sha256 2>/dev/null)"; done
 
 check "service active" systemctl is-active adrian-voice
 check "service enabled" systemctl is-enabled adrian-voice

@@ -84,7 +84,7 @@ Installer options:
 
 What it does:
 - Checks the system (x86_64, systemd, glibc, 3 GB free disk, memory, ffmpeg).
-- Downloads a pinned Node.js 22 runtime and the speech models, about 1.5 GB in total, each checked against its SHA-256. To reuse already-downloaded files, set `ADRIAN_DOWNLOAD_CACHE=/path`.
+- Downloads a pinned Node.js 22 runtime and the speech models, about 1.5 GB in total, each checked against its SHA-256. To reuse already-downloaded files, set `ADRIAN_DOWNLOAD_CACHE=/path`. If a download site has replaced a file with one this version doesn't know, the installer says so and stops; `ADRIAN_DOWNLOAD_MIRRORS="https://..."` names mirrors to try after the original site (their files must match the same checksums).
 - Creates:
   - a system user `adrian` (no login)
   - `/opt/adrian` (the app)
