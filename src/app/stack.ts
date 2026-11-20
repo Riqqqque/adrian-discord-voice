@@ -1499,7 +1499,7 @@ export async function startVoiceStack(
           onHeldWords: (userId, { text, samples }) => listenEarly(userId, text, samples, performance.now() - (samples.length / 16_000) * 1000),
         },
         // Recognize during the silence wait; the cloud's listen can start there too.
-        { minSilence: EARLY_SILENCE, onWords: (userId, { text, samples, startedAt, signal }) => listenEarly(userId, text, samples, startedAt, { dropped: signal, unlessDangling: true }) },
+        config.satellite.earlyListen ? { minSilence: EARLY_SILENCE, onWords: (userId, { text, samples, startedAt, signal }) => listenEarly(userId, text, samples, startedAt, { dropped: signal, unlessDangling: true }) } : undefined,
       )
     : new ListeningPipeline(source, stt, wakeDetector, vad);
   pipeline.on('heard', (e) => void heard(e).catch((err: Error) => log.warn('heard failed', { error: err.message })));

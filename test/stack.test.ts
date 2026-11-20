@@ -2055,6 +2055,13 @@ describe('the cloud listen during the silence wait', () => {
   const earlyOf = (pipe: EventEmitter) => (pipe as unknown as { args: (Early | undefined)[] }).args[5];
   const say = (e: Early, text: string, samples = new Float32Array(16_000), signal = new AbortController().signal) => e.onWords(OWNER, { text, samples, startedAt: performance.now() - 1000, signal });
 
+  it('satellite.earlyListen false turns it off', async () => {
+    const r = await rig({ ...cloud, satellite: { enabled: true, port: 40000, unfinishedWaitMs: 0, earlyListen: false } });
+    const { pipe } = r.connect();
+    expect(earlyOf(pipe)).toBeUndefined();
+    await r.stack.stop();
+  });
+
   it('a PC listens early, the call does not', async () => {
     const r = await rig(cloud);
     const { pipe } = r.connect();

@@ -235,7 +235,7 @@ describe('recognizing during the silence wait', () => {
     expect(t.heard[0]!.samples).toBe(clip);
   });
 
-  it('a clip joined to held speech gets the words of the whole', async () => {
+  it('while speech is held, the rest is not recognized alone: it will be joined', async () => {
     const probs = [0.2, 0.9];
     const t = setup({ turn: { holdMs: 500, detector: { complete: async () => probs.shift() ?? 0.9 } } });
     const first = speech(1);
@@ -243,12 +243,24 @@ describe('recognizing during the silence wait', () => {
     await wait(20);
     const rest = speech(0.6, 5);
     t.quickClose(rest);
-    await until(() => t.words.length === 1);
+    await wait(20);
+    expect(t.decoded).toHaveLength(1);
     t.fullClose(Float32Array.from(rest));
     await until(() => t.heard.length === 1);
-    expect(t.words[0]!.signal.aborted).toBe(true);
+    expect(t.words).toHaveLength(0);
     expect(t.heard[0]!.samples!.length).toBe(first.length + 4_000 + rest.length);
     expect(t.heard[0]!.text).toBe(`words ${first.length + 4_000 + rest.length}`);
+    expect(t.heard[0]!.early).toBeUndefined();
+  });
+
+  it('a held clip whose words came early says so when released', async () => {
+    const t = setup({ turn: { holdMs: 30, detector: { complete: async () => 0.2 } } });
+    const clip = speech(1);
+    t.quickClose(clip);
+    t.fullClose(Float32Array.from(clip));
+    await until(() => t.heard.length === 1);
+    expect(t.decoded).toHaveLength(1);
+    expect(t.heard[0]!.early).toBe(true);
   });
 
   it('is off unless both waits are whole Silero windows', () => {
