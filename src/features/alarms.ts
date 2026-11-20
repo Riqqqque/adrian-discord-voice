@@ -736,7 +736,12 @@ export class AlarmClock {
       let s = this.sessions.get(u);
       const fresh = !s;
       const place = this.deps.placeFor(u);
-      if (s && s.place === place && s.handle?.alive()) continue;
+      // Ringing where it was: only the buttons may be new (the PC's guard came on).
+      if (s && s.place === place && s.handle?.alive()) {
+        const buttons = this.deps.needsButtons?.(u);
+        if (buttons) this.dmButtons(u, list, s.handle, buttons);
+        continue;
+      }
       if (s && s.retryAt > now && s.place === place) continue;
       s?.handle?.stop();
       if (!s) {
@@ -756,17 +761,20 @@ export class AlarmClock {
       }
       // Nowhere to ring, or nobody can hear them say stop: a message with buttons, once per round.
       const buttons = this.deps.needsButtons?.(u);
-      if (!s.handle || buttons) {
-        for (const a of list) {
-          const round = (a.unanswered ?? 0) + 1;
-          if (a.dmRound === round) continue;
-          a.dmRound = round;
-          this.save();
-          const line = a.kind === 'timer' ? `⏰ Your ${timerName(a)} is done.` : `⏰ ${clockText(a.base, a.tz)} alarm${a.label ? `: ${a.label}` : ''}.`;
-          const why = s.handle ? (typeof buttons === 'string' ? buttons : "It's ringing in the call, and you're muted there.") : "I couldn't ring it anywhere you are, so this is it.";
-          void this.deps.dm(u, `${line} ${why}`, { alarmId: a.id, base: a.base }).catch(() => false);
-        }
-      }
+      if (!s.handle || buttons) this.dmButtons(u, list, s.handle, buttons);
+    }
+  }
+
+  /** Stop / Snooze buttons by DM, once per round of each alarm. */
+  private dmButtons(u: UserId, list: Alarm[], handle: unknown, buttons: boolean | string | undefined): void {
+    for (const a of list) {
+      const round = (a.unanswered ?? 0) + 1;
+      if (a.dmRound === round) continue;
+      a.dmRound = round;
+      this.save();
+      const line = a.kind === 'timer' ? `⏰ Your ${timerName(a)} is done.` : `⏰ ${clockText(a.base, a.tz)} alarm${a.label ? `: ${a.label}` : ''}.`;
+      const why = handle ? (typeof buttons === 'string' ? buttons : "It's ringing in the call, and you're muted there.") : "I couldn't ring it anywhere you are, so this is it.";
+      void this.deps.dm(u, `${line} ${why}`, { alarmId: a.id, base: a.base }).catch(() => false);
     }
   }
 
