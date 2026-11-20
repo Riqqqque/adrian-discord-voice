@@ -11,7 +11,7 @@
 // Options (env): LATENCY_RUNS (5), LATENCY_STT_MS (300, comma list for several),
 // LATENCY_OUT (raw runs as JSON), LATENCY_TABLE (the table as text), ADRIAN_MODELS (D:/Tools/adrian-models).
 import { EventEmitter } from 'node:events';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { setPriority, constants, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Client } from 'discord.js';
@@ -357,6 +357,7 @@ async function runOnce(sc: Scenario, sttMs: number, audio: Record<string, Int16A
     await stack.stop();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+    rmSync(dir, { recursive: true, force: true });
   }
 }
 
