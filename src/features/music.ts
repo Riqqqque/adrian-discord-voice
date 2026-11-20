@@ -100,8 +100,9 @@ export const runProgram: Runner = (cmd, args, signal, enough, input) =>
     }
     let out = '';
     let err = '';
-    p.stdout!.on('data', (b: Buffer) => {
-      out += b.toString();
+    p.stdout!.setEncoding('utf8'); // a character split across two reads stays whole
+    p.stdout!.on('data', (b: string) => {
+      out += b;
       if (enough?.(out)) resolve(out);
     });
     p.stderr!.on('data', (b: Buffer) => (err += b.toString()));
@@ -235,7 +236,7 @@ interface WebSearch {
 const clockSeconds = (s: string | undefined) => (s && /^\d+(:\d\d){1,2}$/.test(s) ? s.split(':').reduce((a, b) => a * 60 + Number(b), 0) : undefined);
 
 /** A web search answer as yt-dlp's search lines (SEARCH_FIELDS), the first `n`
- *  videos. Undefined when it isn't a search answer at all. */
+ *  videos. Undefined when it has no video it can read. */
 export function webSearchLines(res: WebSearch, n: number): string | undefined {
   const sections = res.contents?.twoColumnSearchResultsRenderer?.primaryContents?.sectionListRenderer?.contents;
   if (!Array.isArray(sections)) return undefined;
@@ -252,7 +253,8 @@ export function webSearchLines(res: WebSearch, n: number): string | undefined {
     lines.push([v.videoId, clockSeconds(v.lengthText?.simpleText) ?? 'NA', live, title || 'NA', flat(v.ownerText?.runs?.[0]?.text) || 'NA'].join('\t'));
     if (lines.length >= n) break;
   }
-  return lines.map((l) => `${l}\n`).join('');
+  // No video it can read: maybe none, maybe a shape it doesn't know. yt-dlp can tell.
+  return lines.length ? lines.map((l) => `${l}\n`).join('') : undefined;
 }
 
 interface YtmItem {
@@ -333,12 +335,14 @@ function oneEdit(a: string, b: string): boolean {
 /** A rough sound of a word, for names speech recognition spells its own way:
  *  "emmy" and "emi", "goona" and "gunna", "oozy" and "uzi", "dojo" and "doja"
  *  all sound the same. Its first letter (any vowel the same), then the
- *  consonants, with soft c as s, z as s, and doubles once. */
+ *  consonants, with soft c as s, soft g inside a word as j ("bougie" and
+ *  "boujee"), z as s, and doubles once. */
 export function soundOf(w: string): string {
   const s = w
     .replace(/ph/g, 'f')
     .replace(/ck/g, 'k')
     .replace(/c(?=[eiy])/g, 's')
+    .replace(/(?<=.)g(?=[eiy])/g, 'j')
     .replace(/[cq]/g, 'k')
     .replace(/x/g, 'ks')
     .replace(/z/g, 's');
@@ -355,10 +359,20 @@ const sameWord = (q: string, w: string) =>
 /** How much of what was asked for a result's title, artist and channel cover:
  *  0 (none of the words) to 1 (all of them). */
 export function matchScore(query: string, text: string): number {
-  const asked = [...new Set(matchWords(query))];
+  const words = matchWords(query);
+  const asked = [...new Set(words)];
   if (!asked.length) return 1;
   const have = matchWords(text);
-  return asked.filter((q) => have.some((w) => sameWord(q, w))).length / asked.length;
+  const found = new Set(asked.filter((q) => have.some((w) => sameWord(q, w))));
+  // A name speech recognition heard as two words: "me goes" is Migos. Both
+  // count when together they sound like one of the result's words (three
+  // consonant sounds at least: "so easy" isn't SZA).
+  for (let i = 0; i + 1 < words.length; i++) {
+    const joined = words[i]! + words[i + 1]!;
+    const sound = /^\p{L}+$/u.test(joined) ? soundOf(joined) : '';
+    if (have.some((w) => w === joined || (sound.length >= 3 && /^\p{L}+$/u.test(w) && soundOf(w) === sound))) found.add(words[i]!).add(words[i + 1]!);
+  }
+  return found.size / asked.length;
 }
 
 /** A song result covering less than this of the words gets checked against
@@ -470,7 +484,9 @@ export class YoutubeSource implements MusicSource {
   }
 
   private base(): string[] {
-    return [...(this.o.node ? ['--js-runtimes', `node:${this.o.node}`] : []), '--no-warnings', '--no-progress', '--no-cache-dir', '--ignore-config'];
+    // UTF-8 whatever the locale says: without it, a title in another script
+    // (夜に駆ける) printed as nothing on Windows, and the song was "not found".
+    return [...(this.o.node ? ['--js-runtimes', `node:${this.o.node}`] : []), '--no-warnings', '--no-progress', '--no-cache-dir', '--ignore-config', '--encoding', 'utf-8'];
   }
 
   private sig(signal: AbortSignal): AbortSignal {
