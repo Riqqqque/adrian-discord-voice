@@ -8,6 +8,7 @@ import { SentenceSplitter, type SplitterOptions, toSpeakable } from './speech-te
 import { countable, stripImages } from './images.js';
 import { asUntrustedData } from './tools.js';
 import { type CacheWarmer, type Prefix, prefixKey, WARM_PLACEHOLDER, type WarmResult } from './prewarm.js';
+import { callFollowUp, deskFollowUp } from './followup.js';
 
 export interface OrchestratorOptions {
   /** Name the assistant answers to when spoken. */
@@ -203,13 +204,9 @@ export class ConversationOrchestrator {
                 `${speaker} just said this with your name in it, but maybe about you rather than to you. The words come from speech recognition, which sometimes writes an order to you in the past tense ("skipped this song" for "skip this song"): that is still an order for you. People in the call also talk to each other and about their games. If it is not meant for you, reply with exactly SILENT and nothing else. Not meant for you: talking about you rather than to you, talking to someone else, callouts and instructions for the game ("grab the diamonds", "run", "watch out", "go left"), reactions ("lol", "nice one"), thinking out loud. Things you could not do anyway are usually meant for someone else. If it continues your conversation or asks you something, answer normally.`,
               ]
             : opts.followUp && opts.desk
-            ? [
-                `${speaker} said this at their PC without using your name, soon after your last answer. They're usually talking to you: treat it as continuing your conversation and answer it. Reply with exactly SILENT and nothing else only if it clearly isn't for you: dialogue from a show, video or game playing on the PC, song lyrics, or them obviously talking to someone else in the room or on a call.`,
-              ]
+            ? [deskFollowUp(speaker)]
             : opts.followUp
-            ? [
-                `${speaker} just said this without using your name, a few seconds after your last answer. People in the call also talk to each other and about their games. If it is not meant for you, reply with exactly SILENT and nothing else. Not meant for you: talking to someone else, callouts and instructions for the game ("grab the diamonds", "run", "watch out", "go left"), reactions ("lol", "nice one"), thinking out loud. Things you could not do anyway are usually meant for someone else. If it continues your conversation or asks you something, answer normally.`,
-              ]
+            ? [callFollowUp(speaker)]
             : []),
         ]);
     const history = this.memory.history(userId) as ChatMessage[];
