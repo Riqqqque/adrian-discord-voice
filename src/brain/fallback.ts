@@ -8,7 +8,7 @@
 // fails outright still falls back; one that hangs is ended by the answer's
 // own time limit.
 
-import type { ChatMessage, LlmEvent, LlmProvider, ToolSpec } from '../core/interfaces.js';
+import type { ChatMessage, LlmEvent, LlmProvider, ToolSpec, WarmUsage } from '../core/interfaces.js';
 
 export class FallbackLlm implements LlmProvider {
   constructor(
@@ -17,7 +17,14 @@ export class FallbackLlm implements LlmProvider {
     private readonly onFallback?: (err: Error) => void,
     /** No first event from the primary within this → try the secondary (ms). */
     private readonly firstEventMs?: number,
-  ) {}
+  ) {
+    // Only the primary's cache is warmed: answers go there first, and a
+    // warm-up that fails never moves to the secondary.
+    const p = primary;
+    if (p.warm) this.warm = (messages, opts) => p.warm!(messages, opts);
+  }
+
+  warm?: (messages: ChatMessage[], opts: { tools?: ToolSpec[]; signal?: AbortSignal }) => Promise<WarmUsage>;
 
   get model(): string {
     return this.primary.model;

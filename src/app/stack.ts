@@ -12,6 +12,7 @@ import { FallbackLlm } from '../brain/fallback.js';
 import { ConversationOrchestrator, type OrchestratorOptions, type Usage } from '../brain/orchestrator.js';
 import { OpenAiCompatibleLlm } from '../brain/openai-compatible.js';
 import { AnthropicLlm } from '../brain/anthropic.js';
+import { CacheWarmer } from '../brain/prewarm.js';
 import { SessionMemory } from '../brain/sessions.js';
 import { cachedTool, tavilySearchTool, timeTool, topResultUrl, webYoutubeVideos } from '../brain/tools.js';
 import type { PocConfig } from '../config.js';
@@ -843,7 +844,10 @@ export async function startVoiceStack(
         if (bgLlm) log.info('memory model', { model: bgLlm.model });
       }
       quizzes.useJudge(modelJudge(llm, (inTok, outTok) => ledger.addCost((inTok * brain.priceInPerM + outTok * brain.priceOutPerM) / 1e6)));
+      // Claude: the cached prompt is written while a question is still being listened to (brain/prewarm.ts).
+      const warmer = brain.provider === 'anthropic' ? new CacheWarmer(llm, { ...brain.prewarm, allowed: () => ledger.check('', true).ok, onUsage: (u) => ledger.addCost(costUsd({ ...u, toolCalls: 0 })), log }) : undefined;
       const brainOptions: OrchestratorOptions = {
+        ...(warmer ? { warmer } : {}),
         spokenName: 'Adrian',
         writtenName: 'A.D.R.I.A.N.',
         timezone: config.timezone,
@@ -1527,6 +1531,8 @@ export async function startVoiceStack(
     let cloud: string | undefined;
     let groqMs: number | undefined;
     if (forBot && e.samples && first?.kind !== 'stop' && first?.kind !== 'name' && (!e.woke || e.command.trim()) && cloudSttFor(rm, e.userId)) {
+      // Likely the model's to answer: its cached prompt is written meanwhile.
+      if (!first && !classifyMusic(e.woke ? e.command : e.text) && !isTimeQuestion(e.woke ? e.command : e.text)) orchestrator?.prewarm('heard');
       const t0 = performance.now();
       const text = (cloud = await (early.get(e.samples) ?? cloudListen(e.samples)));
       groqMs = Math.round(performance.now() - t0);
@@ -1843,6 +1849,7 @@ export async function startVoiceStack(
           () => performance.now() < pttUntil,
         );
         conn.on('ptt', () => {
+          orchestrator?.prewarm('ptt');
           pttUntil = performance.now() + 15_000;
           pcHasWords.set(conn.owner, pttUntil);
         });

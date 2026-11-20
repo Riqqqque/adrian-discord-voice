@@ -142,6 +142,17 @@ export interface LlmProvider {
     /** toolChoice none: tools are listed (keeps the cached prefix) but may not be called. */
     opts: { tools?: ToolSpec[]; toolChoice?: 'none'; signal?: AbortSignal; maxTokens?: number },
   ): AsyncIterable<LlmEvent>;
+  /** Prompt caching only: write or refresh the cached prefix of `messages`
+   *  (with `tools`) and answer nothing. Absent where there's no such cache. */
+  warm?(messages: ChatMessage[], opts: { tools?: ToolSpec[]; signal?: AbortSignal }): Promise<WarmUsage>;
+}
+
+/** Tokens a cache warm-up billed (inputTokens counts all three kinds). */
+export interface WarmUsage {
+  inputTokens: number;
+  cachedTokens: number;
+  cacheWriteTokens: number;
+  outputTokens: number;
 }
 
 export interface MemoryStore {
