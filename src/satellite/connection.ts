@@ -18,6 +18,16 @@ export interface ActionResult {
 
 export type SatelliteMode = 'idle' | 'listening' | 'thinking' | 'speaking';
 
+/** How a link ended, for the log: who ended it, the close code the socket saw,
+ *  how long it had been up, and how long the PC had been silent before the end. */
+export interface CloseInfo {
+  by: 'pc' | 'heartbeat' | 'replaced' | 'shutdown' | 'server';
+  code?: number;
+  reason?: string;
+  linkS: number;
+  quietS: number;
+}
+
 /** Largest frame before a satellite is welcomed, and after it for anything
  *  but an action_result: audio frames and JSON are small. */
 export const SMALL_FRAME = 256 * 1024;
@@ -55,7 +65,7 @@ export interface SatelliteEvents extends VoiceTransportEvents {
   alarmAction: (a: { action: 'stop' | 'snooze'; minutes?: number }) => void;
   /** The PC rang an alarm by itself while the link was down, and it was answered there. */
   alarmDone: (a: { id: string; base: number; action: 'stop' | 'snooze'; at: number; minutes?: number }) => void;
-  closed: () => void;
+  closed: (info: CloseInfo) => void;
 }
 
 interface Pending {
@@ -69,6 +79,9 @@ export class SatelliteConnection extends EventEmitter implements VoiceTransport 
   private readonly pending = new Map<string, Pending>();
   /** Last time the PC sent anything (for picking the active PC). */
   lastSeen = Date.now();
+  private readonly since = Date.now();
+  /** Set by whoever ends the link from this side; unset, the PC ended it. */
+  private endedBy: CloseInfo['by'] | undefined;
 
   constructor(
     private readonly ws: WebSocket,
@@ -85,7 +98,7 @@ export class SatelliteConnection extends EventEmitter implements VoiceTransport 
       if (isBinary) this.onAudio(data as Buffer);
       else this.onJson(String(data), big);
     });
-    ws.on('close', () => this.close());
+    ws.on('close', (code, reason) => this.close(code, String(reason)));
     ws.on('error', () => this.close());
   }
 
@@ -109,8 +122,14 @@ export class SatelliteConnection extends EventEmitter implements VoiceTransport 
   }
 
   private tooBig(): void {
+    this.ending('server');
     this.ws.close(1009, 'frame too big');
-    this.close();
+    this.close(1009, 'frame too big');
+  }
+
+  /** This side is about to end the link (the first reason given sticks). */
+  ending(by: CloseInfo['by']): void {
+    this.endedBy ??= by;
   }
 
   private onJson(text: string, big = false): void {
@@ -209,9 +228,10 @@ export class SatelliteConnection extends EventEmitter implements VoiceTransport 
 
   async connect(): Promise<void> {}
 
-  async disconnect(): Promise<void> {
+  async disconnect(by: CloseInfo['by'] = 'server'): Promise<void> {
+    this.ending(by);
     this.ws.close(1000, 'bye');
-    this.close();
+    this.close(1000, 'bye');
   }
 
   isReady(): boolean {
@@ -265,14 +285,22 @@ export class SatelliteConnection extends EventEmitter implements VoiceTransport 
     return super.off(event, listener);
   }
 
-  private close(): void {
+  private close(code?: number, reason?: string): void {
     if (!this.open) return;
     this.open = false;
+    const now = Date.now();
+    const info: CloseInfo = {
+      by: this.endedBy ?? 'pc',
+      ...(code !== undefined ? { code } : {}),
+      ...(reason ? { reason: reason.slice(0, 60) } : {}),
+      linkS: Math.round((now - this.since) / 1000),
+      quietS: Math.round((now - this.lastSeen) / 100) / 10,
+    };
     for (const [, p] of this.pending) {
       clearTimeout(p.timer);
       p.resolve({ ok: false, result: 'The PC disconnected.' });
     }
     this.pending.clear();
-    this.emit('closed');
+    this.emit('closed', info);
   }
 }

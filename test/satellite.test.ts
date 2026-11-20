@@ -19,16 +19,19 @@ function devices() {
 }
 
 /** A server on a free port, and a client helper that collects what it receives. */
-async function rig() {
+async function rig(opts: { heartbeatMs?: number } = {}) {
   const d = devices();
   const { token, device } = d.add('Desk PC', OWNER);
   const port = 20_000 + Math.floor(Math.random() * 20_000);
   const conns: SatelliteConnection[] = [];
-  const server = startSatelliteServer({ bind: '127.0.0.1', port, devices: d, log: quiet as never, welcome: () => ({ owner: 'Morgan' }), onConnect: (c) => conns.push(c) });
+  /** What the server logged, as [message, fields]. */
+  const logged: [string, Record<string, unknown>][] = [];
+  const log = { ...quiet, info: (m: string, f?: Record<string, unknown>) => void logged.push([m, f ?? {}]) };
+  const server = startSatelliteServer({ bind: '127.0.0.1', port, devices: d, log: log as never, welcome: () => ({ owner: 'Morgan' }), onConnect: (c) => conns.push(c), ...opts });
   await new Promise((r) => setTimeout(r, 50));
-  const client = (hello: unknown) =>
+  const client = (hello: unknown, wsOpts: { autoPong?: boolean } = {}) =>
     new Promise<{ ws: WebSocket; got: unknown[]; bins: Buffer[]; closed: Promise<number> }>((resolve) => {
-      const ws = new WebSocket(`ws://127.0.0.1:${port}/satellite`);
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/satellite`, wsOpts);
       const got: unknown[] = [];
       const bins: Buffer[] = [];
       const closed = new Promise<number>((r) => ws.on('close', (code) => r(code)));
@@ -38,7 +41,9 @@ async function rig() {
         setTimeout(() => resolve({ ws, got, bins, closed }), 80);
       });
     });
-  return { d, token, device, server, conns, client, port };
+  /** The fields of each 'satellite disconnected' line. */
+  const ends = () => logged.filter(([m]) => m === 'satellite disconnected').map(([, f]) => f);
+  return { d, token, device, server, conns, client, port, ends };
 }
 
 /** Frames the ws client refuses to send, so they go out over a plain socket. */
@@ -159,6 +164,49 @@ describe('satellite connection', () => {
     c.ws.close();
     expect(await pending).toEqual({ ok: false, result: 'The PC disconnected.' });
     await r.server.close();
+  });
+});
+
+describe('how a satellite link ended', () => {
+  it('the PC closing it: its close code, how long it was up', async () => {
+    const r = await rig();
+    const c = await r.client({ type: 'hello', token: r.token });
+    c.ws.close(1001, 'going away');
+    await settle();
+    expect(r.ends()).toEqual([{ device: 'Desk PC', by: 'pc', code: 1001, reason: 'going away', linkS: 0, quietS: expect.any(Number) }]);
+    expect(r.conns[0].isReady()).toBe(false);
+    await r.server.close();
+  });
+
+  it('a PC that stops answering pings is dropped by the heartbeat, and the log says so', async () => {
+    const r = await rig({ heartbeatMs: 100 });
+    const c = await r.client({ type: 'hello', token: r.token }, { autoPong: false });
+    const code = await c.closed;
+    expect(code).toBe(1006);
+    await settle();
+    const [end] = r.ends();
+    expect(end).toMatchObject({ by: 'heartbeat', code: 1006 });
+    expect(end.quietS).toBeGreaterThan(0.05); // silent since its hello
+    await r.server.close();
+  });
+
+  it('a PC that keeps answering is not dropped', async () => {
+    const r = await rig({ heartbeatMs: 100 });
+    await r.client({ type: 'hello', token: r.token });
+    await new Promise((res) => setTimeout(res, 500));
+    expect(r.ends()).toEqual([]);
+    expect(r.conns[0].isReady()).toBe(true);
+    await r.server.close();
+  });
+
+  it('a newer link from the same PC replaces the old one, and a shutdown says shutdown', async () => {
+    const r = await rig();
+    await r.client({ type: 'hello', token: r.token });
+    await r.client({ type: 'hello', token: r.token });
+    await settle();
+    expect(r.ends().map((e) => e.by)).toEqual(['replaced']);
+    await r.server.close();
+    expect(r.ends().map((e) => e.by)).toEqual(['replaced', 'shutdown']);
   });
 });
 
