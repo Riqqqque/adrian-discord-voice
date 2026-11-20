@@ -259,6 +259,14 @@ describe('what counts as asking about a note', () => {
     ['when is mom coming', 'mom visits in March'],
     ['do you remember my wifi name', 'wifi guest name is Biscuit'],
     ['tell me about my landlord', note],
+    // Another form of the same word, or a word that asks about the same thing.
+    ['where do I live again', 'lives in Chicago'],
+    ['where do I work', 'works at a pizza place'],
+    ['what game do I play the most', 'plays Valorant'],
+    ['do you remember what I do for a living', 'works at a pizza place'],
+    ["what's my job", 'works at a pizza place'],
+    ["what's my puppy's name", 'has a dog named Biscuit'],
+    ['what are my allergies', 'allergic to peanuts'],
   ])('%j', (said, text) => {
     expect(asksAbout(said, text)).toBe(true);
   });
@@ -271,6 +279,10 @@ describe('what counts as asking about a note', () => {
     ['what is it', 'it is what it is'],
     ['what time is it', note],
     ["what's my landlord's name", 'wifi guest name is Biscuit'],
+    ['what do you know about me', 'lives in Chicago'],
+    ['do you remember what I do for a living', 'lives in Chicago'],
+    ['what game should we play', 'is vegetarian'],
+    ['where did I put my bed sheets', 'red car'],
     ['', note],
     [undefined, note],
   ])('not %j', (said, text) => {

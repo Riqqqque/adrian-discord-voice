@@ -1,7 +1,7 @@
 // Music requests through the real model: does "play some music" mean the
 // person's own taste, does an artist get the artist request, does she save
 // opinions? Plus the live artist lookup: Deezer's ranking found on YouTube Music.
-//   node bench/taste-orders.mjs <bot.json> [yt-dlp path]
+//   node bench/taste-orders.mjs <bot.json> [--live [yt-dlp path]]
 import { AnthropicLlm } from '../dist/brain/anthropic.js';
 import { ConversationOrchestrator } from '../dist/brain/orchestrator.js';
 import { SessionMemory } from '../dist/brain/sessions.js';
@@ -63,14 +63,17 @@ for (const [text, want, args] of CASES) {
 }
 console.log(`model: ${good}/${CASES.length}`);
 
+// The live lookups (Deezer, then YouTube Music with a yt-dlp path) only with --live.
+if (!process.argv.includes('--live')) process.exit(0);
 const top = music.deezerTopTracks();
 for (const name of ['drake', 'tame impala', 'queen', 'get lucky', 'the weeknd']) {
   const t0 = performance.now();
   const r = await top(name, AbortSignal.timeout(8000));
   console.log(name, '->', r?.artist, `known=${r?.known}`, `${r?.titles.length} songs`, `${Math.round(performance.now() - t0)} ms:`, r?.titles.slice(0, 5).join(' | '));
 }
-if (process.argv[3]) {
-  const yt = new music.YoutubeSource({ ytdlp: process.argv[3], node: process.execPath });
+const ytdlp = process.argv.slice(3).find((a) => !a.startsWith('--'));
+if (ytdlp) {
+  const yt = new music.YoutubeSource({ ytdlp, node: process.execPath });
   const r = await top('tame impala', AbortSignal.timeout(8000));
   for (const title of r.titles.slice(0, 3)) {
     const t = { title, artist: r.artist, source: 'youtube', ref: '', query: `${title} ${r.artist}` };
