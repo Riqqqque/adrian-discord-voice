@@ -8,6 +8,8 @@ import { DiscordVoiceTransport } from '../src/transport/discord.js';
 
 const quiet = { debug() {}, info() {}, warn() {}, error() {} };
 const STUCK_MS = 30_000;
+/** How long a connection that fell back to Signalling waits before it is rebuilt. */
+const SIGNAL_MS = 5_000;
 const SLOW_RETRY_MS = 5 * 60_000;
 const JOIN_LIMIT_MS = 20_000;
 
@@ -85,7 +87,7 @@ describe('a connection that stops coming back', () => {
     expect(r.events).toEqual(['ready', 'disconnected']);
     expect(r.t.isReady()).toBe(false);
 
-    await vi.advanceTimersByTimeAsync(STUCK_MS - 1);
+    await vi.advanceTimersByTimeAsync(SIGNAL_MS - 1);
     expect(conn.state.status).toBe('signalling'); // the library still has its chance
 
     await vi.advanceTimersByTimeAsync(3_000);
@@ -114,14 +116,14 @@ describe('a connection that stops coming back', () => {
 
   it('a resume that finishes in time is left alone', async () => {
     const r = rig();
-    const conn = await r.joined();
+    const conn = (await r.joined()) as unknown as Conn & { state: Record<string, unknown> };
     r.payloads.length = 0;
-    conn.onNetworkingClose(1006);
+    conn.state = { ...conn.state, status: 'connecting' }; // a resume: Connecting keeps the full 30 s
     await vi.advanceTimersByTimeAsync(STUCK_MS - 5_000);
     await r.toReady();
     await vi.advanceTimersByTimeAsync(2 * STUCK_MS);
     expect(conn.state.status).toBe('ready');
-    expect(r.payloads).toEqual(['C']);
+    expect(r.payloads).toEqual([]);
     expect(r.events).toEqual(['ready', 'disconnected', 'ready']);
     await r.t.disconnect();
   });
@@ -131,10 +133,10 @@ describe('a connection that stops coming back', () => {
     const conn = await r.joined();
     conn.onNetworkingClose(1006);
     await r.toReady();
-    await vi.advanceTimersByTimeAsync(STUCK_MS + 3_000);
+    await vi.advanceTimersByTimeAsync(SIGNAL_MS + 3_000);
     expect(conn.state.status).toBe('ready');
     conn.onNetworkingClose(1006);
-    await vi.advanceTimersByTimeAsync(STUCK_MS + 3_000);
+    await vi.advanceTimersByTimeAsync(SIGNAL_MS + 3_000);
     expect(conn.state.status).toBe('destroyed');
     await r.t.disconnect();
   });
@@ -146,7 +148,7 @@ describe('a connection that stops coming back', () => {
     conn.state = { ...conn.state, status: 'disconnected', reason: 0 };
     await vi.advanceTimersByTimeAsync(1_000);
     conn.state = { ...conn.state, status: 'signalling' }; // "the library is reconnecting by itself"
-    await vi.advanceTimersByTimeAsync(STUCK_MS + 3_000);
+    await vi.advanceTimersByTimeAsync(SIGNAL_MS + 3_000);
     expect(conn.state.status).toBe('destroyed');
     expect(r.payloads).toEqual([null, 'C']);
     await r.t.disconnect();
@@ -160,7 +162,7 @@ describe('a connection that stops coming back', () => {
     await vi.advanceTimersByTimeAsync(100);
     const conn = await r.joined(); // /join
     conn.onNetworkingClose(1006);
-    await vi.advanceTimersByTimeAsync(STUCK_MS + 3_000);
+    await vi.advanceTimersByTimeAsync(SIGNAL_MS + 3_000);
     expect(conn.state.status).toBe('destroyed');
     await r.t.disconnect();
   });
@@ -203,7 +205,7 @@ describe('a real kick still counts', () => {
     const r = rig();
     const conn = await r.joined();
     conn.onNetworkingClose(1006);
-    await vi.advanceTimersByTimeAsync(STUCK_MS + 3_000); // rebuilt, rejoin sent
+    await vi.advanceTimersByTimeAsync(SIGNAL_MS + 3_000); // rebuilt, rejoin sent
     r.gateway(null, 'C');
     r.gateway('C', null);
     await vi.advanceTimersByTimeAsync(0);
@@ -217,7 +219,7 @@ describe('a real kick still counts', () => {
     const r = rig();
     const conn = await r.joined();
     conn.onNetworkingClose(1006);
-    await vi.advanceTimersByTimeAsync(STUCK_MS + 3_000);
+    await vi.advanceTimersByTimeAsync(SIGNAL_MS + 3_000);
     await r.toReady();
     r.gateway('C', null);
     await vi.advanceTimersByTimeAsync(0);
@@ -228,7 +230,7 @@ describe('a real kick still counts', () => {
     const r = rig();
     const conn = await r.joined();
     conn.onNetworkingClose(1006);
-    await vi.advanceTimersByTimeAsync(STUCK_MS + 3_000); // a rejoin is waiting on its 20 s limit
+    await vi.advanceTimersByTimeAsync(SIGNAL_MS + 3_000); // a rejoin is waiting on its 20 s limit
     r.gateway(null, 'C');
     r.gateway('C', null); // kicked during it
     await vi.advanceTimersByTimeAsync(100);
@@ -246,7 +248,7 @@ describe('leaving on her own terms', () => {
     const r = rig();
     const conn = await r.joined();
     conn.onNetworkingClose(1006);
-    await vi.advanceTimersByTimeAsync(STUCK_MS);
+    await vi.advanceTimersByTimeAsync(SIGNAL_MS);
     expect(conn.state.status).toBe('destroyed');
     await vi.advanceTimersByTimeAsync(5_000); // the 30 ms echo has long landed
     expect(r.events).not.toContain('kicked');
@@ -256,7 +258,7 @@ describe('leaving on her own terms', () => {
     const r = rig();
     const conn = await r.joined();
     conn.onNetworkingClose(1006);
-    await vi.advanceTimersByTimeAsync(STUCK_MS + 3_000);
+    await vi.advanceTimersByTimeAsync(SIGNAL_MS + 3_000);
     r.gateway(null, 'C'); // in the channel, but the connection never comes up
     await vi.advanceTimersByTimeAsync(JOIN_LIMIT_MS - 1_000); // it gave up, and its leave was echoed back
     expect(r.events).not.toContain('kicked');
@@ -288,7 +290,7 @@ describe('a long outage', () => {
     const r = rig(false);
     const conn = await r.joined();
     conn.onNetworkingClose(1006);
-    await vi.advanceTimersByTimeAsync(STUCK_MS + quickRoundsMs);
+    await vi.advanceTimersByTimeAsync(SIGNAL_MS + quickRoundsMs);
     expect(count(r.events, 'failed')).toBe(1);
     r.payloads.length = 0;
 
@@ -311,7 +313,7 @@ describe('a long outage', () => {
     const r = rig(false);
     const conn = await r.joined();
     conn.onNetworkingClose(1006);
-    await vi.advanceTimersByTimeAsync(STUCK_MS + quickRoundsMs);
+    await vi.advanceTimersByTimeAsync(SIGNAL_MS + quickRoundsMs);
     await r.t.disconnect();
     r.payloads.length = 0;
     await vi.advanceTimersByTimeAsync(3 * SLOW_RETRY_MS);
@@ -322,11 +324,11 @@ describe('a long outage', () => {
     const r = rig(false);
     const conn = await r.joined();
     conn.onNetworkingClose(1006);
-    await vi.advanceTimersByTimeAsync(STUCK_MS + quickRoundsMs + SLOW_RETRY_MS);
+    await vi.advanceTimersByTimeAsync(SIGNAL_MS + quickRoundsMs + SLOW_RETRY_MS);
     await r.toReady();
     const again = r.inner.connection!;
     again.onNetworkingClose(1006);
-    await vi.advanceTimersByTimeAsync(STUCK_MS + 2_000);
+    await vi.advanceTimersByTimeAsync(SIGNAL_MS + 2_000);
     expect(again.state.status).toBe('destroyed');
     expect(r.inner.connection).toBeDefined(); // the first rejoin came after a second, not five minutes
     await r.t.disconnect();
@@ -362,5 +364,109 @@ describe('a join that fails at startup', () => {
     r.t.retry();
     await vi.advanceTimersByTimeAsync(5_000);
     expect(r.payloads).toEqual([]);
+  });
+});
+
+/** The prod pattern (2026-11-03, 2026-11-10): a resume starts (Ready to Connecting), its
+ *  socket closes, and the library falls back to Signalling with a rejoin Discord never
+ *  answers, because she is still in that channel. */
+function failedResume(conn: Conn & { state: Record<string, unknown> }) {
+  conn.state = { ...conn.state, status: 'connecting' };
+  conn.onNetworkingClose(4006);
+}
+
+describe('a resume that falls back to Signalling', () => {
+
+  it('is rebuilt after a few seconds there, not the full 30', async () => {
+    const r = rig();
+    const conn = (await r.joined()) as unknown as Conn & { state: Record<string, unknown> };
+    r.payloads.length = 0;
+    failedResume(conn);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(conn.state.status).toBe('signalling');
+    expect(r.events).toEqual(['ready', 'disconnected']);
+    await vi.advanceTimersByTimeAsync(SIGNAL_MS + 1_000 + 100); // its budget, then the 1 s rejoin wait
+    expect(conn.state.status).toBe('destroyed');
+    expect(r.payloads).toEqual(['C', null, 'C']); // the library's resend, her leave, her rejoin
+    await r.toReady();
+    expect(r.t.isReady()).toBe(true);
+    expect(r.events).not.toContain('kicked');
+    await r.t.disconnect();
+  });
+
+  it('a Signalling that is answered (a channel move) is left alone', async () => {
+    const r = rig();
+    const conn = await r.joined();
+    r.payloads.length = 0;
+    conn.onNetworkingClose(1000); // Ready to Signalling, as a move does
+    await vi.advanceTimersByTimeAsync(100); // moves answer in under 0.1 s in prod
+    await r.toReady();
+    await vi.advanceTimersByTimeAsync(2 * STUCK_MS);
+    expect(conn.state.status).toBe('ready');
+    expect(r.payloads).toEqual(['C']);
+    await r.t.disconnect();
+  });
+
+  it('time in Connecting still gets the full 30 s', async () => {
+    const r = rig();
+    const conn = (await r.joined()) as unknown as Conn & { state: Record<string, unknown> };
+    r.payloads.length = 0;
+    conn.state = { ...conn.state, status: 'connecting' };
+    await vi.advanceTimersByTimeAsync(STUCK_MS - 2_000);
+    expect(conn.state.status).toBe('connecting');
+    expect(r.payloads).toEqual([]);
+    await r.t.disconnect();
+  });
+
+  it('an error while resuming rebuilds at once (the 521 / 522 cases)', async () => {
+    const r = rig();
+    const conn = (await r.joined()) as unknown as Conn & { state: Record<string, unknown> } & EventEmitter;
+    r.payloads.length = 0;
+    conn.state = { ...conn.state, status: 'connecting' };
+    await vi.advanceTimersByTimeAsync(0);
+    conn.emit('error', new Error('Unexpected server response: 521'));
+    await vi.advanceTimersByTimeAsync(1_100);
+    expect(conn.state.status).toBe('destroyed');
+    expect(r.payloads).toEqual([null, 'C']);
+    await r.t.disconnect();
+  });
+
+  it('playback carries on through the rebuild: the new connection plays the same player', async () => {
+    const r = rig();
+    const conn = (await r.joined()) as unknown as Conn & { state: Record<string, unknown> };
+    const player = (r.t as unknown as { player: unknown }).player;
+    expect((conn.state.subscription as { player: unknown }).player).toBe(player);
+    failedResume(conn);
+    await vi.advanceTimersByTimeAsync(STUCK_MS + 3_000);
+    const fresh = r.inner.connection as unknown as Conn & { state: Record<string, unknown> };
+    expect(fresh).not.toBe(conn);
+    await r.toReady();
+    expect((fresh.state.subscription as { player: unknown }).player).toBe(player);
+    await r.t.disconnect();
+  });
+});
+
+describe('recovery time after a failed resume (simulated, with the real rejoin jitter)', () => {
+  it('measures drop to Ready, 5 runs', async () => {
+    vi.mocked(Math.random).mockRestore();
+    const times: number[] = [];
+    for (let run = 0; run < 5; run++) {
+      const r = rig();
+      const conn = (await r.joined()) as unknown as Conn & { state: Record<string, unknown> };
+      const t0 = Date.now();
+      failedResume(conn);
+      // The gateway answers a fresh join at once, as it did in prod (rebuilds were Ready in 0.4-1.5 s).
+      while (r.inner.connection === conn || !r.payloads.length || r.payloads.at(-1) !== 'C' || r.inner.connection === undefined) {
+        await vi.advanceTimersByTimeAsync(50);
+        if (Date.now() - t0 > 120_000) break;
+      }
+      await r.toReady();
+      times.push(Date.now() - t0);
+      expect(r.t.isReady()).toBe(true);
+      await r.t.disconnect();
+    }
+    times.sort((a, b) => a - b);
+    process.stderr.write(`recovery ms: ${times.join(', ')} (median ${times[2]})\n`);
+    expect(times[4]).toBeLessThan(8_000);
   });
 });
