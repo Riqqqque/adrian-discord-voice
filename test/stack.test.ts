@@ -2463,6 +2463,27 @@ describe('cache warm-up hooks', () => {
     }
   });
 
+  it('held words warm it at the hold, and their release does not warm it again', async () => {
+    const prewarm = vi.spyOn(ConversationOrchestrator.prototype, 'prewarm');
+    try {
+      const { r, pipe, turn } = await holding({ cloudStt: { enabled: true } });
+      r.groq.reply = 'Hey Adrian, what is the capital of Australia';
+      const samples = new Float32Array(16_000);
+      turn.onHeldWords!(OWNER, { text: 'hey adrian what is the', samples });
+      expect(prewarm.mock.calls).toEqual([['held']]);
+      await until(() => r.groq.calls === 1, 'the cloud listen');
+      r.heard(pipe, OWNER, 'hey adrian what is the', 'what is the', 1, { samples });
+      await until(() => r.llmBodies.length === 1, 'the model');
+      expect(prewarm).toHaveBeenCalledTimes(1);
+      turn.onHeldWords!(OWNER, { text: 'hey adrian pause the music', samples: new Float32Array(16_000) });
+      turn.onHeldWords!(OWNER, { text: 'hey adrian what time is it', samples: new Float32Array(16_000) });
+      expect(prewarm).toHaveBeenCalledTimes(1);
+      await r.stack.stop();
+    } finally {
+      prewarm.mockRestore();
+    }
+  });
+
   it('push-to-talk at the PC warms it as the button goes down', async () => {
     const prewarm = vi.spyOn(ConversationOrchestrator.prototype, 'prewarm');
     try {
