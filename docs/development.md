@@ -32,7 +32,7 @@ npm run build     # TypeScript -> dist/
 | Command | What it does |
 |---|---|
 | `npm run typecheck` | `tsc -p tsconfig.json --noEmit` |
-| `npm test` | `vitest run` over `test/*.test.ts` (no vitest config file; defaults apply) |
+| `npm test` | `vitest run` over `test/*.test.ts`; `vitest.config.ts` sets a 20 s test and 30 s hook limit (files that need more set it themselves). `package.sh` doesn't copy it, so the bundle's own run keeps vitest's 5 s default, and the suite passes with `--testTimeout=5000` |
 | `npx vitest run test/alarms.test.ts` | one file |
 | `npx vitest run test/stack.test.ts -t "a ringing alarm"` | one `describe` or `it` by name |
 | `npm test -- --maxWorkers=2` | what `package.sh` runs; use it on small machines |
@@ -43,12 +43,13 @@ TypeScript is strict, with `noUncheckedIndexedAccess`, `exactOptionalPropertyTyp
 
 ## Tests
 
-- There is no CI: nothing runs typecheck or tests on push (the repository has no `.github` folder). Run them yourself; `packaging/package.sh` is the only automatic gate, at release time.
-- 91 files in `test/`, all vitest. Run `npm test` for the current count; counting `it(` lines undercounts because `it.each` rows expand.
-- `test/latency-harness.test.ts` is skipped unless `LATENCY_HARNESS=1`. It drives the real stack with stand-in models at production-like delays and reports end of speech to first audio per scenario: `LATENCY_HARNESS=1 LATENCY_RUNS=3 LATENCY_STT_MS=300 npx vitest run test/latency-harness.test.ts` (about 20 minutes, mostly real-time audio; needs Silero and Kokoro from `ADRIAN_MODELS`; `LATENCY_TABLE`, `LATENCY_OUT` and `LATENCY_DEBUG=1` write more).
+- CI (`.github/workflows/ci.yml`, next release): on every push and pull request to `main`, one job on Ubuntu 24.04 with the Node version `packaging/downloads.sh` ships: `npm ci`, `npx tsc --noEmit -p .`, `npx vitest run` (with `LD_LIBRARY_PATH` at the sherpa-onnx addon). Read-only permissions, no secrets, nothing that releases or publishes. It covers no real models, keys, benches or the container tests. `packaging/package.sh` still runs the suite at release time.
+- Tests wait for what they check (`vi.waitFor`, a server's "listening" line, a free port) instead of fixed sleeps, so a busy machine makes them slower, not red. Keep it that way in new tests.
+- 105 files in `test/`, all vitest. Run `npm test` for the current count; counting `it(` lines undercounts because `it.each` rows expand.
+- `test/latency-harness.test.ts` is skipped unless `LATENCY_HARNESS=1`. It drives the real stack with stand-in models at production-like delays and reports end of speech to first audio per scenario: `LATENCY_HARNESS=1 LATENCY_RUNS=3 LATENCY_STT_MS=300 npx vitest run test/latency-harness.test.ts` (about 20 minutes, mostly real-time audio; needs Silero and Kokoro from `ADRIAN_MODELS` and skips with a message without it; `test/early-listen-silero.test.ts` needs it too; `LATENCY_TABLE`, `LATENCY_OUT` and `LATENCY_DEBUG=1` write more).
 - They need no network, no speech models and no keys. Some open local sockets (real `ws` servers, a local HTTPS server in `test/packaging.test.ts`).
 - `test/stack.test.ts` drives the real `startVoiceStack` with a fake Discord client, a mocked listening pipeline, a mocked satellite server and stubbed HTTP. It is the place for behavior that crosses modules (rooms, costs, stops, follow-ups, PC requests, alarms ringing).
-- `test/packaging.test.ts` runs the real shell scripts (`packaging/adrian` restore and update, the `downloads.sh` helpers, `package.sh`) in bash with stubbed `id`, `systemctl` and friends, and checks `install.sh` and the unit files as text. `test/install.test.ts`, `test/get.test.ts` and `test/update-safety.test.ts` run `install.sh`, `get.sh` and `adrian update` the same way (stand-ins for systemctl, curl, df and so on in `test/install-stubs.sh`); `ADRIAN_PACKAGING_UNDER_TEST=dir` points them at another copy of `packaging/`. Three update-safety cases (flock, setsid) run only on Linux.
+- `test/packaging.test.ts`, `test/packaging-update.test.ts` and `test/packaging-update-checks.test.ts` (sharing `test/packaging-shell.ts`, split so they run in parallel) run the real shell scripts (`packaging/adrian` restore and update, the `downloads.sh` helpers, `package.sh`) in bash with stubbed `id`, `systemctl` and friends, and checks `install.sh` and the unit files as text. `test/install.test.ts`, `test/get.test.ts` and `test/update-safety.test.ts` run `install.sh`, `get.sh` and `adrian update` the same way (stand-ins for systemctl, curl, df and so on in `test/install-stubs.sh`); `ADRIAN_PACKAGING_UNDER_TEST=dir` points them at another copy of `packaging/`. Three update-safety cases (flock, setsid) run only on Linux.
 - `test/web-ui.test.ts` runs the real `web/app.js` in a fake DOM (`node:vm`) against a fake API.
 - Skips: the bash suites skip without bash, tar and gzip; "the Node runtime" suite also needs `xz`; `test/config-file.test.ts` skips its umask test on Windows; "stop with an error when the server goes silent" in `test/packaging.test.ts` runs only with `ADRIAN_SLOW_TESTS=1` (it waits out curl's 60 s stall limit).
 
@@ -168,7 +169,9 @@ Rerun the bench that matches a change before shipping it:
 | prompt size | `prompt-size.mjs` (free) |
 | listening, thread counts, side talk | `node dist/bench/sidetalk-bench.js` and `bench/sidetalk-score.mjs`; the latency harness (`LATENCY_HARNESS=1`) |
 | text for speech, the splitter | `speech-words.mjs`; for the cloud voice `speech-changed.mjs`, `sabrina-render.mjs`, `speech-wavs.mjs` |
-| streaming voice, cloud voice timing | `speak-first.mjs`, `stream-level.mjs` |
+| streaming voice, cloud voice timing | `speak-first.mjs` (`--replay`, `--capture`), `stream-level.mjs`, `fallback-first.mjs` (how soon the local voice stands in) |
+| provider connections, cache warm-up | `keepalive.mjs` (real APIs, cheap), `prewarm.mjs` (real model) |
+| the loose-wake judge line | `loose-wake.mjs` (real model, about $0.03) |
 | start-up memory | `mem-start.mjs` (with and without `--cloud`) |
 | alarm tools or wording | `alarm-orders.mjs`; stop and snooze words: `alarm-words.mjs` |
 | music tools, routing, search | `music-corpus.mjs` or `music-paired.mjs`, `music-intent.mjs`, `music-follow-up.mjs`, `taste-orders.mjs`, `music-search.mjs`, `music-e2e.mjs` |

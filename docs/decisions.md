@@ -77,7 +77,8 @@ If you have new data that contradicts an entry, change the code and this page in
 - **Chosen**: PC rooms run a second Silero VAD with a 0.32 s wait. Its clip is decoded at once, and the Groq listen starts if the speech would go to Groq anyway; the words are used only when the full 0.8 s wait then closes exactly the same samples (`satellite.earlyListen`, on by default; next release).
 - **Instead of**: a shorter silence wait (more cut-off sentences), or speculating the model on the local words while Groq runs (needs orchestrator changes: `ask()` writes memory and can run tools).
 - **Why**: in the latency harness (`test/latency-harness.test.ts`, stand-in models at prod delays), a PC request said in one go went from 3,425 to 2,945 ms end to end at a 300 ms decode, the same at 150 and 450 ms; speech with a 0.32-0.8 s pause falls back to today's timing exactly. With 0.32 s and 0.8 s both whole Silero windows, the two VADs cut at the same sample: all 240 synthetic PC commands and 5 real PC recordings matched. Cost: about 20% more decoding on conversation-like side talk (AMI corpora), none on PC commands, and an aborted Groq request when someone goes on talking.
-- **Where**: `EarlyOptions` in `src/listen/pipeline.ts`, `listenEarly` in `src/app/stack.ts`.
+- **Next release, hardening**: `SileroVad` hands sherpa one 512-sample window per call, so reuse no longer depends on the app's frame size (100 ms or uneven frames: 3 of 8 rendered requests reused before, 8 of 8 after). Early decodes wait behind every real clip in Parakeet's queue, so a Discord clip queued behind three PC early decodes went from 4th to 2nd. A doubted pause is judged when a fresh decode would have ended, as without the early listen. Every Groq call counts in one sliding minute; early calls stop at 14 a minute and for 10 minutes after a 429, which cut dropped early calls on a meeting recording from 26% to 16%. Tried and dropped: skipping someone's early calls for a while after one of theirs was dropped (their next one was dropped no less often).
+- **Where**: `EarlyOptions` in `src/listen/pipeline.ts`, `listenEarly` in `src/app/stack.ts`, `src/speech/decode-queue.ts`, `src/speech/cloud-budget.ts`.
 - **Before changing**: the latency harness, `test/early-listen.test.ts`.
 
 ### The wake word comes from the transcript, not from a keyword spotter
@@ -87,7 +88,7 @@ If you have new data that contradicts an entry, change the code and this page in
 - **Why**: one wake check for every room. It can tell talk *about* her from talk *to* her: "Hey, Adrian's coming over later" and "Hadrian built a wall" must not wake her (`test/wake.test.ts`). And the PC app stays tiny. With Parakeet v3, `src/bench/wake-bench.ts` had 0 misses in 240 wake phrases and 0 false wakes on its synthetic corpus (0.7.0).
 - **Cost of the choice**: all speech is transcribed, side talk included. Side talk is most of the server's CPU time. Japanese and Vietnamese ways of saying the name aren't caught (say "Hey Adrian" first; see [roadmap.md](roadmap.md#known-limitations)).
 - **Next release**: talk about her after a greeting or the bare name ("Hey, Adrian is in the other channel") is a loose wake, judged by the model, not a direct question; a question with the name at the end or after a lead-in wakes her loosely; more greetings. On `bench/wake-score.mjs`'s held-out phrases (148 phrases, 513 clips, a fixed split by phrase): recall 158 to 167 of 194 (loose) and 154 to 158 (strict), false wakes as a direct question 8 to 0 of 279, talk about her taken as a direct question 31 to 0 of 32; loose false wakes unchanged at 20. The check itself went from about 2.7 to 1.3 µs a transcript. No rule keys on "-ed" after the name, because Parakeet writes orders in the past tense ("Adrian skipped this song").
-- **Cost of the next release's rules**: questions to a friend called Adrian ("are you coming, Adrian?") wake her loosely, 9 of 10 in a probe: each is a model call and a short music duck. A question-shaped stop ("can you stop, Adrian?") stops the music without the model, and a greeting with the name alone ("morning, Adrian") gets "Yes?". Most of the extra corpus is synthetic speech written by one author.
+- **Cost of the next release's rules**: questions to a friend called Adrian ("are you coming, Adrian?") wake her loosely, 9 of 10 in a probe: each is a model call and a short music duck. Stops, holds and the bare name after a lead-in or before a closing name don't wake her, so "can you stop, Adrian?" acts on nothing without the model (0 of 7 probe lines act, from 7). An everyday greeting with nothing after the name doesn't wake her, and one followed by anything but an order only she takes (the time, music, a local intent) is judged, questions included. Exclamations and game verbs ("heal", "revive", "res") don't wake. "Adrian, did you..." questions are judged; "will you", "would you" and "is it" stay direct. Held-out numbers are unchanged by these (167 / 158 of 194, 0 of 279, 0 of 32); on the tuning split recall went from 360 to 356 loose and 314 to 306 strict, all of it greetings, by design. A greeting plus a question to her ("Morning Adrian, what's the weather?") now costs a model call and skips the local fast paths. Most of the extra corpus is synthetic speech written by one author.
 - **Before changing**: `test/wake.test.ts`, `src/bench/wake-bench.ts`, `bench/wake-score.mjs` (replays saved transcripts; held-out transcripts print only with `--final`).
 
 ### Parakeet v3 stays the speech model
@@ -196,6 +197,23 @@ If you have new data that contradicts an entry, change the code and this page in
 - **Consequence**: every new tool adds its schema to every Claude call (the 0.17.0 alarm tools added about 1,170 tokens). Anything that changes per request must stay out of the stable part, or every call misses the cache.
 - **Before changing**: `test/orchestrator-tools.test.ts` ("with a stable prefix ..."), `test/anthropic.test.ts`, `bench/cache-check.mjs`.
 
+### Write Claude's cache while the question is still being heard
+
+- **Chosen**: a `max_tokens: 0` request with the exact cached prefix goes out when a woken question heads to the cloud listen, when a PC's early listen or held sentence starts that listen, and on push-to-talk (`brain.prewarm`, next release). One in flight per prefix, skipped while the prefix is known warm, at most 20 an hour, inside the spend caps.
+- **Instead of**: a cache kept warm on a timer (on the production logs' quiet spells it cost more than it saved), or the 1-hour cache (dearer on these gaps).
+- **Why**: on the real API with the production prompt, first spoken chunk after a quiet spell 882 to 803 ms (median), p90 1,042 to 891, for about $0.00015 more per answered wake. With no lead (no cloud listen) a warm-up only doubles the write, so it is sent only where the answer will wait for something.
+- **Cost**: a warm-up nothing follows costs about $0.0017; a cloud listen under about 300 ms can make both write (+$0.0018).
+- **Where**: `src/brain/prewarm.ts`, `prewarm()` in `src/brain/orchestrator.ts`, the hooks in `src/app/stack.ts`.
+- **Before changing**: `bench/prewarm.mjs`, `test/prewarm.test.ts`, `test/stack.test.ts` ("cache warm-up hooks").
+
+### Provider connections stay open, and reopen when someone talks
+
+- **Chosen**: every request to Claude, Groq, Speechify and Tavily goes through one undici pool that keeps idle connections a little under each server's own limit (Claude and Groq 360 s, Speechify 540 s, Tavily 210 s). When someone starts talking and a provider's connection has closed, a credential-free `GET` opens one (`src/core/http.ts`, next release). A request that breaks on a kept connection before any answer is sent once more; Speechify's has its own retry and never is.
+- **Instead of**: Node's default, which closed idle connections after 4 s, so nearly every request paid DNS, TCP and TLS again; or HTTP/2 (measured the same).
+- **Why**: from the server, first token or byte at every gap from 5 to 600 s: Claude about 70-100 ms sooner, Groq 40-65, Speechify 75-90, Tavily about 70.
+- **Cost**: a resend can reach a server twice if it read the request and then dropped the connection; the limits are server behaviour measured on one day.
+- **Before changing**: `bench/keepalive.mjs` (cheap, real APIs), `test/http.test.ts`.
+
 ### Thinking stays on, at low effort
 
 - **Chosen**: the Claude adapter (`src/brain/anthropic.ts`) never turns thinking off. It sends `output_config.effort` (`brain.effort`, default `low`) and leaves room for thinking tokens (`max_tokens` at least 2048, which is also why `brain.maxTokens` is not a hard cap with Claude). Thinking and tool-use blocks are replayed exactly on the next round, as tool use with thinking requires.
@@ -275,13 +293,13 @@ If you have new data that contradicts an entry, change the code and this page in
 ### Long cloud-voice sentences stream
 
 - **Chosen**: Speechify sentences over 40 characters play as their audio arrives; shorter ones come whole (they are cached and keep the hot-sentence level cap). A failure before the first audio falls back to Kokoro; a break mid-sentence ends that sentence (next release).
-- **Why**: first heard audio median 382 to 253 ms, p90 425 to 306 ms (`bench/speak-first.mjs`, 12 lines, 3 runs each), with no silent frames inside a line. Trade-off: streamed sentences skip `levelChunk`'s cap for hot sentences, so 2 of 12 measured lines played up to 0.45 LU louder (`bench/stream-level.mjs`).
+- **Why**: first heard audio median 382 to 253 ms, p90 425 to 306 ms (`bench/speak-first.mjs`, 12 lines, 3 runs each), with no silent frames inside a line. Trade-off, before the cap below: streamed sentences skipped `levelChunk`'s cap for hot sentences, so 2 of 12 measured lines played up to 0.45 LU louder (`bench/stream-level.mjs`). Now the first 0.6 s go out at once and the rest is held until the sentence is in, then capped like a whole sentence (`StreamCap`): those two lines are +0.21 and +0.02 LU over, the other 10 come out sample for sample as before, and first audio is unchanged. If the rest isn't in 300 ms after the first audio, it plays uncapped. A gap over 2 s after the first audio ends the sentence (it was 4 s).
 - **Where**: `SpeechifyTts.stream`, `VoiceRouter.stream`, `src/voice/speaker.ts`, `StreamLimiter` and `StreamTrimmer` in `src/audio/`.
 
 ### The local voice loads on first use when the cloud voice is primary
 
 - **Chosen**: with the cloud voice speaking English, Kokoro is loaded and calibrated the first time it stands in, not at start (next release).
-- **Why**: Kokoro was about 0.5 GB of a 1.6 GB start, and the server's memory guard kills node first: on 2026-11-12 it killed the bot 40 times in 22 minutes during start-up. `bench/mem-start.mjs --cloud` (Windows): steady and peak memory 1.59 to 1.10 GB. In a month of prod logs the cloud voice never failed, so Kokoro would never have loaded. Trade-off: the first stand-in sentence after a start waits for the load (about 5 s once).
+- **Why**: Kokoro was about 0.5 GB of a 1.6 GB start, and the server's memory guard kills node first: on 2026-11-12 it killed the bot 40 times in 22 minutes during start-up. `bench/mem-start.mjs --cloud` (Windows): steady and peak memory 1.59 to 1.10 GB. In a month of prod logs the cloud voice never failed, so Kokoro would never have loaded. Trade-off: the first stand-in sentence after a start waits for the load (about 5 s once). From the next release the load starts at the first sign of trouble (a cloud failure, a failed warm-up, 2 s without audio, under 10,000 characters left), and the calibration is kept in `voice-gains.json`: on a busy test PC, the first stand-in sentence after a 503 went from 9.5 s to 4.5 s once a calibration was kept. The first outage on a machine still pays the full calibration. A slow answer (over 2 s with no audio) loads Kokoro too, and it stays loaded.
 - **Where**: `src/app/local-voice.ts`; the first-start memory wait is `src/app/memory.ts`.
 
 ### Kokoro fp32 locally; int8 is slower
@@ -397,6 +415,14 @@ If you have new data that contradicts an entry, change the code and this page in
 ---
 
 ## The PC app and PC actions
+
+### A PC whose speakers play a call takes only push-to-talk
+
+- **Chosen**: while a PC's owner is in any voice channel the bot can see, in any of its servers, and not deafened, that PC takes only push-to-talk and typing, unless its app says the output is headphones (next release, PC app 0.17.2). Her own voice link doesn't matter. A stop still works by voice, except on alarms; her name gets a soft chime.
+- **Instead of**: guarding only her own channel (dragging the owner to another channel lifted it), or only her last channel while her link is down (someone with Move Members could disconnect her, then move the owner).
+- **Why**: everything a PC hears counts as its owner, and the app's echo gate only knows her voice, not Discord's.
+- **Cost**: hands-free is off in calls on speakers. Many USB DACs and docks report "speakers" whatever is plugged in, so headphones on one need the app's "These speakers are headphones" switch. Calls the bot can't see still drive the PC (roadmap F1).
+- **Where**: `pcGuarded` in `src/app/stack.ts`, `src/satellite/ptt.ts`.
 
 ### Typed, allowlisted actions only, and the PC's own settings decide
 

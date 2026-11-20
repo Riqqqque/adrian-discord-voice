@@ -195,7 +195,8 @@ What doesn't work, or works with a catch, as of 0.17.1. Many of these have entri
 - **Weak stops in group calls**: hold phrases and weak stops ("wait", "hold on", everyday words) are unreliable there.
 - **Side talk at a PC**: it isn't always judged silent; a 2026-11-01 bench kept it silent about half the time. Side talk is also most of the server's CPU time.
 - **Groq's free tier**: after a 429 the cloud listen pauses 60 s for everyone. Groq gets no language hint, and for non-English speech the Whisper second pass can override its text.
-- **A friend called Adrian** (next release): questions to them ending in the name wake her loosely (a model call and a short music duck each), a question-shaped stop ("can you stop, Adrian?") stops the music, and a greeting with the name alone gets "Yes?". See [usage.md](usage.md#waking-it).
+- **A friend called Adrian** (next release): questions to them ending in the name wake her loosely (a model call and a short music duck each; 9 of 10 in a probe). Stops phrased as questions, greetings alone, exclamations and game talk are left to them. See [usage.md](usage.md#waking-it).
+- **Calls the bot can't see** (other servers, DM calls, other apps) still drive a PC on speakers with its owner's rights (F1). Calls it can see make that PC push-to-talk only, unless the app says headphones; a USB DAC or dock that calls itself speakers needs the "These speakers are headphones" switch in the app (next release).
 - **"Louder" without her name**: said as a follow-up while nothing plays, it usually gets no answer. `next` is missing from `MUSICISH`, though the model still routes it to music.
 
 ### Answers and cost

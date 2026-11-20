@@ -298,9 +298,10 @@ With the PC app connected (setup: [pc-app.md](pc-app.md)), you can talk to it at
 
 **Talking to it there**
 
-- Say "Hey Adrian, …", hold **Ctrl+Alt+Space** and talk (no name needed), or type in the window. The window's stop button stops it.
+- Say "Hey Adrian, …", hold **Ctrl+Alt+Space** and talk (no name needed), or type in the window. The window's stop button stops it. From PC app 0.17.2, push-to-talk takes what you say while the key is down, pauses included, and nothing after you let go.
 - At a PC the follow-up window is 20 seconds, and talking over it for 0.6 seconds cuts it off. It starts working out what you said during the pause after you stop, so answers there come sooner when you say a request in one go.
-- **In its Discord call too?** While you're in its voice channel and not muted, the call answers instead of the PC, and the PC window shows "Answering in the Discord call." Push-to-talk, typing, and talking while muted in Discord stay with the PC.
+- **In its Discord call too?** While you're in its voice channel and not muted, the call answers instead of the PC, and the PC window shows "Answering in the Discord call." Push-to-talk and typing stay with the PC.
+- **In any voice call, on speakers** (next release): while you're in a voice channel the bot can see and not deafened, your speakers play the call and the PC's mic hears everyone in it, so the PC takes only push-to-talk and typing, muted or not. Its name said there gets a soft chime and a line in the window; "stop" still stops it and the music. On headphones it listens as usual: Windows says so for most headsets, and for a USB DAC or dock that reports speakers, tick "These speakers are headphones" in the app's settings.
 - **Quiet while gaming:** while a game is in front, every turn needs the name, push-to-talk or typing. Answers are one short sentence, and reminders set at that PC wait until the game ends. Timers and alarms still ring. "Quiet while I play" in the PC app's settings turns it off for that PC. Server-wide it's `satellite.quietWhileGaming` (on by default; `false` turns it off for every PC).
 
 **What it can do there**
@@ -540,6 +541,7 @@ When a limit is reached it says so. By voice it says it once, then stays quiet a
 | Limit | Setting | What it says |
 |---|---|---|
 | Requests per person per hour (owners exempt) | `limits.perUserPerHour` (30) | "You've asked a lot this hour. I'm pausing your questions for a bit." |
+| Spend per guest per day (next release; owners, the creator's accounts and priority-role members aren't guests) | `limits.guestDailyUsd` ($0.20) | "You've used your share of today's budget, so I'm pausing your questions until tomorrow." |
 | Spend per day | `limits.dailyUsd` ($1) | "I'm paused for the rest of today because the daily spending limit was reached." |
 | Spend per month | `limits.monthlyUsd` ($10) | "I'm paused for the rest of the month because the monthly spending limit was reached." |
 | Longest question passed to the model (voice and text) | `limits.maxRequestChars` (600 characters, 20 to 4000) | Nothing: the rest of the question is cut off. |

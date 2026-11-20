@@ -120,6 +120,7 @@ The link and the PC are described in [satellite.md](satellite.md) and
 | Deezer's public API | An artist's name | Top songs and "play X" (`music.topSongs`) |
 | Open-Meteo, your RSS feeds, your iCal address | The configured place, plain fetches | Weather, headlines, calendar |
 | Your own services (Plex, Sonarr, Radarr, Steam, Helix, Home Assistant) | Lookups and the actions you allowed | When asked |
+| Claude, Groq, Speechify, Tavily | A `GET` without a key that only opens a connection (each answers 401); no personal data | From the next release, when someone starts talking and that provider's kept connection has closed: about once per provider every 6 minutes at most while people talk |
 | GitHub | Release checks (server auto-update, the admin dashboard and the PC app) | Hourly on servers with auto-update; from the dashboard only while its page is open, at most every 6 hours (next release); from each PC 3 minutes after the app starts, then every 6 hours |
 
 Nothing is sent anywhere for analytics.

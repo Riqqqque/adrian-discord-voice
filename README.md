@@ -41,6 +41,7 @@ Everything below is in the current release (0.17.1), except what is marked *(nex
 - Alarms that ring until stopped, timers and reminders, by voice or `/alarm`. Nine built-in tones, its voice, a song, or saved clips. Stop by voice with no wake word, snooze, undo within 3 minutes, optional "firm" or "math" mode to turn an alarm off.
 - Rings where you are: the call, else your PC, else a DM with Stop and Snooze buttons. The PC app keeps a backup copy and rings by itself if the server doesn't.
 - Weather (Open-Meteo, no key; the place comes only from config), news headlines from RSS feeds, a read-only iCal calendar, and a morning briefing that keeps details private when others can hear.
+- Alarm buttons in a DM act only on the ring they were sent for, and a PC's late or early answer can't stop an alarm that hasn't rung yet *(next release)*.
 - Optional heads-up when someone joins after hours away, "what did I miss?", and a weekly recap post with counts only (no transcripts).
 
 **Integrations** (most need a key or a config entry before they appear)
@@ -65,8 +66,10 @@ Everything below is in the current release (0.17.1), except what is marked *(nex
 - Quiet while gaming: during a game it needs its name every time, keeps answers short and holds reminders until the match ends.
 - Between the PC and Discord: "send that link to my PC", "move the music to my PC", "tell the call I'll be on in 5".
 - When the PC's owner is also in its Discord call, the call answers instead, so music plays for everyone.
+- While its owner is in any voice call the bot can see, a PC on speakers takes only push-to-talk and typing, since its mic hears the call; her name said there gets a soft chime. On headphones hands-free keeps working (Windows says so for most headsets; a USB DAC or dock that calls itself speakers gets a "These speakers are headphones" switch). Push-to-talk covers what you say while you hold the key *(next release, with PC app 0.17.2)*.
 - Orders about the house ("lock the front door", "turn the TV down", "kill the lights") never reach the PC; "lock my PC" still does *(next release)*.
 - Answers at the PC start sooner: it starts recognizing what you said during the pause at the end of it (about 0.5 s sooner in a test harness with stand-in models) *(next release)*.
+- Connections to Claude, Groq, Speechify and Tavily stay open between requests and are reopened when someone starts talking, and Claude's cached prompt is written while a question is still being heard, so the first answer after a quiet spell starts sooner (tens of milliseconds per provider, measured on the real APIs) *(next release)*.
 
 **Running it**
 - Admin web page with a setup wizard, live status (latency, spend), settings, keys and logs. Loopback only by default. Its Status tab also shows what needs attention, what she costs (including the cloud voice, Groq and Tavily), how fast she answers and how reliable she is, kept across restarts *(next release)*.
@@ -81,7 +84,7 @@ Full numbers, how they were measured and how to spend less: [docs/costs.md](docs
 | Item | Cost | In the dollar caps? |
 |---|---|---|
 | Language model | Pay per token. The recommended preset, Claude Haiku 5.5, is $0.10 per million input tokens, $0.01 cached, $0.50 output (preset prices in `src/web/checks.ts`, checked 2026-10-14/15). The wizard's estimate for a plain answer is 900 input and 60 output tokens, about $0.00012. Real answers carry a larger prompt (mostly cached on Claude) and a request that uses a tool usually takes a second model call, up to four per request. With `autoMemory` on (default), one extra background call every 4 answers per person reads the conversation for facts; point `brain.background` at a local model to make it free. Measured figures are in docs/costs.md. Groq has a free tier, and any OpenAI-compatible endpoint works, including a local one. | Yes |
-| Spend caps (defaults) | `limits.dailyUsd` $1, `limits.monthlyUsd` $10, `limits.perUserPerHour` 30 requests (owners are exempt from the hourly limit only). At a cap it stops calling the paid model; the answer that crosses a cap still finishes. | — |
+| Spend caps (defaults) | `limits.dailyUsd` $1, `limits.monthlyUsd` $10, `limits.perUserPerHour` 30 requests (owners are exempt from the hourly limit only), and from the next release `limits.guestDailyUsd` $0.20 per guest per day (owners, the creator's accounts and priority-role members aren't guests). At a cap it stops calling the paid model; the answer that crosses a cap still finishes. | — |
 | Free, no model call | Local phrases, plain "play X", slash and typed commands, `/alarm`, speech recognition, the Kokoro and Piper voices, Deezer, Open-Meteo, RSS and YouTube lookups. | — |
 | Cloud voice (optional) | Your Speechify plan. Default cap `cloudVoice.monthlyChars` 950,000 characters a month for `simba-3.5`, then the local voice. | No, own character budget |
 | Cloud second listen (optional, off by default) | `cloudStt`: Groq Whisper re-transcribes speech already judged to be for it (PC rooms only by default, `cloudStt.rooms`). Groq key and rate limits apply. | No |

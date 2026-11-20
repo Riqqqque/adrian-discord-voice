@@ -84,6 +84,8 @@ cost = ( (input - cached - cacheWrite) * priceInPerM
 
 With `brain.provider` `anthropic`, the orchestrator turns on `stablePrefix`: every tool is sent on every call, in a fixed order, so the prefix is byte-identical from call to call. `src/brain/anthropic.ts` puts `cache_control: { type: 'ephemeral' }` on the stable system block and on the last assistant message of the history (two breakpoints). The stable part is shared by everyone; the history part is per person. The cache lasts 5 minutes after its last use.
 
+From the next release, a cache warm-up (`brain.prewarm`, on by default, Claude only) writes that prefix while a woken question is still being listened to: when the question heads to the cloud listen, at a PC already when its early listen or a held sentence starts that listen, and on push-to-talk. The answer then reads the cache instead of writing it. Measured on the real API with the production prompt (13.9k cached tokens, `bench/prewarm.mjs`): first spoken chunk after a quiet spell 882 to 803 ms (median); with kept-open connections (`src/core/http.ts`) as well, 854 to 787 ms with no warm-up and 814 to 775 ms with one. Cost: about $0.00015 more per answered wake (8%), about $0.0017 for a warm-up nothing follows, and sometimes a double write (+$0.0018) when the cloud listen comes back in under about 300 ms. Skipped while the prefix is warm, for stops, local orders, music orders and the time, and past the spend caps; at most `brain.prewarm.maxPerHour` (20) an hour. Warm-ups count in the ledger.
+
 Other providers don't get `stablePrefix`. They get the tool subset picked by `routeTools` (`src/brain/tool-router.ts`) from the words of the request. PC tools have no router group, so with `satellite.enabled` they are offered on every call either way.
 
 Measured (`bench/cache-check.mjs`, version 0.12.x, October 2026, before 2026-10-16; the bench uses only part of today's prefix):
@@ -174,6 +176,7 @@ Every speech segment, from everyone in a call or at a PC, is transcribed on the 
 - Side talk never leaves the server (`test/stack.test.ts` "speech not meant for her never reaches the cloud").
 - With the early listen at a PC (`satellite.earlyListen`, on by default), the Groq request starts during the pause at the end of a request. When the person goes on talking within 0.8 s, that request is aborted and a second one is made for the whole clip. Groq may still bill the aborted one (at least 10 s each, below), so a request said with a short pause can cost two Groq requests. Stops, her name alone, side talk and speech in her call never go early. One edge: the early listen judges a follow-up window from a start time up to about 50 ms off, so speech right at the window's edge can be sent early and then judged not for her; its words are not used, but that audio did reach Groq.
 - HTTP 429 or 5xx pauses the cloud listen for 60 s; a timeout, error or empty text keeps the local words.
+- From the next release, every Groq call (aborted early ones too) counts in one sliding minute. Early calls go out only while that minute has fewer than 14 (Groq's ~20 minus 6 kept for calls someone waits on), and not for 10 minutes after a 429. On a meeting recording, early calls that were dropped went from 26% to 16%.
 - Price (Groq's speech-to-text docs, https://console.groq.com/docs/speech-to-text, checked 2026-11-20): $0.04 per hour of audio for `whisper-large-v3-turbo`, with at least 10 seconds billed per request. Her segments are mostly shorter than 10 s, so count about $0.00011 per request: 1,000 requests cost about $0.11. No price is in the code.
 - Rate limits: Groq's rate-limits page (https://console.groq.com/docs/rate-limits, checked 2026-11-20) lists 20 requests a minute, 2,000 a day, 7,200 audio seconds an hour and 28,800 a day for this model; your account's limits page shows your own tier. The maintainer's speech comparison bench of 2026-10-21 spaces its requests 3.2 s apart for the same reason ("Groq free tier: ~20 a minute", `bench/stt-compare.mjs`). Past the limit Groq answers 429, which pauses the cloud listen for 60 s.
 - Not counted by the dollar caps.
@@ -272,7 +275,9 @@ All in `src/config.ts`. Set them in the admin UI's limits form or with `sudo adr
 
 ### 5.3 What the ledger counts and what it doesn't
 
-Counted: every main-model call (all rounds), automatic memory, the quiz judge, estimated stopped streams.
+Counted: every main-model call (all rounds), automatic memory, the quiz judge, estimated stopped streams, and cache warm-ups (a stopped one is estimated as a full write).
+
+From the next release each guest also has a daily share, `limits.guestDailyUsd` ($0.20 by default), checked with the caps. Owners skip the hourly limit and the share; the creator's accounts (`identity.creatorIds`) and priority-role members skip only the share.
 
 Not counted, or counted inexactly:
 - Speechify characters (own budget), Groq speech-to-text, Tavily searches.
