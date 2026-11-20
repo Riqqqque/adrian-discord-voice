@@ -34,8 +34,9 @@ export interface ControllerDeps {
    *  an answer. Return "silent" if it wasn't meant for the bot, "done" if it
    *  was an order carried out (no follow-up window after it), "asked" if a
    *  tool is waiting on their answer (their next words are for her, as after
-   *  "Yes?"). */
-  respond(userId: UserId, command: string, signal: AbortSignal, followUp?: boolean): Promise<void | 'silent' | 'done' | 'asked'>;
+   *  "Yes?"). `loose`: it did use the name, but maybe about her rather than
+   *  to her (the model judges it like a follow-up). */
+  respond(userId: UserId, command: string, signal: AbortSignal, followUp?: boolean, loose?: boolean): Promise<void | 'silent' | 'done' | 'asked'>;
   /** A stop for the bot while it isn't talking (stops the music). */
   stopOther?: (userId: UserId) => void;
   /** Short fixed reply (apologies, "Yes?", announcements); stops when `signal` aborts. */
@@ -81,8 +82,10 @@ interface Request {
   delivered?: (ok: boolean) => void;
   /** The reply to a stop: she doesn't listen on after saying it. */
   closes?: boolean;
-  /** Said without the wake phrase, in the follow-up window. */
+  /** Said without the wake phrase, in the follow-up window, or woken loosely: the model judges it. */
   followUp?: boolean;
+  /** Woken loosely: the name was said, maybe not to her. */
+  loose?: boolean;
 }
 
 /** Talking on within this long of a request, before she answers, continues it. */
@@ -276,7 +279,7 @@ export class ConversationController {
     const a = this.active;
     if (!e.woke && text && a && a.userId === e.userId && a.command && !a.announce && !a.working && !a.acted && a.spokeAt === undefined && now - a.at < CONTINUE_MS) {
       this.d.log?.('continued', { user: e.userId });
-      this.queue.unshift({ userId: e.userId, command: `${a.command} ${text}`, at: now, ...(a.followUp ? { followUp: true } : {}) });
+      this.queue.unshift({ userId: e.userId, command: `${a.command} ${text}`, at: now, ...(a.followUp ? { followUp: true } : {}), ...(a.loose ? { loose: true } : {}) });
       a.ctl.abort();
       return;
     }
@@ -305,7 +308,7 @@ export class ConversationController {
     this.expecting.delete(e.userId);
     const direct = wasExpecting && !e.woke;
     const judge = (e.woke && e.loose) || (!e.woke && !direct);
-    const req: Request = { userId: e.userId, command, at: now, ...(judge ? { followUp: true } : {}) };
+    const req: Request = { userId: e.userId, command, at: now, ...(judge ? { followUp: true } : {}), ...(e.woke && e.loose ? { loose: true } : {}) };
     if (!this.active) {
       void this.run(req);
     } else if (this.active.userId === e.userId) {
@@ -321,7 +324,7 @@ export class ConversationController {
       const i = this.queue.findIndex((r) => r.userId === e.userId);
       if (i >= 0) this.queue.splice(i, 1);
       if (!bumped.announce && !bumped.acted && bumped.command && !this.queue.some((r) => r.userId === bumped.userId)) {
-        this.queue.unshift({ userId: bumped.userId, command: bumped.command, at: this.d.now(), ...(bumped.followUp ? { followUp: true } : {}) });
+        this.queue.unshift({ userId: bumped.userId, command: bumped.command, at: this.d.now(), ...(bumped.followUp ? { followUp: true } : {}), ...(bumped.loose ? { loose: true } : {}) });
       }
       this.queue.unshift(req);
       bumped.dropped = true;
@@ -375,7 +378,7 @@ export class ConversationController {
     let failed = false;
     try {
       if (req.announce) await this.d.say(req.announce, ctl.signal);
-      else if (req.command) outcome = await this.d.respond(req.userId, req.command, ctl.signal, req.followUp);
+      else if (req.command) outcome = await this.d.respond(req.userId, req.command, ctl.signal, req.followUp, req.loose);
       else {
         // Listening from the start of "Yes?": the words can overlap it.
         this.expecting.set(req.userId, this.d.now() + EXPECT_MS);

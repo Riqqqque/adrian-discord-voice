@@ -7,6 +7,7 @@ import { LlmHttpError } from './openai-compatible.js';
 import { SentenceSplitter, type SplitterOptions, toSpeakable } from './speech-text.js';
 import { countable, stripImages } from './images.js';
 import { asUntrustedData } from './tools.js';
+import { type CacheWarmer, type Prefix, prefixKey, WARM_PLACEHOLDER, type WarmResult } from './prewarm.js';
 
 export interface OrchestratorOptions {
   /** Name the assistant answers to when spoken. */
@@ -37,6 +38,8 @@ export interface OrchestratorOptions {
   filler?: () => string;
   /** Rules that never change between requests (cached with the stable prompt). */
   stableLines?: string[];
+  /** Cache warm-ups (with stablePrefix): `prewarm()` sends one, and every answer tells it the prefix is warm. Can be shared. */
+  warmer?: CacheWarmer;
 }
 
 export interface Usage {
@@ -162,7 +165,7 @@ export class ConversationOrchestrator {
     signal: AbortSignal,
     onUsage?: (u: Usage) => void,
     place?: { guildId?: string; channelId?: string },
-    opts: { followUp?: boolean; onSilent?: () => void; onTool?: (timeoutMs: number) => void; onWorking?: (on: boolean) => void; onActed?: () => void; onAsked?: () => void; text?: boolean; extra?: string[]; desk?: boolean } = {},
+    opts: { followUp?: boolean; onSilent?: () => void; onTool?: (timeoutMs: number) => void; onWorking?: (on: boolean) => void; onActed?: () => void; onAsked?: () => void; text?: boolean; extra?: string[]; desk?: boolean; loose?: boolean } = {},
   ): AsyncGenerator<string> {
     const where = `${userId}:${place?.channelId ?? ''}`;
     const turn = (this.turns.get(where) ?? 0) + 1;
@@ -191,6 +194,14 @@ export class ConversationOrchestrator {
             ? [
                 `${speaker} wrote this in the channel without @mentioning you. People here also talk to each other. If it is not meant for you, reply with exactly SILENT and nothing else. Not meant for you: talking to someone else (including answering a question another person asked them in the messages above), reactions ("lol", "fr"), side remarks about you rather than to you. If it continues your conversation with them, answers something you asked, asks you something, or talks to you by name, just answer it, exactly as if they had @mentioned you.`,
               ]
+            : opts.followUp && opts.loose && opts.desk
+            ? [
+                `${speaker} said this at their PC with your name in it, but maybe about you rather than to you. They're usually talking to you: answer it. The words come from speech recognition, which sometimes writes an order to you in the past tense ("skipped this song" for "skip this song"): that is still an order for you. Reply with exactly SILENT and nothing else only if it clearly isn't for you: dialogue from a show, video or game playing on the PC, song lyrics, or them obviously talking to someone else in the room or on a call.`,
+              ]
+            : opts.followUp && opts.loose
+            ? [
+                `${speaker} just said this with your name in it, but maybe about you rather than to you. The words come from speech recognition, which sometimes writes an order to you in the past tense ("skipped this song" for "skip this song"): that is still an order for you. People in the call also talk to each other and about their games. If it is not meant for you, reply with exactly SILENT and nothing else. Not meant for you: talking about you rather than to you, talking to someone else, callouts and instructions for the game ("grab the diamonds", "run", "watch out", "go left"), reactions ("lol", "nice one"), thinking out loud. Things you could not do anyway are usually meant for someone else. If it continues your conversation or asks you something, answer normally.`,
+              ]
             : opts.followUp && opts.desk
             ? [
                 `${speaker} said this at their PC without using your name, soon after your last answer. They're usually talking to you: treat it as continuing your conversation and answer it. Reply with exactly SILENT and nothing else only if it clearly isn't for you: dialogue from a show, video or game playing on the PC, song lyrics, or them obviously talking to someone else in the room or on a call.`,
@@ -202,7 +213,9 @@ export class ConversationOrchestrator {
             : []),
         ]);
     const history = this.memory.history(userId) as ChatMessage[];
-    const stable: ChatMessage = { role: 'system', content: stablePrompt(this.o, tools.map((t) => t.spec.name)), cache: true };
+    const stable = this.stable(tools);
+    // Which cached prefix this request uses, for the warmer.
+    const warmKey = this.o.warmer && this.o.stablePrefix ? this.prefix(tools, stable).key : undefined;
     const messages: ChatMessage[] = this.o.stablePrefix
       ? [
           stable,
@@ -227,6 +240,7 @@ export class ConversationOrchestrator {
         let roundText = '';
         let metered = false;
         let calls: { id: string; name: string; arguments: string; extra?: unknown }[] = [];
+        const roundStart = performance.now();
         const roundCtl = new AbortController();
         const endRound = () => roundCtl.abort();
         signal.addEventListener('abort', endRound, { once: true });
@@ -273,6 +287,7 @@ export class ConversationOrchestrator {
               usage.cachedTokens += ev.cachedTokens;
               usage.cacheWriteTokens += ev.cacheWriteTokens ?? 0;
               usage.outputTokens += ev.outputTokens;
+              if (warmKey && !ev.fallback && ev.cachedTokens + (ev.cacheWriteTokens ?? 0) > 0) this.o.warmer!.note(warmKey, performance.now() - roundStart);
             }
           }
         } catch (e) {
@@ -428,6 +443,29 @@ export class ConversationOrchestrator {
       if (spoken) this.memory.append(userId, { role: 'assistant', content: spoken });
       onUsage?.(usage);
     }
+  }
+
+  /** The cached system block: the one builder for answers and warm-ups. */
+  private stable(tools: Tool[]): ChatMessage {
+    return { role: 'system', content: stablePrompt(this.o, tools.map((t) => t.spec.name)), cache: true };
+  }
+
+  /** The part of every request that's cached (stablePrefix): all tools and the stable prompt, byte for byte as `ask` sends them. */
+  private prefix(tools: Tool[] = this.tools, stable: ChatMessage = this.stable(tools)): Prefix {
+    const specs = tools.map((t) => t.spec);
+    return { key: prefixKey(this.llm.model, [stable.content], specs), messages: [stable, { role: 'user', content: WARM_PLACEHOLDER }], tools: specs };
+  }
+
+  /** Someone is about to ask (woken, push-to-talk): warm the cached prefix
+   *  now so their answer doesn't pay for writing it. Never throws. */
+  prewarm(reason: string): WarmResult {
+    if (!this.o.warmer || !this.o.stablePrefix) return 'off';
+    return this.o.warmer.warm(() => this.prefix(), reason);
+  }
+
+  /** Shutdown: stop warm-ups and wait until what they billed is counted. */
+  async stopWarming(): Promise<void> {
+    await this.o.warmer?.close();
   }
 
   private async *withFirstEventTimeout(src: AsyncIterable<LlmEvent>, signal: AbortSignal, round: AbortController): AsyncGenerator<LlmEvent> {

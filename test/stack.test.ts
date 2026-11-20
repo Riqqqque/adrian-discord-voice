@@ -7,10 +7,12 @@ import { join } from 'node:path';
 import { ChannelType, Client, Collection, Events, PermissionsBitField } from 'discord.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { startVoiceStack } from '../src/app/stack.js';
+import { ConversationOrchestrator } from '../src/brain/orchestrator.js';
 import { PocConfigSchema } from '../src/config.js';
 import { MusicPlayer, YoutubeSource } from '../src/features/music.js';
 import { QUIZ_BUSY } from '../src/features/quiz.js';
 import { UsageLedger } from '../src/limits/usage-ledger.js';
+import { cloud } from '../src/core/http.js';
 import type { TurnOptions } from '../src/listen/pipeline.js';
 import { SmartTurn } from '../src/speech/smart-turn.js';
 import { SpeechifyTts } from '../src/speech/speechify.js';
@@ -1501,6 +1503,16 @@ describe('a pause after "play"', () => {
     expect(r.llmBodies[0].messages.at(-1).content).toBe('tell me a joke');
     expect(asPrompt(r.llmBodies[0])).not.toContain(JUDGE_LINE);
     expect(m.play).not.toHaveBeenCalled();
+    await r.stack.stop();
+  });
+
+  it('a loose wake is judged as maybe about her, not as said without her name', async () => {
+    const r = await rig();
+    r.steps.push(SILENT);
+    r.heard(r.discordPipe, SAM, 'adrian is so slow today', 'is so slow today', 1, { loose: true });
+    await until(() => r.llmBodies.length === 1, 'the judge');
+    expect(asPrompt(r.llmBodies[0])).toContain('with your name in it, but maybe about you rather than to you');
+    expect(asPrompt(r.llmBodies[0])).not.toContain(JUDGE_LINE);
     await r.stack.stop();
   });
 
@@ -3180,5 +3192,104 @@ describe('someone with no PC connected', () => {
     await until(() => r.llmBodies.length === 1, 'the model');
     expect(asPrompt(r.llmBodies[0])).not.toContain(NO_PC);
     await r.stack.stop();
+  });
+});
+
+describe('cache warm-up hooks', () => {
+  it('words for the model warm its prompt during the cloud listen; stops, music orders and the time do not', async () => {
+    const prewarm = vi.spyOn(ConversationOrchestrator.prototype, 'prewarm');
+    try {
+      const r = await rig({ cloudStt: { enabled: true, rooms: 'all' } });
+      r.groq.reply = 'Hey Adrian, how far away is the moon';
+      r.heard(r.discordPipe, SAM, 'hey adrian how far away is the moon', 'how far away is the moon');
+      await until(() => r.llmBodies.length === 1, 'the answer');
+      expect(prewarm.mock.calls).toEqual([['heard']]);
+      expect(r.groq.calls).toBe(1);
+      await until(() => r.stack.answers().length === 1, 'the answer done');
+      for (const [said, cmd] of [['hey adrian stop', 'stop'], ['hey adrian pause the music', 'pause the music'], ['hey adrian what time is it', 'what time is it']] as const) {
+        r.groq.reply = said;
+        r.heard(r.discordPipe, OWNER, said, cmd);
+        await sleep(40);
+      }
+      expect(prewarm).toHaveBeenCalledTimes(1);
+      await r.stack.stop();
+    } finally {
+      prewarm.mockRestore();
+    }
+  });
+
+  it('no cloud listen, no warm-up: the answer would start before it lands', async () => {
+    const prewarm = vi.spyOn(ConversationOrchestrator.prototype, 'prewarm');
+    try {
+      const r = await rig();
+      r.heard(r.discordPipe, SAM, 'hey adrian how far away is the moon', 'how far away is the moon');
+      await until(() => r.llmBodies.length === 1, 'the answer');
+      expect(prewarm).not.toHaveBeenCalled();
+      await r.stack.stop();
+    } finally {
+      prewarm.mockRestore();
+    }
+  });
+
+  it('held words warm it at the hold, and their release does not warm it again', async () => {
+    const prewarm = vi.spyOn(ConversationOrchestrator.prototype, 'prewarm');
+    try {
+      const { r, pipe, turn } = await holding({ cloudStt: { enabled: true } });
+      r.groq.reply = 'Hey Adrian, what is the capital of Australia';
+      const samples = new Float32Array(16_000);
+      turn.onHeldWords!(OWNER, { text: 'hey adrian what is the', samples });
+      expect(prewarm.mock.calls).toEqual([['held']]);
+      await until(() => r.groq.calls === 1, 'the cloud listen');
+      r.heard(pipe, OWNER, 'hey adrian what is the', 'what is the', 1, { samples });
+      await until(() => r.llmBodies.length === 1, 'the model');
+      expect(prewarm).toHaveBeenCalledTimes(1);
+      turn.onHeldWords!(OWNER, { text: 'hey adrian pause the music', samples: new Float32Array(16_000) });
+      turn.onHeldWords!(OWNER, { text: 'hey adrian what time is it', samples: new Float32Array(16_000) });
+      expect(prewarm).toHaveBeenCalledTimes(1);
+      await r.stack.stop();
+    } finally {
+      prewarm.mockRestore();
+    }
+  });
+
+  it('someone starting to talk opens the provider connections that closed', async () => {
+    const wake = vi.spyOn(cloud, 'wake').mockImplementation(() => undefined);
+    try {
+      const r = await rig();
+      const { conn } = r.connect();
+      r.transport.emit('speechStart', SAM);
+      conn.emit('speechStart', OWNER);
+      expect(wake).toHaveBeenCalledTimes(2);
+      await r.stack.stop();
+    } finally {
+      wake.mockRestore();
+    }
+  });
+
+  it('stopping stops the warm-ups before the spend is saved', async () => {
+    const order: string[] = [];
+    const stop = vi.spyOn(ConversationOrchestrator.prototype, 'stopWarming').mockImplementation(async () => void order.push('warm-ups'));
+    const flush = vi.spyOn(UsageLedger.prototype, 'flush').mockImplementation(() => void order.push('spend'));
+    try {
+      const r = await rig();
+      await r.stack.stop();
+      expect(order).toEqual(['warm-ups', 'spend']);
+    } finally {
+      stop.mockRestore();
+      flush.mockRestore();
+    }
+  });
+
+  it('push-to-talk at the PC warms it as the button goes down', async () => {
+    const prewarm = vi.spyOn(ConversationOrchestrator.prototype, 'prewarm');
+    try {
+      const r = await rig();
+      const { conn } = r.connect();
+      conn.emit('ptt');
+      expect(prewarm.mock.calls).toEqual([['ptt']]);
+      await r.stack.stop();
+    } finally {
+      prewarm.mockRestore();
+    }
   });
 });

@@ -150,7 +150,8 @@ export interface ToolSpec {
 export type LlmEvent =
   | { type: 'text'; delta: string }
   | { type: 'toolCalls'; calls: ToolCall[] }
-  | { type: 'usage'; inputTokens: number; cachedTokens: number; outputTokens: number; cacheWriteTokens?: number };
+  /** `fallback`: the secondary model answered (its cache isn't the primary's). */
+  | { type: 'usage'; inputTokens: number; cachedTokens: number; outputTokens: number; cacheWriteTokens?: number; fallback?: boolean };
 
 export interface LlmProvider {
   readonly model: string;
@@ -159,6 +160,17 @@ export interface LlmProvider {
     /** toolChoice none: tools are listed (keeps the cached prefix) but may not be called. */
     opts: { tools?: ToolSpec[]; toolChoice?: 'none'; signal?: AbortSignal; maxTokens?: number },
   ): AsyncIterable<LlmEvent>;
+  /** Prompt caching only: write or refresh the cached prefix of `messages`
+   *  (with `tools`) and answer nothing. Absent where there's no such cache. */
+  warm?(messages: ChatMessage[], opts: { tools?: ToolSpec[]; signal?: AbortSignal }): Promise<WarmUsage>;
+}
+
+/** Tokens a cache warm-up billed (inputTokens counts all three kinds). */
+export interface WarmUsage {
+  inputTokens: number;
+  cachedTokens: number;
+  cacheWriteTokens: number;
+  outputTokens: number;
 }
 
 export interface MemoryStore {

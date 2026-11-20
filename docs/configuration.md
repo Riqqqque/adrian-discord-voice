@@ -19,7 +19,7 @@ Every setting the bot reads, with its type, default and effect. The source of tr
 
 There are three ways to change a setting.
 
-1. **The admin page** (wizard and Settings tab) changes only these: `guildId`, `channelId`, `timezone` (checked as a time zone name), `voice.voice` and `voice.speed` (slider 0.8 to 1.2), `limits.perUserPerHour`, `limits.dailyUsd` and `limits.monthlyUsd`, the main and fallback language model (one of the presets) and web search on or off. Picking a preset replaces only the provider fields (`provider`, `baseUrl`, `model`, `effort`, `apiKeySecret`, `extraBody`, prices) and keeps your timeouts and token cap. A model set with `adrian config` shows as "Keep" and is left alone. The page also writes `brain.preset` (and `brain.fallback.preset`), which only the page uses; the schema drops it when the config is loaded. The settings API behind the page (`SettingsPatchSchema` in `src/web/settings.ts`) also accepts `priorityRoleIds`, `playbackVolume`, `limits.maxRequestChars` and a custom endpoint, but the page has no control for them.
+1. **The admin page** (wizard and Settings tab) changes only these: `guildId`, `channelId`, `timezone` (checked as a time zone name), `voice.voice` and `voice.speed` (slider 0.8 to 1.2), `limits.perUserPerHour`, `limits.dailyUsd`, `limits.guestDailyUsd` and `limits.monthlyUsd`, the main and fallback language model (one of the presets) and web search on or off. Picking a preset replaces only the provider fields (`provider`, `baseUrl`, `model`, `effort`, `apiKeySecret`, `extraBody`, prices) and keeps your timeouts and token cap. A model set with `adrian config` shows as "Keep" and is left alone. The page also writes `brain.preset` (and `brain.fallback.preset`), which only the page uses; the schema drops it when the config is loaded. The settings API behind the page (`SettingsPatchSchema` in `src/web/settings.ts`) also accepts `priorityRoleIds`, `playbackVolume`, `limits.maxRequestChars` and a custom endpoint, but the page has no control for them.
 2. **`sudo adrian config KEY [VALUE]`**, by dotted path, for everything else:
 
    ```bash
@@ -158,6 +158,8 @@ The WebSocket endpoint the Windows PC app connects to. Setup is in [pc-app.md](p
 | `brain.priceOutPerM` | USD per 1M tokens, 0+ | `0` | Output price | `0.5` |
 | `brain.search.apiKeySecret` | key name (search) | `"TAVILY_API_KEY"` | Turns on the web search tool. Also used to find misheard song titles and, at a PC, "open the page for X". Optional block | `"TAVILY_API_KEY"` |
 | `brain.search.maxResults` | integer 1-8 | `4` | Results per search | `3` |
+| `brain.prewarm.enabled` | boolean | `true` | Claude only. When a woken question heads to the cloud listen (at a PC already when its early listen or a held sentence starts that listen), or push-to-talk goes down, a `max_tokens: 0` request writes the cached tools and prompt while the words are still being listened to, so the answer reads the cache instead of writing it. Skipped while the prefix is warm, for stops, local commands, music orders and the time, for a PC that takes only push-to-talk, and past the spend caps. Each one counts toward the caps: about $0.0017 when it writes the prefix and nothing follows, about $0.00015 more than a cold answer when the answer follows | `false` |
+| `brain.prewarm.maxPerHour` | integer | `20` | Most warm-ups in any hour, so a run of false wakes costs at most this many writes | `10` |
 
 ### Fallback model (`brain.fallback`, optional block)
 

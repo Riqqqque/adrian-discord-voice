@@ -4,7 +4,10 @@
 // yes, which nothing planted in the prompt can give.
 
 import { noteCall } from '../core/calls.js';
+import { cloud } from '../core/http.js';
 import type { Tool, ToolContext } from '../core/interfaces.js';
+
+const TAVILY = 'https://api.tavily.com/search';
 
 export function timeTool(timezone: string): Tool {
   return {
@@ -33,7 +36,7 @@ export function timeTool(timezone: string): Tool {
 /** Tavily web search (basic depth, 1 credit per call). */
 /** The address of the best web result for a description ("JEI mod on modrinth"). */
 export async function topResultUrl(apiKey: string, query: string, signal: AbortSignal): Promise<string | undefined> {
-  const res = await fetch('https://api.tavily.com/search', {
+  const res = await cloud.fetch(TAVILY, {
     method: 'POST',
     headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
     body: JSON.stringify({ query: query.slice(0, 200), search_depth: 'basic', max_results: 3, include_answer: false }),
@@ -49,7 +52,7 @@ export async function topResultUrl(apiKey: string, query: string, signal: AbortS
  *  A search engine reads past misspelled names ("emmy blues loba") that
  *  YouTube's own search takes literally. */
 export async function webYoutubeVideos(apiKey: string, query: string, signal: AbortSignal): Promise<{ id: string; title: string }[]> {
-  const res = await fetch('https://api.tavily.com/search', {
+  const res = await cloud.fetch(TAVILY, {
     method: 'POST',
     headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
     body: JSON.stringify({ query: query.slice(0, 200), search_depth: 'basic', max_results: 5, include_answer: false, include_domains: ['youtube.com', 'music.youtube.com'] }),
@@ -103,7 +106,7 @@ export function tavilySearchTool(apiKey: string, maxResults = 4): Tool {
     async run(args, signal) {
       const query = String(args.query ?? '').slice(0, 200);
       if (!query) return 'No query given.';
-      const res = await fetch('https://api.tavily.com/search', {
+      const res = await cloud.fetch(TAVILY, {
         method: 'POST',
         headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
         // No AI summary: it was measured to state guesses as facts (e.g. a

@@ -12,6 +12,8 @@ import { FallbackLlm } from '../brain/fallback.js';
 import { ConversationOrchestrator, type OrchestratorOptions, type Usage } from '../brain/orchestrator.js';
 import { OpenAiCompatibleLlm } from '../brain/openai-compatible.js';
 import { AnthropicLlm } from '../brain/anthropic.js';
+import { CacheWarmer } from '../brain/prewarm.js';
+import { cloud as connections } from '../core/http.js';
 import { SessionMemory } from '../brain/sessions.js';
 import { cachedTool, tavilySearchTool, timeTool, topResultUrl, webYoutubeVideos } from '../brain/tools.js';
 import type { PocConfig } from '../config.js';
@@ -859,7 +861,10 @@ export async function startVoiceStack(
         if (bgLlm) log.info('memory model', { model: bgLlm.model });
       }
       quizzes.useJudge(modelJudge(llm, (inTok, outTok) => ledger.addCost((inTok * brain.priceInPerM + outTok * brain.priceOutPerM) / 1e6)));
+      // Claude: the cached prompt is written while a question is still being listened to (brain/prewarm.ts).
+      const warmer = brain.provider === 'anthropic' ? new CacheWarmer(llm, { ...brain.prewarm, allowed: () => ledger.check('', true).ok, onUsage: (u) => ledger.addCost(costUsd({ ...u, toolCalls: 0 })), log }) : undefined;
       const brainOptions: OrchestratorOptions = {
+        ...(warmer ? { warmer } : {}),
         spokenName: 'Adrian',
         writtenName: 'A.D.R.I.A.N.',
         timezone: config.timezone,
@@ -1160,7 +1165,7 @@ export async function startVoiceStack(
     return true;
   }
 
-  async function respond(rm: Room, userId: UserId, command: string, outer: AbortSignal, followUp = false, onSpeaking?: () => void, onWorking?: (on: boolean) => void): Promise<void | 'silent' | 'done' | 'asked'> {
+  async function respond(rm: Room, userId: UserId, command: string, outer: AbortSignal, followUp = false, onSpeaking?: () => void, onWorking?: (on: boolean) => void, loose = false): Promise<void | 'silent' | 'done' | 'asked'> {
     const waitKey = `${rm.key}:${userId}`;
     const waiting = pendingPlay.get(waitKey);
     pendingPlay.delete(waitKey);
@@ -1218,6 +1223,7 @@ export async function startVoiceStack(
       modelDone = new Promise((r) => (finished = r));
       const gen = orchestrator.ask(userId, nameOf(userId), question, signal, (u) => (usage = u), rm.place(), {
         followUp,
+        ...(followUp && loose ? { loose: true } : {}),
         ...(rm.ui ? { desk: true } : {}),
         ...(followUp && musicish ? { extra: [MUSIC_FOLLOW_UP] } : {}),
         onSilent: () => (silent = true),
@@ -1379,10 +1385,10 @@ export async function startVoiceStack(
   function makeController(rm: Room): ConversationController {
     const c: ConversationController = new ConversationController({
     now: () => performance.now(),
-    respond: async (userId, command, signal, followUp) => {
+    respond: async (userId, command, signal, followUp, loose) => {
       rm.ui?.mode('thinking');
       try {
-        return await respond(rm, userId, command, signal, followUp, () => c.speaking(userId), (on) => c.working(userId, on));
+        return await respond(rm, userId, command, signal, followUp, () => c.speaking(userId), (on) => c.working(userId, on), loose);
       } finally {
         rm.ui?.mode('idle');
       }
@@ -1536,7 +1542,7 @@ export async function startVoiceStack(
   const early = new WeakMap<Float32Array, Promise<string | undefined>>();
   /** Start the cloud's listen before the clip is released, if heard() would ask for it.
    *  `unlessDangling`: not for words that stop mid-thought, which usually go on. */
-  function listenEarly(userId: UserId, text: string, samples: Float32Array, startedAt: number, o: { dropped?: AbortSignal; unlessDangling?: boolean } = {}): void {
+  function listenEarly(userId: UserId, text: string, samples: Float32Array, startedAt: number, o: { dropped?: AbortSignal; unlessDangling?: boolean; warm?: 'held' | 'early' } = {}): void {
     if (early.has(samples)) return; // already asked for this very clip
     const m = wakeDetector.matchLoose(text);
     const said = m.woke ? m.remainder : text;
@@ -1548,6 +1554,9 @@ export async function startVoiceStack(
     if (o.unlessDangling && endsDangling(said)) return;
     if (!csBudget.earlyOk()) return;
     early.set(samples, cloudListen(samples, o.dropped));
+    // An answer to a clip whose listen started here won't wait for it in heard(),
+    // which skips its own warm-up for such clips: write the model's cached prompt now.
+    if (o.warm && !kind && !classifyMusic(said) && !isTimeQuestion(said)) orchestrator?.prewarm(o.warm);
   }
   // Discord keeps the snappier default.
   const pipeline = rm.ui
@@ -1571,10 +1580,10 @@ export async function startVoiceStack(
             return !english.looksEnglish(said) || endsDangling(said);
           },
           // The wait is long enough for most of the cloud's listen: start it now.
-          onHeldWords: (userId, { text, samples }) => listenEarly(userId, text, samples, performance.now() - (samples.length / 16_000) * 1000),
+          onHeldWords: (userId, { text, samples }) => listenEarly(userId, text, samples, performance.now() - (samples.length / 16_000) * 1000, { warm: 'held' }),
         },
         // Recognize during the silence wait; the cloud's listen can start there too.
-        config.satellite.earlyListen ? { minSilence: EARLY_SILENCE, onWords: (userId, { text, samples, startedAt, signal }) => listenEarly(userId, text, samples, startedAt, { dropped: signal, unlessDangling: true }) } : undefined,
+        config.satellite.earlyListen ? { minSilence: EARLY_SILENCE, onWords: (userId, { text, samples, startedAt, signal }) => listenEarly(userId, text, samples, startedAt, { dropped: signal, unlessDangling: true, warm: 'early' }) } : undefined,
       )
     : new ListeningPipeline(source, stt, wakeDetector, vad);
   pipeline.on('heard', (e) => void heard(e).catch((err: Error) => log.warn('heard failed', { error: err.message })));
@@ -1635,6 +1644,8 @@ export async function startVoiceStack(
     let cloud: string | undefined;
     let groqMs: number | undefined;
     if (forBot && e.samples && first?.kind !== 'stop' && first?.kind !== 'name' && (!e.woke || e.command.trim()) && cloudSttFor(rm, e.userId)) {
+      // Likely the model's to answer: its cached prompt is written meanwhile.
+      if (!first && !early.has(e.samples) && !classifyMusic(e.woke ? e.command : e.text) && !isTimeQuestion(e.woke ? e.command : e.text)) orchestrator?.prewarm('heard');
       const t0 = performance.now();
       const text = (cloud = await (early.get(e.samples) ?? cloudListen(e.samples)));
       groqMs = Math.round(performance.now() - t0);
@@ -1716,7 +1727,8 @@ export async function startVoiceStack(
     ctl.heard({ userId: e.userId, text: e.text, woke: e.woke, command: e.command, startedAt, ...(e.loose ? { loose: true } : {}) });
   }
   // Before the question reaches it: after a long quiet Speechify stalls on the first sentence.
-  source.on('speechStart', () => void cloud?.warmIfIdle());
+  // Connections to the providers too, after one closed while it was quiet (core/http.ts).
+  source.on('speechStart', () => (connections.wake(), void cloud?.warmIfIdle()));
   pipeline.on('voiceActivity', (id, ms) => {
     // The call's voices through their speakers would talk over her here: only a stop cuts her off then.
     if (rm.ui && pcGuarded(rm.ui) && !pttOpen()) return;
@@ -1950,7 +1962,11 @@ export async function startVoiceStack(
           wordsHereUntil: (until) => pcHasWords.set(conn.owner, until),
         });
         pipe = listenTo(conn, rm, ctl, ptt);
-        conn.on('ptt', (p) => ptt.down(!!p?.hold));
+        conn.on('ptt', (p) => {
+          // The answer follows the key going up: write the model's cached prompt meanwhile (key-down only).
+          orchestrator?.prewarm('ptt');
+          ptt.down(!!p?.hold);
+        });
         conn.on('pttUp', () => ptt.up());
         // Headphones or speakers: whether a call can be heard there changes what the orb shows.
         conn.on('output', () => conn.state({ listenMs: pcListenMs(conn, ctl) }));
@@ -2035,6 +2051,7 @@ export async function startVoiceStack(
       music?.stop();
       mixer.stopAll();
       await satServer?.close();
+      await orchestrator?.stopWarming(); // a stopped warm-up's cost lands before the save
       ledger.flush();
       voiceBudget.flush();
       try {

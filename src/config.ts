@@ -126,6 +126,12 @@ export const PocConfigSchema = z.object({
       search: z
         .object({ apiKeySecret: keyName('search').default('TAVILY_API_KEY'), maxResults: z.number().int().min(1).max(8).default(4) })
         .optional(),
+      /** Claude only: when someone wakes her or holds push-to-talk, write the
+       *  cached prompt while their words are still being listened to, so a
+       *  first question after a quiet spell doesn't wait for it. */
+      prewarm: z
+        .object({ enabled: z.boolean().default(true), maxPerHour: z.number().int().min(1).max(120).default(20) })
+        .default({ enabled: true, maxPerHour: 20 }),
       /** Background jobs (automatic memory) on another model, such as a local
        *  one (Ollama, llama.cpp): free when it's up; the main model answers
        *  when it's down. Prices are per 1M tokens (0 for local). */
