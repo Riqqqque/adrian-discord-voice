@@ -1,91 +1,108 @@
 # A.D.R.I.A.N. — Discord voice assistant
 
-**A**dvanced **D**igital **R**easoning & **I**ntelligence **A**ssistant **N**etwork, the voice-chat module.
+**A**dvanced **D**igital **R**easoning & **I**ntelligence **A**ssistant **N**etwork, the voice module.
 
-A self-hosted voice assistant that sits in a Discord voice channel with you and your friends. Say **"Hey Adrian"** and ask anything: it answers out loud, plays music, sets timers, runs party games, checks your game servers and media server, and remembers people. Speech recognition and the built-in voices run on your own machine; only the transcribed question goes to the language model you choose.
+A.D.R.I.A.N. is a self-hosted voice assistant that sits in a Discord voice channel with you and your friends. Say **"Hey Adrian"** and ask anything: it answers out loud, plays music, sets alarms and timers, runs party games, checks your game servers and media server, and remembers people. It is one Node.js process (`node dist/app/main.js`, run by systemd as the `adrian-voice` service) that is at once the Discord bot, the server side of the optional Windows PC app (a WebSocket for paired PCs), and a small admin web page on loopback. Speech recognition and the built-in voices run on your own machine; no audio goes to the language model you choose, only text (the transcribed request plus context such as recent talk in the call) and, when you ask about your PC's screen, a picture of it. Spending is capped.
 
-This is one module of the A.D.R.I.A.N. household assistant suite. Every module follows the same rules: self-hosted, installable by anyone with one script, private by default, read-only toward your other services unless you explicitly allow more, and spending capped.
+This repository is what runs in production. The Windows PC app and its PC-control library live in [the main A.D.R.I.A.N. repository](https://github.com/Riqqqque/A.D.R.I.A.N) (`crates/desktop`, `crates/pc-control`).
+
+**Changing the code?** Start with [CONTRIBUTING.md](CONTRIBUTING.md): reading order, what is safe to change, what is guarded and by which tests, and how to test.
 
 ---
 
-## What it can do
+## Features at a glance
 
-**Conversation**
-- Wake with "Hey Adrian", "Adrian, …", or just "Adrian?" (it answers "Yes?" and listens). Follow-up questions within a few seconds don't need the name.
-- Talks like a person in the call: short, specific answers, reactions, no assistant filler. Knows who is in the call and what was said recently, and can refer to it.
-- Handles a busy call: one answer at a time with a short queue, ignores game chatter and side conversations, and lets the person being answered interrupt.
-- Stops instantly on "stop", "shut up", "never mind" (and other languages). Everyday words like "done" or "quiet" only count from the person it's answering or when said with its name.
-- Everyday phrases said with its name, or after "Yes?", are handled locally with no model call: thanks, bye, repeat that, louder/quieter, faster/slower, what time is it. Without the name only thanks, bye and okay stay local; the model judges whether the rest was meant for it.
-- Five languages: English, Spanish, Chinese, Japanese and Vietnamese. It answers in the language you speak.
-- Remembers people: "remember that I'm vegetarian", and it also picks up facts on its own. Each person's notes are private to them.
+Everything below is in the current release (0.17.1). Example phrases and every command are in [docs/usage.md](docs/usage.md); every model tool is in [docs/tools.md](docs/tools.md).
 
-**Text chat**
-- @mention it in any channel it can see, reply to one of its messages, or DM it, and it answers in text with the same brain, tools and memory. Replies can never ping @everyone, roles or people.
-- Optional, with Discord's Message Content intent: it reads the channel's recent messages for context, and you can keep talking for a few minutes without @mentioning it again (it stays out of side talk).
-- Knows the server: who's online and what they're playing, who's in which call, members, roles and channels (only what the asker can see). Tags people when asked, and passes messages on: "tell Sam dinner's ready" sends Sam a DM from you.
+**Talking to it**
+- Wake with "Hey Adrian", "Adrian, ...", or just "Adrian?" (it says "Yes?" and listens). Follow-ups within 8 seconds in a call (20 seconds at a PC) don't need the name.
+- Short, conversational answers. It knows who is in the call and what was said in the last few minutes, ignores side talk and game chatter, keeps one answer at a time with a short queue, and lets the person it is answering talk over it.
+- Stops at once on "stop", "shut up", "never mind". Everyday words like "done" or "quiet" only count from the person it is answering, or with its name.
+- Everyday phrases are handled locally, with no model call: thanks, bye, repeat that, louder or quieter, faster or slower, what time is it, and plain music controls.
+- Five languages: English, Spanish, Chinese, Japanese and Vietnamese, answered in the language you speak. For Chinese, Japanese and Vietnamese, say "Hey Adrian", wait for "Yes?", then ask.
+- Per-person memory: "remember that I'm vegetarian", plus facts it picks up by itself every few answers (`autoMemory`). Each person's notes go only into their own requests.
 
-**Music** (YouTube Music through yt-dlp, with your Plex music library as a backup)
-- "Play Blinding Lights", "play the whole Graduation album", "put on something for a late night drive", "play a playlist like that last song", "play the newest Joe Rogan episode", "play rain sounds".
-- Queue ("play Sicko Mode next"), skip, pause, resume, shuffle, "what's playing?", "turn it down".
-- "Play that link I just sent": YouTube, SoundCloud, Bandcamp and Spotify links pasted in chat (Spotify ones are found on YouTube).
-- "Play Travis Scott" shuffles their best-known songs. "Play some music" plays what you like: she learns your taste from what you ask for, and has her own.
-- Autoplay keeps similar songs coming when the queue runs out (YouTube Music radio), without repeats.
-- Music ducks under the voice whenever someone talks to it.
-- Typed commands too: `/play` (with suggestions while you type), `/music` (now playing with buttons, queue, skip, back, pause, volume, shuffle, remove, autoplay), and the same with `!` (`!play`, `!skip`, `!np`, `!join`). Asked from another voice channel, she comes to yours.
-- Music quiz: "start a music quiz", "guess the song, 90s hip hop". Short clips, anyone in the call answers, she keeps score.
+**Text chat and the Discord server**
+- @mention it, reply to it, or DM it: same brain, tools, memory and limits, answered in text. Replies never ping @everyone or roles.
+- With Discord's Message Content intent it reads recent channel messages for context and you can keep talking for a few minutes without @mentioning it.
+- Knows the server: who is online and playing what, who is in which call, members, roles and channels (only what the asker can see). Passes messages on: "tell Sam dinner's ready" sends a DM, after a read-back unless you named the person yourself.
+- Game nights: "who's free for Valorant?", "ping me for game night", "get the squad on" (pings only people who signed up, with cooldowns).
 
-**Sounds**
-- "Make an airhorn sound", "give me a drum roll", "what does a cow sound like?": it finds a short sound effect and plays it in the call (up to 15 seconds, over any music).
+**Music and sounds** (YouTube Music through a pinned yt-dlp, your Plex library as a backup; needs `ffmpeg`)
+- Songs, artists, albums, playlists, moods ("something for a late night drive"), "more like this", podcasts, any YouTube video, and pasted YouTube, SoundCloud, Bandcamp or Spotify links (Spotify is found on YouTube).
+- Queue, skip, back, pause, shuffle, volume, "what's playing", "who put this on?". Autoplay keeps similar songs coming without repeats. Music ducks under its voice.
+- Learns each person's taste for "play some music", and has its own.
+- Music quiz: short clips, anyone in the call guesses, it keeps score. Matching is local; a near miss may cost one tiny model call.
+- Sound effects: "give me a drum roll" plays a short clip (up to 15 seconds).
+- Commands too: `/join` and `/leave`, `/play` (with suggestions), `/music ...` (now-playing card with buttons), and typed `!play`, `!skip`, `!np` and the rest.
 
-**Tools**
-- Timers and reminders ("remind me in 20 minutes to check the oven"); announced in the call if you can hear it, otherwise at the PC you set them at (with a DM as well), or by DM.
-- Web search for anything recent (optional, Tavily).
-- Party games: trivia, dice, coin flips.
-- Minecraft server status: who's online, player counts. With [Helix](https://github.com/Riqqqque/Helix), the owners can also start, stop and restart servers, change the whitelist and post in game chat (stop and restart ask first).
-- Plex, Sonarr and Radarr, read-only: what's new, is a movie on Plex, what's downloading, upcoming episodes.
-- Steam: which friends are online and what they're playing, wishlist sales, and store prices ("is Hades II on sale?").
-- Game nights: "who's free for Valorant?", "ping me for game night", "get the squad on" (pings only people who signed up).
-- A weekly recap posted in a channel you pick: top songs, new episodes and movies, server uptime. Counts only, no transcripts.
-- Heads-ups when an owner joins after a while away: one short line about what's new (off by default).
+**Alarms, reminders and your day**
+- Alarms that ring until stopped, timers and reminders, by voice or `/alarm`. Nine built-in tones, its voice, a song, or saved clips. Stop by voice with no wake word, snooze, undo within 3 minutes, optional "firm" or "math" mode to turn an alarm off.
+- Rings where you are: the call, else your PC, else a DM with Stop and Snooze buttons. The PC app keeps a backup copy and rings by itself if the server doesn't.
+- Weather (Open-Meteo, no key; the place comes only from config), news headlines from RSS feeds, a read-only iCal calendar, and a morning briefing that keeps details private when others can hear.
+- Optional heads-up when someone joins after hours away, "what did I miss?", and a weekly recap post with counts only (no transcripts).
+
+**Integrations** (most need a key or a config entry before they appear)
+- Minecraft servers: status by server-list ping. With the Helix panel: start, stop and restart (stop and restart ask first), whitelist, and in-game chat, for owners and allow-listed people.
+- Steam: which friends are playing what, wishlist sales, store prices.
+- Plex, Sonarr and Radarr, read-only: what's new, is it on Plex, what's downloading, upcoming episodes.
+- Home control through MCP, for example Home Assistant's MCP server: only allow-listed tools, only listed people (owners by default), and a spoken yes before locks, doors, garage and the like.
+- Web search through Tavily.
+
+**Games** (always on)
+- Party games: trivia, would-you-rather and riddles with a scoreboard, dice, coin flips. The music quiz is listed under music.
 
 **Voice**
-- 50+ built-in voices (Kokoro, runs locally), plus a Vietnamese voice (Piper).
-- Optional cloud voice for English (Speechify Simba 3.2) with a monthly character cap; it falls back to the local voice automatically.
-- Loudness-matched speech (about −16 LUFS) so it never blasts or whispers.
+- 54 built-in Kokoro voices run locally, plus a local Piper voice for Vietnamese. Speech is loudness-matched (about -16 LUFS).
+- Optional cloud voice for English (Speechify, model `simba-3.5`, voice `sabrina` by default) with a monthly character cap. It falls back to the local voice by itself when the cap is reached or the service fails.
 
-**On your PC** (optional Windows app, [docs/pc-app.md](docs/pc-app.md))
-- She listens through your PC's mic ("Hey Adrian", or hold Ctrl+Alt+Space), answers through its speakers in the same voice, and shows a small animated window.
-- Controls the PC: open apps and games, web pages, YouTube and Spotify searches, pause or skip what's playing in a named app, volume, lock, and sleep/restart/shut down after a spoken yes. Each PC decides what's allowed.
-- In the tray it uses a few MB and stays out of the way of games. When you're in the bot's Discord call too, the call answers instead, so music plays for everyone.
-- Quiet while gaming: during a game she only answers to her name, keeps it short, and holds reminders until you're done.
-- Window layout: "put Discord on the left", "move Chrome to my other monitor", "undo that".
-- PC health ("why is my PC slow?", "how hot is my GPU?"), and, only when you ask, what you copied ("summarize what I copied") or what's on screen ("what's this error?").
-- Between your PC and Discord: "send that link to my PC", "move the music to my PC", and from the PC, "tell the call I'll be on in 5".
+**On your PC** (optional Windows app, see [docs/pc-app.md](docs/pc-app.md))
+- Listens through the PC's mic ("Hey Adrian", or hold Ctrl+Alt+Space), answers through its speakers in the same voice, and shows a small animated window. In the tray it uses about 5 MB of memory.
+- Controls the PC through typed, allow-listed actions: open apps and games, web pages, YouTube and Spotify, media keys, volume, window layout, lock, and sleep, restart or shut down only after a spoken yes. Each PC decides in its own settings what is allowed.
+- PC health, and only when you ask, what you copied or what is on screen.
+- Quiet while gaming: during a game it needs its name every time, keeps answers short and holds reminders until the match ends.
+- Between the PC and Discord: "send that link to my PC", "move the music to my PC", "tell the call I'll be on in 5".
+- When the PC's owner is also in its Discord call, the call answers instead, so music plays for everyone.
 
 **Running it**
-- A web admin page with a setup wizard, live status (latency, spend), settings, keys and logs.
-- An `adrian` command for everything else: status, logs, update, rollback, backup, doctor.
-- Spend caps: per-person hourly limit, daily and monthly dollar caps. It stops calling the paid model at the cap.
-- Owners (by Discord ID) can stop anyone and skip the line.
-- `/join` and `/leave` slash commands bring it to whatever voice channel you're in, and `/play` brings it along when you ask for music.
+- Admin web page with a setup wizard, live status (latency, spend), settings, keys and logs. Loopback only by default.
+- The `adrian` command: status, logs, start/stop/restart, config, secret (keys), voice, check, doctor, setup-code, reset-admin, satellite (pair PCs), backup, restore, update, rollback, uninstall, and an optional hourly `auto-update` that waits until nobody is in its call and nothing is playing.
+- Behaviour you may want to change: `mature` is `age-restricted` by default (swearing, crude humor and frank adult topics only in voice channels Discord marks as age-restricted; `off` or `always` are the other choices); `brain.fallback` answers when the main model fails (rate limit, outage); `brain.background` can run automatic memory on a local model.
+- Owners (by Discord user ID, plus the bot application's owner) can stop anyone, skip the line, and use the guarded tools.
+
+## What it costs at a glance
+
+Full numbers, how they were measured and how to spend less: [docs/costs.md](docs/costs.md).
+
+| Item | Cost | In the dollar caps? |
+|---|---|---|
+| Language model | Pay per token. The recommended preset, Claude Haiku 5.5, is $0.10 per million input tokens, $0.01 cached, $0.50 output (preset prices in `src/web/checks.ts`, checked 2026-10-14/15). The wizard's estimate for a plain answer is 900 input and 60 output tokens, about $0.00012. Real answers carry a larger prompt (mostly cached on Claude) and a request that uses a tool usually takes a second model call, up to four per request. With `autoMemory` on (default), one extra background call every 4 answers per person reads the conversation for facts; point `brain.background` at a local model to make it free. Measured figures are in docs/costs.md. Groq has a free tier, and any OpenAI-compatible endpoint works, including a local one. | Yes |
+| Spend caps (defaults) | `limits.dailyUsd` $1, `limits.monthlyUsd` $10, `limits.perUserPerHour` 30 requests (owners are exempt from the hourly limit only). At a cap it stops calling the paid model; the answer that crosses a cap still finishes. | — |
+| Free, no model call | Local phrases, plain "play X", slash and typed commands, `/alarm`, speech recognition, the Kokoro and Piper voices, Deezer, Open-Meteo, RSS and YouTube lookups. | — |
+| Cloud voice (optional) | Your Speechify plan. Default cap `cloudVoice.monthlyChars` 950,000 characters a month for `simba-3.5`, then the local voice. | No, own character budget |
+| Cloud second listen (optional, off by default) | `cloudStt`: Groq Whisper re-transcribes speech already judged to be for it (PC rooms only by default, `cloudStt.rooms`). Groq key and rate limits apply. | No |
+| Web search (optional) | Tavily, one credit per search. | No |
+| Server machine | About 1.5-1.6 GB of memory after start (1.52-1.64 GB measured, releases 0.15.4-0.17.1); about 1.3 GB more once someone speaks a language other than English. The service is capped at `MemoryHigh=4G`, `MemoryMax=5G`, `CPUQuota=400%`. The installer needs 3 GB free under `/opt`. | — |
+| PC app | About 5 MB of private memory in the tray (releases 0.15.3-0.17.1, November 2026); about 0.01% CPU and 0% GPU in the tray (measured 2026-10-23). All AI cost is on the server. | — |
 
 ## Requirements
 
 | | Minimum | Recommended |
 |---|---|---|
-| OS | Linux x86_64 with systemd and glibc (Ubuntu 24.04 and Debian 12 are tested) | Ubuntu 24.04 |
+| OS | Linux x86_64 with systemd and glibc (not musl/Alpine, not ARM). The container tests default to Ubuntu 24.04. | Ubuntu 24.04 |
 | CPU | 4 cores | 8 threads, recent desktop or server CPU |
-| Memory | 4 GB free (about 3.5 GB once the language voices load, which happens at every start; about 1.5 GB with `languages` set to false) | 8 GB+ |
-| Disk | 3 GB free (models are about 1.5 GB) | |
-| Other | `ffmpeg` for music (`sudo apt install ffmpeg`) | |
+| Memory | 4 GB free (about 3.5 GB once the language voices load, as measured in 0.14.7 when they loaded at every start; since 0.15.4 they load on first use: about 1.5-1.6 GB after start, plus about 1.3 GB the first time someone speaks a language other than English; `sudo adrian config languages false` keeps it near 1.5 GB). The installer warns below 4 GB. | 8 GB+ |
+| Disk | 3 GB free under `/opt` (the installer refuses less) | |
+| Other | `ffmpeg` for music and sounds, plus `curl`, `xz-utils`, `bzip2` and `iproute2` for the installer (`sudo apt install ffmpeg curl xz-utils bzip2 iproute2`). Node.js 22 and the speech models are downloaded by the installer, pinned and checked against SHA-256. | |
 
 You also need:
 - A Discord account and a server where you can add a bot.
-- A language-model API key. Claude Haiku 5.5 is the recommended one (pay as you go, a fraction of a cent per answer). Groq has a free tier, and any OpenAI-compatible endpoint, including a local one, works too.
+- A language-model API key: Claude Haiku 5.5 (recommended, pay as you go), Groq (free tier), Gemini, or any OpenAI-compatible endpoint.
+- For the PC app: Windows 10 or 11 (x64).
 
-Docker is supported as an alternative to the native install (see [docs/install.md](docs/install.md#docker)).
+Docker is supported as an alternative to the native install (without the `adrian` command, updates, rollback or backups); see [docs/install.md](docs/install.md).
 
-## Install
+## Quick start
 
 The full walkthrough, including creating the Discord bot and getting each key, is in **[docs/install.md](docs/install.md)**. The short version:
 
@@ -102,77 +119,56 @@ sha256sum -c adrian-voice-$VER-linux-x64.tar.gz.sha256
 mkdir adrian-$VER && tar -xzf adrian-voice-$VER-linux-x64.tar.gz -C adrian-$VER
 sudo adrian-$VER/packaging/install.sh --bundle adrian-voice-$VER-linux-x64.tar.gz
 
-# 3. Open the admin page it prints (http://127.0.0.1:8790), enter the setup code, and follow the wizard
+# 3. Open the admin page it prints (usually http://127.0.0.1:8790), enter the setup code, follow the wizard
 ```
 
-The installer downloads a pinned Node.js runtime and the speech models (checked against SHA-256), creates a locked-down `adrian` system user and a systemd service, and prints a one-time setup code. The wizard then walks you through the Discord token, the server and channel, the language model, search, the voice and spend limits.
+The installer creates a locked-down `adrian` system user and the systemd service, and prints a one-time setup code. The wizard then walks you through the Discord token, the server and channel, the language model, search, the voice and spend limits. On a remote server, reach the admin page through an SSH tunnel (the installer prints the command).
 
-Building the bundle yourself from this repo: see [docs/development.md](docs/development.md#building-a-release-bundle).
-
-## Using it
-
-Talk in the voice channel it's in:
-
-| Say | What happens |
-|---|---|
-| "Hey Adrian, what's the capital of Australia?" | It answers out loud. |
-| "Adrian?" … "how long do I boil an egg?" | "Yes?", then it answers. |
-| "Hey Adrian, stop" / "shut up" | Stops talking at once. |
-| "Hey Adrian, play something chill" | Picks a matching playlist and starts it. |
-| "Hey Adrian, skip" / "pause" / "what's playing?" | Music controls. |
-| "Hey Adrian, set a timer for 10 minutes" | Timer, announced in the call. |
-| "Hey Adrian, is the server up?" | Checks your Minecraft servers. |
-| "Hey Adrian, what's new on Plex?" | Recently added movies and shows. |
-| "Hey Adrian, remember my birthday is May 3rd" | Saved to your private notes. |
-| "Hey Adrian, let's play trivia" | Starts a round for everyone in the call. |
-
-More in [docs/usage.md](docs/usage.md).
-
-Run `adrian` on the server for management:
+Everyday management on the server:
 
 ```bash
-adrian status          # service state, health, admin page address
-sudo adrian logs -f    # live log (keys are redacted)
-sudo adrian doctor     # full diagnostics
-sudo adrian update adrian-voice-<new>-linux-x64.tar.gz   # rolls back by itself if it does worse than the old one
+sudo adrian status            # service state, health, admin page address
+sudo adrian logs -f           # live log (keys are redacted)
+sudo adrian doctor            # full diagnostics
+sudo adrian update            # newest release from GitHub, checksum verified; rolls back if it does worse
+sudo adrian config music.autoplay false   # change any setting, then: sudo adrian restart
+sudo adrian config owners '["<your Discord user ID>"]'
 ```
 
-All commands: [docs/install.md#the-adrian-command](docs/install.md#the-adrian-command).
+Every command is in [docs/install.md](docs/install.md); every setting, with its default, is in [docs/configuration.md](docs/configuration.md). For the PC app, turn on `satellite.enabled`, pair the PC with `sudo adrian satellite add NAME OWNER_ID`, and follow [docs/pc-app.md](docs/pc-app.md).
 
-## Configuration
+## Privacy in short
 
-The main settings are in the admin page. Almost everything else is one command away, for example:
+- **Stays on your machine:** speech recognition, the built-in voices, alarms, notes and all state files. Audio is not stored or uploaded unless you turn on `cloudStt` (sends speech meant for it to Groq) or `satellite.recordDays` (keeps recordings of PC requests).
+- **Leaves your machine:** the transcribed request, the conversation so far, what others in the call said recently, who is in the call, and the asker's notes go to your language model. Searches go to Tavily, English replies to Speechify if the cloud voice is on, music searches to YouTube and Deezer. On request at the PC, what you copied or a picture of your screen goes to the model. The weather place goes to Open-Meteo; news feeds are fetched (NPR by default, `news.feeds`); Steam lookups go to Steam; the calendar's iCal address is fetched; the same prompts go to `brain.fallback` or `brain.background` if you configure them; MCP and Home Assistant servers you configure get the tool calls meant for them.
+- **Keys** live in `/etc/adrian/secrets.env` (mode 0600). The admin page can set keys but never shows them, and each setting can only use a key meant for its own job.
+- **Other services** are read-only unless you configure control: Helix server actions and MCP home control are opt-in and limited to owners, allow lists and a spoken yes where it matters.
 
-```bash
-sudo adrian config owners '["123456789012345678"]'
-sudo adrian config music.autoplay false
-sudo adrian config mature off
-sudo adrian restart
-```
-
-Every setting, with its default, is listed in **[docs/configuration.md](docs/configuration.md)**.
-
-## Privacy and security
-
-- **Stays on your machine:** speech recognition and the built-in voices. By default audio is never stored or uploaded. Two options change that: `cloudStt` sends speech meant for her to Groq for a second transcription, and `satellite.recordDays` keeps recordings of PC requests.
-- **Leaves your machine:** the transcribed question and recent conversation go to your language model, which also writes the short per-person memory notes. Web searches go to Tavily if enabled. English replies go to Speechify if you turn on the cloud voice. Music searches go to YouTube. Artist names and plain "play X" requests also go to Deezer for top songs (`music.topSongs`, on by default).
-- **Keys:** kept in `/etc/adrian/secrets.env` (mode 0600). The admin page can set keys but never shows them, and each setting can only use a key meant for its own job.
-- **The service:** runs as an unprivileged user under strict systemd sandboxing. The admin page is loopback-only by default, with argon2id passwords, CSRF protection, rate limiting, a strict CSP and a DNS-rebinding guard.
-- **Other services:** Plex, Sonarr, Radarr and the game-server checks are read-only.
-
-Details and how to report a problem: [docs/security.md](docs/security.md).
+Threat model and protections: [docs/security.md](docs/security.md). Reporting a problem: [SECURITY.md](SECURITY.md).
 
 ## Documentation
 
-- [docs/install.md](docs/install.md): Discord bot setup, keys, native and Docker install, updates, backups, uninstall
-- [docs/usage.md](docs/usage.md): everything you can say to it, owners, languages, music, mature mode
-- [docs/pc-app.md](docs/pc-app.md): the Windows PC app: turning it on, building, installing, pairing
-- [docs/configuration.md](docs/configuration.md): every setting and secret
-- [docs/architecture.md](docs/architecture.md): how the voice pipeline works
-- [docs/security.md](docs/security.md): threat model and protections
-- [docs/troubleshooting.md](docs/troubleshooting.md): common problems
-- [docs/development.md](docs/development.md): building, tests, benchmarks
+| Document | What it covers |
+|---|---|
+| [CONTRIBUTING.md](CONTRIBUTING.md) | **Start here to change the code**: reading order, safe vs guarded areas, invariants and their tests, testing, privacy rules, commits and releases |
+| [docs/codebase-map.md](docs/codebase-map.md) | Every source file and directory: purpose, key exports, invariants, covering tests |
+| [docs/architecture.md](docs/architecture.md) | Components, processes, the path of a spoken turn (Discord and PC), alarms, music, state files, models, workers |
+| [docs/usage.md](docs/usage.md) | User guide: every feature with example phrases, slash and typed commands, who can do what |
+| [docs/tools.md](docs/tools.md) | Every model tool: purpose, arguments, guard rails, who may use it, cost notes |
+| [docs/costs.md](docs/costs.md) | Money per answer and per provider, free tiers, budgets, how to make it cheaper; machine cost |
+| [docs/configuration.md](docs/configuration.md) | Every config key and secret, with defaults |
+| [docs/install.md](docs/install.md) | Discord bot setup, keys, native and Docker install, the `adrian` command, updates, backups, uninstall |
+| [docs/pc-app.md](docs/pc-app.md) | The Windows PC app: turning it on, getting or building it, pairing, settings |
+| [docs/satellite.md](docs/satellite.md) | The PC connection protocol (WebSocket messages) |
+| [docs/security.md](docs/security.md) | Threat model and protections |
+| [docs/troubleshooting.md](docs/troubleshooting.md) | Common problems and fixes |
+| [docs/development.md](docs/development.md) | Building, tests, container tests, benches, release bundles |
+| [docs/roadmap.md](docs/roadmap.md) | Future plans, open items, known limitations |
+| [docs/decisions.md](docs/decisions.md) | Important design decisions and why |
+| [SECURITY.md](SECURITY.md) | How to report a vulnerability |
+
+The PC app's internals and the PC actions are documented in [the main A.D.R.I.A.N. repository](https://github.com/Riqqqque/A.D.R.I.A.N).
 
 ## License
 
-[MIT](LICENSE) © 2026 Rique
+[MIT](LICENSE)
