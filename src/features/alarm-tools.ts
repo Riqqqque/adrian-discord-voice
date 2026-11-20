@@ -363,7 +363,7 @@ export function alarmTools(d: AlarmToolDeps): Tool[] {
       // "none" takes the label off, and "default" puts their default sound back.
       if (/^(?:none|no label|nothing|clear|remove it)$/i.test(str(a.label))) {
         if (hit.label) {
-          delete hit.label;
+          hit.label = '';
           said.push('no label');
           spoken.push("it has no label now");
         }

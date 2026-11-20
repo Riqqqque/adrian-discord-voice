@@ -663,7 +663,7 @@ describe('changes that say themselves (no second model call)', () => {
     const r = rig();
     await r.call('set_alarm', { time: '07:00', label: 'gym', sound: 'birds' });
     expect((await r.call('edit_alarm', { which: 'gym', label: 'none' })).said).toBe('It has no label now.');
-    expect(r.clock.all()[0]!.label).toBeUndefined();
+    expect(r.clock.all()[0]!.label).toBe('');
     expect((await r.call('edit_alarm', { which: '7:00', sound: 'default' })).said).toMatch(/^It'll ring with /);
     expect(r.clock.all()[0]!.sound).toBeUndefined();
     await r.call('alarm_options', { action: 'set', default_sound: 'birds' });
