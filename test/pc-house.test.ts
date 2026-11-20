@@ -83,6 +83,55 @@ describe('house orders are not the PC', () => {
     }
   });
 
+  it('ties the order to the thing it is about, so a PC verb next to a house word stays a PC order', () => {
+    for (const s of [
+      "pause someone's at the door",
+      'mute my mom is at the front door',
+      'pause the doorbell just rang',
+      'stop the pizza guy is at the gate',
+      'pause my mom is at the front door',
+      'open the tv app',
+    ])
+      expect(houseOrder(s), s).toBeUndefined();
+    expect(houseOrder('mute the tv')?.thing).toBe('tv');
+    expect(houseOrder('mute the doorbell')?.thing).toBe('doorbell');
+    expect(houseOrder('pause the tv')?.thing).toBe('tv');
+    expect(houseOrder('turn off the living room lights')?.thing).toBe('lights');
+    expect(houseOrder('pause, gotta open the door')).toMatchObject({ thing: 'door', rest: ['pause'] });
+  });
+
+  it('does a PC order said next to a house errand', async () => {
+    const { sent, run } = kit();
+    const orders: [string, Record<string, unknown>, string][] = [
+      ['pc_media', { action: 'pause' }, 'pause, gotta open the door'],
+      ['pc_media', { action: 'pause' }, 'pause, I need to turn off the stove'],
+      ['pc_volume', { action: 'mute' }, 'mute, let me open the garage'],
+      ['pc_media', { action: 'next' }, 'skip and turn the lights on'],
+      ['pc_media', { action: 'pause' }, "pause someone's at the door"],
+      ['pc_volume', { action: 'mute' }, 'mute my mom is at the front door'],
+      ['pc_media', { action: 'pause' }, 'pause the doorbell just rang'],
+      ['pc_media', { action: 'stop' }, 'stop the pizza guy is at the gate'],
+      ['pc_system', { action: 'cancel_shutdown' }, 'cancel the shutdown and turn the lights back on'],
+      ['pc_system', { action: 'cancel_shutdown' }, 'wait, turn the lights back on'],
+      ['pc_system', { action: 'lock' }, 'lock it and turn off the lights'],
+      ['pc_apps', { action: 'open', name: 'TV' }, 'open the tv app'],
+    ];
+    for (const [name, args, said] of orders) expect(await run(name, args, said), said).not.toMatch(/^Didn't happen/);
+    expect(sent.map((s) => s.name)).toEqual(orders.map(([n]) => n));
+  });
+
+  it('still refuses the house half when nothing else asked the PC', async () => {
+    const { sent, run } = kit();
+    expect(await run('pc_system', { action: 'lock' }, 'lock up and turn off the lights')).toMatch(/^Didn't happen/);
+    expect(await run('pc_system', { action: 'lock' }, 'lock up for the night')).toMatch(/^Didn't happen/);
+    expect(await run('pc_media', { action: 'pause' }, 'open the door')).toMatch(/^Didn't happen/);
+    expect(await run('pc_system', { action: 'lock' }, 'lock the screen door')).toMatch(/door/);
+    expect(await run('pc_system', { action: 'screen_off' }, 'turn off the tvs')).toMatch(/tvs/);
+    expect(await run('pc_system', { action: 'screen_off' }, 'apaga las luces')).toMatch(/luces/);
+    expect(await run('pc_system', { action: 'lock' }, 'cierra la puerta del garaje')).toMatch(/puerta/);
+    expect(sent).toEqual([]);
+  });
+
   it("asks nothing about a power-down for the garage, so a yes can't do one", async () => {
     const { sent, run } = kit();
     expect(await run('pc_system', { action: 'shutdown' }, 'shut the garage')).toMatch(/^Didn't happen/);

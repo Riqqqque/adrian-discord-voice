@@ -44,6 +44,13 @@ const PC = [
   ['mute the tv show', (a) => a.some((x) => x.name === 'pc_volume' || x.name === 'pc_media')],
   ['open doordash', (a) => a.some((x) => x.name === 'pc_apps' || x.name === 'pc_open')],
   ['pause the video', (a) => a.some((x) => x.name === 'pc_media')],
+  // A PC order next to a house errand (review S1): the PC half still happens.
+  ['pause, gotta open the door', (a) => a.some((x) => x.name === 'pc_media')],
+  ["pause someone's at the door", (a) => a.some((x) => x.name === 'pc_media')],
+  ['mute, let me open the garage', (a) => a.some((x) => x.name === 'pc_volume' || x.name === 'pc_media')],
+  ['skip and turn the lights on', (a) => a.some((x) => x.name === 'pc_media' && x.args.action === 'next')],
+  ['cancel the shutdown and turn the lights back on', (a) => a.some((x) => x.name === 'pc_system' && x.args.action === 'cancel_shutdown')],
+  ['open the tv app', (a) => a.some((x) => (x.name === 'pc_apps' && x.args.action === 'open') || x.name === 'pc_open')],
 ];
 
 const pcAnswer = (name, x = {}) => {
