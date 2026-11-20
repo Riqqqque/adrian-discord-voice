@@ -1053,7 +1053,8 @@ export async function startVoiceStack(
         await say(r.message);
         return true;
       }
-      const artist = r.artist ?? (r.started ?? r.queuedAs?.track)?.artist;
+      // A genre plays a playlist: its first song says nothing about them.
+      const artist = r.artist ?? (r.label ? undefined : (r.started ?? r.queuedAs?.track)?.artist);
       if (artist) taste.played(userId, artist);
       if (r.started) musicStarts.started(rm.key, userId);
       // The music starting is the answer; a queued song has no such signal.
