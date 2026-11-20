@@ -22,8 +22,12 @@ import {
   type TopTracks,
   versionsAsked,
   webSearchLines,
+  YoutubePaused,
   YoutubeSource,
+  YTM_API,
 } from '../src/features/music.js';
+import { PocConfigSchema } from '../src/config.js';
+import { quizSongs } from '../src/features/quiz.js';
 
 const sig = () => AbortSignal.timeout(4000);
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -208,8 +212,8 @@ describe('a catalog answer in another script', () => {
 
 describe('the song catalog’s top row longer than a song', () => {
   it('is played as yt-dlp would have found it, without starting yt-dlp to search again', () => {
-    expect(pickSong(ytm(song(id('jams'), 'Best 90s Slow Jams', 'M-Beat', '1:08:55'), song(id('tamia'), 'So Into You', 'Tamia')))).toEqual({ id: id('jams'), text: expect.stringContaining('Best 90s Slow Jams'), long: true });
-    expect(pickSong(ytm(song(id('tamia'), 'So Into You', 'Tamia')))).toEqual({ id: id('tamia'), text: expect.any(String) });
+    expect(pickSong(ytm(song(id('jams'), 'Best 90s Slow Jams', 'M-Beat', '1:08:55'), song(id('tamia'), 'So Into You', 'Tamia')))).toEqual({ id: id('jams'), text: expect.stringContaining('Best 90s Slow Jams'), title: 'Best 90s Slow Jams', long: true });
+    expect(pickSong(ytm(song(id('tamia'), 'So Into You', 'Tamia')))).toEqual({ id: id('tamia'), text: expect.any(String), title: 'So Into You' });
   });
 });
 
@@ -376,14 +380,22 @@ describe('a bare "play X"', () => {
     expect(deezer).toBe(0);
   });
 
-  it('"some fleetwood mac" searches for "fleetwood mac", as Deezer is asked', async () => {
-    const s = await api(() => ytm(song(id('dreams'), 'Dreams', 'Fleetwood Mac')));
+  it.each([
+    ['some nights', 'nights'],
+    ['a little respect', 'respect'],
+    ['more than a feeling', 'than a feeling'],
+    ['silly love songs', 'silly love'],
+    ['some fleetwood mac', 'fleetwood mac'],
+  ])('searches the song as asked ("%s"); only Deezer gets "%s"', async (asked, artist) => {
+    const s = await api(() => ytm(song(id('x'), 'X', 'Y')));
     const yt = new YoutubeSource({ ytdlp: 'yt-dlp', searchApi: s.url }, ytdlp([]));
-    const top: TopTracks = Object.assign(async () => undefined, { match: async () => undefined });
+    const deezer: string[] = [];
+    const top: TopTracks = Object.assign(async () => undefined, { match: async (a: string) => (deezer.push(a), undefined) });
     const { p } = player(yt, top);
-    await p.playNamed('some fleetwood mac', 'now', sig());
+    await p.playNamed(asked, 'now', sig());
     await s.close();
-    expect(s.hits.map((h) => h.query)).toEqual(['fleetwood mac']);
+    expect(s.hits[0]?.query).toBe(asked);
+    expect(deezer).toEqual([artist]);
   });
 
   it("waits for a known artist's own top song when it's 2 s behind Deezer, rather than looking up another", async () => {
@@ -398,4 +410,153 @@ describe('a bare "play X"', () => {
     expect(runs).toHaveLength(1);
     expect(s.hits).toHaveLength(1);
   }, 8_000);
+});
+
+// --- review fixes ----------------------------------------------------------------------
+
+/** The fake yt-dlp, stopping when its signal does (as spawn's does), each answer `ms` late. */
+function abortable(runs: Run[], ms: number): Runner {
+  const inner = ytdlp(runs, async (t) => (await wait(ms), defaultAnswer(t)));
+  return (cmd, args, signal, enough, input) =>
+    new Promise((res, rej) => {
+      const stop = () => rej(Object.assign(new Error('The operation was aborted'), { name: 'AbortError' }));
+      if (signal.aborted) return stop();
+      signal.addEventListener('abort', stop, { once: true });
+      inner(cmd, args, signal, enough, input)
+        .then(res, rej)
+        .finally(() => signal.removeEventListener('abort', stop));
+    });
+}
+const lofi = () => ytm(row({ title: 'Lofi', second: ['x'], browseId: 'VLPLlofi' }));
+
+describe("a list's spare stream lookup", () => {
+  it("goes only to that list's songs, not to another room's", async () => {
+    const s = await api(lofi);
+    const runs: Run[] = [];
+    const yt = new YoutubeSource({ ytdlp: 'yt-dlp', searchApi: s.url, startEarly: true }, abortable(runs, 0));
+    const c = await yt.playlist('chill lofi beats', new AbortController().signal);
+    // Another room's song while the spare waits: it runs its own yt-dlp.
+    expect(await yt.resolve(id('other'), sig())).toMatchObject({ id: id('other') });
+    expect(runs.find((r) => r.target.includes(id('other')))?.early).toBe(false);
+    // The list's song that plays first takes it.
+    await yt.prepare(c!.tracks[2]!, sig());
+    await s.close();
+    expect(runs.find((r) => r.target.includes(id('l3')))?.early).toBe(true);
+    expect(runs).toHaveLength(3);
+  });
+
+  it("doesn't die with the request that started it once a song took it; the song's own stop ends it", async () => {
+    const s = await api(lofi);
+    const runs: Run[] = [];
+    const yt = new YoutubeSource({ ytdlp: 'yt-dlp', searchApi: s.url, startEarly: true }, abortable(runs, 300));
+    const a = new AbortController();
+    const c = await yt.playlist('chill lofi beats', a.signal);
+    const going = yt.prepare(c!.tracks[0]!, new AbortController().signal);
+    await wait(50);
+    a.abort(); // the asker barged in on "Added."
+    await going;
+    expect(c!.tracks[0]!.ref).toBe(`https://stream/${id('l1')}`);
+
+    const c2 = await yt.playlist('chill lofi beats', new AbortController().signal);
+    const b = new AbortController();
+    const going2 = yt.prepare(c2!.tracks[0]!, b.signal);
+    await wait(50);
+    b.abort();
+    await expect(going2).rejects.toThrow(/abort/i); // (untouched, it would answer at 300 ms)
+    await s.close();
+    expect(runs.filter((r) => r.early && r.target.includes('watch?v='))).toHaveLength(2);
+  });
+
+  it("isn't started for a quiz, which looks its clips up another way", async () => {
+    const s = await api(lofi);
+    const runs: Run[] = [];
+    const yt = new YoutubeSource({ ytdlp: 'yt-dlp', searchApi: s.url, startEarly: true }, ytdlp(runs));
+    const songs = await quizSongs({ rounds: 2, decade: '90s' }, { yt, recent: () => [], log: { info() {}, warn() {} } }, sig());
+    await s.close();
+    expect(songs.length).toBeGreaterThan(0);
+    expect(runs.map((r) => [r.early, r.target])).toEqual([[true, 'https://music.youtube.com/playlist?list=PLlofi']]);
+  });
+});
+
+describe('a bot check while a run waits for its address', () => {
+  it('stops that run before it asks YouTube anything', async () => {
+    let answer!: () => void;
+    const searched = new Promise<void>((r) => (answer = r));
+    const s = await api(() => searched.then(() => ytm(song(id('hit'), 'Get Lucky', 'Daft Punk'))));
+    const runs: Run[] = [];
+    const bot = (t: string) => (t.includes(id('bot')) ? Promise.reject(new Error("ERROR: [youtube] x: Sign in to confirm you're not a bot")) : defaultAnswer(t));
+    const yt = new YoutubeSource({ ytdlp: 'yt-dlp', searchApi: s.url, startEarly: true }, ytdlp(runs, bot));
+    const going = yt.find('get lucky daft punk', sig());
+    going.catch(() => {});
+    await wait(5);
+    // Meanwhile another lookup meets the bot check.
+    await expect(yt.resolve(id('bot'), sig())).rejects.toBeInstanceOf(YoutubePaused);
+    answer();
+    await expect(going).rejects.toBeInstanceOf(YoutubePaused);
+    await s.close();
+    await wait(5);
+    expect(runs.filter((r) => r.early).map((r) => r.target)).toEqual(['']);
+  });
+});
+
+describe("YouTube's video search, asked directly: limits", () => {
+  it('can be turned off (music.directSearch, on by default)', async () => {
+    const s = await api(() => web(video(id('rain'), 'Rain sounds', 'Sleep', '3:00')));
+    const runs: Run[] = [];
+    const yt = new YoutubeSource({ ytdlp: 'yt-dlp', webApi: s.url, directSearch: false }, ytdlp(runs));
+    expect(await yt.videoId('rain sounds', sig())).toBe(id('ytdlp'));
+    await s.close();
+    expect(s.hits).toEqual([]);
+    expect(runs.map((r) => r.target)).toEqual(['ytsearch5:rain sounds']);
+    const asks = (o: ConstructorParameters<typeof YoutubeSource>[0]) => (new YoutubeSource(o, ytdlp([])) as unknown as { webApi?: string }).webApi;
+    expect(asks({ ytdlp: 'x', searchApi: YTM_API, directSearch: false })).toBeUndefined();
+    expect(PocConfigSchema.shape.music.parse(undefined).directSearch).toBe(true);
+    expect(PocConfigSchema.shape.music.parse({}).directSearch).toBe(true);
+    expect(PocConfigSchema.shape.music.parse({ directSearch: false }).directSearch).toBe(false);
+  });
+
+  it('rests after three failures in a row, then tries again', async () => {
+    let clock = 1_000_000;
+    const s = await api(() => undefined); // 500
+    const runs: Run[] = [];
+    const warns: string[] = [];
+    const yt = new YoutubeSource({ ytdlp: 'yt-dlp', webApi: s.url, now: () => clock }, ytdlp(runs));
+    yt.log = { info() {}, warn: (m) => warns.push(m) };
+    for (let i = 0; i < 5; i++) expect(await yt.videoId(`rain ${i}`, sig())).toBe(id('ytdlp'));
+    expect(s.hits).toHaveLength(3);
+    expect(warns.filter((m) => m === 'direct video search resting')).toHaveLength(1);
+    clock += 5 * 60_000 + 1;
+    await yt.videoId('rain again', sig());
+    await s.close();
+    expect(s.hits).toHaveLength(4);
+    expect(runs).toHaveLength(6);
+  });
+
+  it('gets one share of time per lookup, however many searches the lookup makes', async () => {
+    const s = await api((b) => (b.context.client.clientName === 'WEB_REMIX' ? ytm(song(id('song'), 'Something Else', 'Nobody')) : new Promise(() => {})));
+    const runs: Run[] = [];
+    // The catalog's song won't play here: another upload is searched for.
+    const answer = (t: string) => (t.includes(id('song')) ? Promise.reject(new Error('ERROR: [youtube] x: Video unavailable')) : defaultAnswer(t));
+    const yt = new YoutubeSource({ ytdlp: 'yt-dlp', searchApi: s.url, webApi: s.url, webTimeoutMs: 150, webBudgetMs: 150 }, ytdlp(runs, answer));
+    const t0 = performance.now();
+    const t = await yt.find('kiss me again the band', AbortSignal.timeout(8000));
+    const took = performance.now() - t0;
+    await s.close();
+    expect(t?.id).toBe(id('ytdlp'));
+    // The closer-match search waited its share; the other-upload search didn't wait at all.
+    expect(s.hits.filter((h) => h.client === 'WEB')).toHaveLength(1);
+    expect(runs.filter((r) => r.target.startsWith('ytsearch'))).toHaveLength(2);
+    expect(took).toBeLessThan(1500);
+  }, 10_000);
+});
+
+describe('a catalog answer whose credits alone are in another script', () => {
+  it('is still checked by its title, and looked further for', async () => {
+    const wrong = row({ videoId: id('wrong'), title: 'Kiss Me', second: ['東京バンド', ' • ', 'ベスト', ' • ', '3:30'] });
+    expect(pickSong(ytm(wrong))).toMatchObject({ id: id('wrong'), title: 'Kiss Me' });
+    const s = await api((b) => (b.context.client.clientName === 'WEB_REMIX' ? ytm(wrong) : web(video(id('right'), 'Kiss Me Again', 'The Band', '3:40'))));
+    const yt = new YoutubeSource({ ytdlp: 'yt-dlp', searchApi: s.url, webApi: s.url }, ytdlp([]));
+    expect(await yt.songId('kiss me again', sig())).toMatchObject({ id: id('right'), via: 'ytsearch-match' });
+    await s.close();
+  });
 });

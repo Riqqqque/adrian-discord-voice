@@ -182,6 +182,13 @@ interface Early {
   drop(): void;
 }
 
+/** A list's spare stream lookup (see YoutubeSource.spare). */
+interface Spare {
+  /** For the song looked up first, with that song's signal; undefined once taken or gone. */
+  take(signal: AbortSignal): Early | undefined;
+  drop(): void;
+}
+
 /** Wait for someone else's lookup, as long as `signal` allows. How it ends is theirs to handle. */
 const outlast = (lookup: Promise<void>, signal: AbortSignal): Promise<void> =>
   new Promise((resolve, reject) => {
@@ -213,6 +220,16 @@ const WEB_VERSION = '2.20260801.01.00';
 /** The videos-only filter, the one `ytsearch` sends. */
 const VIDEOS_ONLY = 'EgIQAfABAQ==';
 const WEB_TIMEOUT = 2_000;
+/** The most one lookup (a song, a video, a sound) waits on direct video
+ *  searches in all: a closer match, its respelled search and another upload
+ *  could each wait WEB_TIMEOUT. Past it, yt-dlp searches. */
+const WEB_LOOKUP_MS = 3_000;
+/** Left of that share, a direct search isn't worth starting. */
+const WEB_MIN_MS = 300;
+/** After this many direct video searches fail in a row (an error, a timeout,
+ *  an answer without readable videos), they rest for WEB_REST_MS. */
+const WEB_FAILS = 3;
+const WEB_REST_MS = 5 * 60_000;
 const BROWSER_UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36';
 
 /** yt-dlp's search lines: id, duration, live status, title, channel. */
@@ -279,7 +296,7 @@ const ytmRows = (res: YtmSearch) =>
  *  instead). `long`: that one is longer than a song (an hour of rain, a 90s
  *  slow jams mix) or shows no length. It's still the one, as yt-dlp would
  *  find it, but the request's words aren't checked against it. */
-export function pickSong(res: YtmSearch): { id: string; text: string; long?: true } | undefined {
+export function pickSong(res: YtmSearch): { id: string; text: string; title: string; long?: true } | undefined {
   for (const it of ytmRows(res)) {
     const id = it?.playlistItemData?.videoId ?? it?.overlay?.musicItemThumbnailOverlayRenderer?.content?.musicPlayButtonRenderer?.playNavigationEndpoint?.watchEndpoint?.videoId;
     if (!id) continue;
@@ -293,7 +310,9 @@ export function pickSong(res: YtmSearch): { id: string; text: string; long?: tru
       .flatMap((c) => c?.musicResponsiveListItemFlexColumnRenderer?.text?.runs ?? [])
       .map((r) => (typeof r?.text === 'string' ? r.text : ''))
       .join(' ');
-    return !seconds || seconds > MAX_SONG_S ? { id, text, long: true } : { id, text };
+    const head = it?.flexColumns?.[0]?.musicResponsiveListItemFlexColumnRenderer?.text?.runs;
+    const title = (Array.isArray(head) ? head : []).map((r) => (typeof r?.text === 'string' ? r.text : '')).join('');
+    return !seconds || seconds > MAX_SONG_S ? { id, text, title, long: true } : { id, text, title };
   }
   return undefined;
 }
@@ -452,10 +471,24 @@ export class YoutubeSource implements MusicSource {
    *  `findVideos`: a web search for YouTube videos, asked only when the song
    *  catalog's answer barely matches the words (a misheard or rare name).
    *  `webApi`: where YouTube's own video search is asked directly (default:
-   *  YouTube, when `searchApi` is YouTube Music's).
+   *  YouTube, when `searchApi` is YouTube Music's). `directSearch: false`
+   *  never asks it (config `music.directSearch`). `webTimeoutMs`/`webBudgetMs`:
+   *  its wait per search and per lookup (WEB_TIMEOUT, WEB_LOOKUP_MS).
    *  `startEarly`: see `early` (default: on with the real yt-dlp). */
   constructor(
-    private readonly o: { ytdlp: string; node?: string; timeoutMs?: number; searchApi?: string; webApi?: string; findVideos?: FindVideos; now?: () => number; startEarly?: boolean },
+    private readonly o: {
+      ytdlp: string;
+      node?: string;
+      timeoutMs?: number;
+      searchApi?: string;
+      webApi?: string;
+      directSearch?: boolean;
+      webTimeoutMs?: number;
+      webBudgetMs?: number;
+      findVideos?: FindVideos;
+      now?: () => number;
+      startEarly?: boolean;
+    },
     run: Runner = runProgram,
   ) {
     this.startEarly = o.startEarly ?? run === runProgram;
@@ -505,7 +538,7 @@ export class YoutubeSource implements MusicSource {
   /** One search request to YouTube Music or YouTube, the way their web pages
    *  ask. The API isn't documented: anything odd (an error, a timeout) is
    *  undefined, and yt-dlp does it instead. */
-  private async api<T>(base: string, web: boolean, query: string, params: string, sig: AbortSignal): Promise<T | undefined> {
+  private async api<T>(base: string, web: boolean, query: string, params: string, sig: AbortSignal, timeoutMs = web ? WEB_TIMEOUT : YTM_TIMEOUT_MS): Promise<T | undefined> {
     if (this.paused) throw new YoutubePaused();
     const [client, name, version, origin] = web ? ['WEB', '1', WEB_VERSION, YT_WEB] : ['WEB_REMIX', '67', YTM_VERSION, YTM_API];
     try {
@@ -513,7 +546,7 @@ export class YoutubeSource implements MusicSource {
         method: 'POST',
         headers: { 'content-type': 'application/json', origin, 'x-youtube-client-name': name, 'x-youtube-client-version': version, 'user-agent': BROWSER_UA },
         body: JSON.stringify({ context: { client: { clientName: client, clientVersion: version, hl: 'en', gl: 'US' } }, query, params }),
-        signal: AbortSignal.any([sig, AbortSignal.timeout(web ? WEB_TIMEOUT : YTM_TIMEOUT_MS)]),
+        signal: AbortSignal.any([sig, AbortSignal.timeout(timeoutMs)]),
       });
       if (!r.ok) throw new Error(`${web ? 'YouTube' : 'YouTube Music'} answered ${r.status}`);
       return (await r.json()) as T;
@@ -543,17 +576,59 @@ export class YoutubeSource implements MusicSource {
 
   /** Where YouTube's own search goes: given, or beside YouTube Music's real API. */
   private get webApi(): string | undefined {
+    if (this.o.directSearch === false) return undefined;
     return this.o.webApi ?? (this.o.searchApi === YTM_API ? YT_WEB : undefined);
+  }
+
+  /** Direct video searches failed in a row, and until when they rest. */
+  private webFails = 0;
+  private webRestUntil = 0;
+  /** What's left of each lookup's share of direct-search time (ms), by its signal. */
+  private readonly webLeft = new WeakMap<AbortSignal, { ms: number }>();
+
+  /** One lookup's own signal: every direct video search under it shares one
+   *  WEB_LOOKUP_MS. A signal that already is one is kept. */
+  private lookupSig(signal: AbortSignal): AbortSignal {
+    if (this.webLeft.has(signal)) return signal;
+    const sig = this.sig(signal);
+    this.webLeft.set(sig, { ms: this.o.webBudgetMs ?? WEB_LOOKUP_MS });
+    return sig;
   }
 
   /** `ytsearch<n>:` lines (SEARCH_FIELDS) for some words: YouTube's search
    *  asked directly, or yt-dlp when that isn't set up or doesn't answer. */
   private async ytsearch(words: string, n: number, sig: AbortSignal): Promise<string> {
-    const web = this.webApi;
-    const res = web ? await this.api<WebSearch>(web, true, words, VIDEOS_ONLY, sig) : undefined;
-    const lines = res && this.parsed(() => webSearchLines(res, n));
+    const lines = await this.directSearch(words, n, sig);
     if (lines !== undefined) return lines;
     return this.run(this.o.ytdlp, [...this.base(), '--flat-playlist', '--print', SEARCH_FIELDS, `ytsearch${n}:${words}`], sig);
+  }
+
+  /** YouTube's video search asked directly, unless it's off, resting after
+   *  failures, or this lookup has spent its share of waiting on it. */
+  private async directSearch(words: string, n: number, sig: AbortSignal): Promise<string | undefined> {
+    const web = this.webApi;
+    if (!web || this.time() < this.webRestUntil) return undefined;
+    const left = this.webLeft.get(sig);
+    const wait = Math.min(this.o.webTimeoutMs ?? WEB_TIMEOUT, left?.ms ?? Infinity);
+    if (wait < Math.min(WEB_MIN_MS, this.o.webTimeoutMs ?? WEB_MIN_MS)) return undefined;
+    const t0 = performance.now();
+    let lines: string | undefined;
+    try {
+      const res = await this.api<WebSearch>(web, true, words, VIDEOS_ONLY, sig, wait);
+      lines = res && this.parsed(() => webSearchLines(res, n));
+    } finally {
+      if (left) left.ms -= performance.now() - t0;
+    }
+    if (lines !== undefined) {
+      this.webFails = 0;
+      return lines;
+    }
+    if (++this.webFails >= WEB_FAILS) {
+      this.webFails = 0;
+      this.webRestUntil = this.time() + WEB_REST_MS;
+      this.log?.warn('direct video search resting', { minutes: WEB_REST_MS / 60_000 });
+    }
+    return undefined;
   }
 
   /** The first album or playlist YouTube Music finds for the words (as
@@ -567,7 +642,7 @@ export class YoutubeSource implements MusicSource {
   /** One song: YouTube Music's song catalog (real tracks, never hour-long
    *  loops or compilations); regular YouTube for mixes, or as a fallback. */
   async find(query: string, signal: AbortSignal): Promise<Track | undefined> {
-    const sig = this.sig(signal);
+    const sig = this.lookupSig(signal);
     const t0 = performance.now();
     const early = this.early(sig);
     let hit: Awaited<ReturnType<YoutubeSource['songId']>>;
@@ -598,6 +673,7 @@ export class YoutubeSource implements MusicSource {
   /** The video a song request means, without looking up its stream. */
   async songId(query: string, signal: AbortSignal): Promise<{ id: string; via: string; fallback?: string; maxS?: number } | undefined> {
     if (this.paused) throw new YoutubePaused();
+    signal = this.lookupSig(signal);
     const long = NOT_A_SONG.test(query);
     let via = 'direct';
     const song = long ? undefined : await this.searchSongs(query, signal);
@@ -611,11 +687,12 @@ export class YoutubeSource implements MusicSource {
     // the same way).
     if (song && !song.long) {
       // A version it doesn't name (a Tiny Desk set, an open mic) isn't what was
-      // asked for, however well the rest matches. Otherwise an answer in
-      // another script is kept: its words can't be compared.
+      // asked for, however well the rest matches. Otherwise a title in another
+      // script is kept: its words can't be compared. (Only the title: a wrong
+      // song with a Japanese album or artist credit is still checked.)
       const versions = versionsAsked(query);
       const lacks = !hasVersions(song.text, versions);
-      const songScore = lacks ? 0 : otherScript(query, song.text) ? 1 : matchScore(query, song.text);
+      const songScore = lacks ? 0 : otherScript(query, song.title) ? 1 : matchScore(query, song.text);
       if (songScore < LOOK_FURTHER) {
         const maxS = WHOLE_SET.test(query) ? MAX_SET_S : MAX_SONG_S;
         const better = await this.closerMatch(query, songScore, signal, versions, maxS);
@@ -713,7 +790,7 @@ export class YoutubeSource implements MusicSource {
 
   /** A short sound-effect clip: the first result under 30 s (else under 2 min). */
   async soundEffect(query: string, signal: AbortSignal): Promise<Track | undefined> {
-    const sig = this.sig(signal);
+    const sig = this.lookupSig(signal);
     const out = await this.ytsearch(`${query} sound effect`, 8, sig);
     const id = pickShort(out, 30) ?? pickShort(out, 120);
     return id ? this.resolve(id, sig) : undefined;
@@ -721,7 +798,7 @@ export class YoutubeSource implements MusicSource {
 
   /** The id of any YouTube video, any length (a 10-hour rain loop, a live radio). */
   async videoId(query: string, signal: AbortSignal): Promise<string | undefined> {
-    return pickVideo(await this.ytsearch(query, 5, this.sig(signal)), true);
+    return pickVideo(await this.ytsearch(query, 5, this.lookupSig(signal)), true);
   }
 
   /** Such a video, ready to play. */
@@ -752,6 +829,11 @@ export class YoutubeSource implements MusicSource {
       go: (url) => {
         if (given) return Promise.reject(new Error('early run used twice'));
         given = true;
+        // A bot check came up while it waited (another lookup's): it asks nothing.
+        if (this.paused) {
+          give(undefined);
+          return Promise.reject(new YoutubePaused());
+        }
         give(`${url}\n`);
         return out;
       },
@@ -762,27 +844,53 @@ export class YoutubeSource implements MusicSource {
     };
   }
 
-  /** A stream lookup started for whatever video is looked up next (a list's
-   *  first song, once the list is in): at most one, for SPARE_MS. */
-  private spare: Early | undefined;
+  /** A list's spare stream lookup, by its tracks: only that list's first song
+   *  to be looked up takes it, never another room's or another request's. */
+  private readonly spares = new WeakMap<Track, Spare>();
 
-  private prime(signal: AbortSignal): void {
-    if (this.spare) return;
-    const e = this.early(signal);
-    if (!e) return;
-    this.spare = e;
-    const done = () => {
-      if (this.spare !== e) return;
-      this.spare = undefined;
+  /** A stream lookup started beside a list's listing, for whichever of its
+   *  songs plays first. It has its own controller: until a song takes it, the
+   *  request that started it (`primer`) or SPARE_MS lets it go; once taken,
+   *  only the taker's signal stops it. */
+  private spare(primer: AbortSignal): Spare | undefined {
+    const ctl = new AbortController();
+    const e = this.early(ctl.signal);
+    if (!e) return undefined;
+    let waiting = true;
+    const unhook = () => {
+      waiting = false;
+      clearTimeout(timer);
+      primer.removeEventListener('abort', drop);
+    };
+    const drop = () => {
+      if (!waiting) return;
+      unhook();
       e.drop();
     };
-    setTimeout(done, SPARE_MS).unref();
-    signal.addEventListener('abort', done, { once: true });
+    const timer = setTimeout(drop, SPARE_MS);
+    timer.unref?.();
+    primer.addEventListener('abort', drop, { once: true });
+    return {
+      drop,
+      take: (signal) => {
+        if (!waiting) return undefined;
+        unhook();
+        const sig = this.sig(signal);
+        const stop = () => ctl.abort(sig.reason);
+        if (sig.aborted) stop();
+        else sig.addEventListener('abort', stop, { once: true });
+        const done = () => sig.removeEventListener('abort', stop);
+        return {
+          go: (url) => e.go(url).finally(done),
+          drop: () => (done(), e.drop()),
+        };
+      },
+    };
   }
 
   /** Stream URL and names for one video. Returns at that line: yt-dlp takes
    *  another 90 ms or so to exit, and does that by itself. `early`: a run
-   *  already started for this (not with peaks); else the spare, if any. */
+   *  already started for this (not with peaks). */
   async resolve(id: string, signal: AbortSignal, o: { peaks?: boolean } = {}, early?: Early): Promise<Track | undefined> {
     const t0 = performance.now();
     if (o.peaks) {
@@ -792,7 +900,6 @@ export class YoutubeSource implements MusicSource {
       const out = await this.run(this.o.ytdlp, [...this.base(), '--no-playlist', '-f', 'bestaudio/best', '--print', fields, watchUrl(id)], this.sig(signal), (o) => URL_LINE.test(o));
       return this.track(id, out, t0, true);
     }
-    if (!early && this.spare) [early, this.spare] = [this.spare, undefined];
     const out = early ? await early.go(watchUrl(id)) : await this.run(this.o.ytdlp, [...this.base(), ...RESOLVE_ARGS, watchUrl(id)], this.sig(signal), (o) => URL_LINE.test(o));
     return this.track(id, out, t0);
   }
@@ -823,8 +930,9 @@ export class YoutubeSource implements MusicSource {
   }
 
   /** An album or playlist found on YouTube Music, as tracks. Its listing run
-   *  starts beside the search, and the first song's lookup beside that. */
-  private async collection(query: string, kind: 'albums' | 'community playlists', signal: AbortSignal, limit: number): Promise<Collection | undefined> {
+   *  starts beside the search, and the first song's lookup beside that
+   *  (`spare`: off for lists whose songs are looked up another way). */
+  private async collection(query: string, kind: 'albums' | 'community playlists', signal: AbortSignal, limit: number, spare = true): Promise<Collection | undefined> {
     const sig = this.sig(signal);
     const early = this.early(sig, listArgs(limit));
     let id: string | undefined;
@@ -834,18 +942,26 @@ export class YoutubeSource implements MusicSource {
       if (!id) early?.drop();
     }
     if (!id) return undefined;
-    this.prime(sig);
+    const first = spare ? this.spare(signal) : undefined;
     const url = kind === 'albums' ? `https://music.youtube.com/browse/${id}` : `https://music.youtube.com/playlist?list=${id.startsWith('VL') ? id.slice(2) : id}`;
-    return this.list(url, signal, limit, early);
+    let c: Collection | undefined;
+    try {
+      c = await this.list(url, signal, limit, early);
+    } finally {
+      if (first && c?.tracks.length) for (const t of c.tracks) this.spares.set(t, first);
+      else first?.drop();
+    }
+    return c;
   }
 
-  album(query: string, signal: AbortSignal): Promise<Collection | undefined> {
-    return this.collection(query, 'albums', signal, 40);
+  album(query: string, signal: AbortSignal, o: { spare?: boolean } = {}): Promise<Collection | undefined> {
+    return this.collection(query, 'albums', signal, 40, o.spare);
   }
 
-  /** A public playlist matching the words (a vibe, genre, mood or name). */
-  playlist(query: string, signal: AbortSignal): Promise<Collection | undefined> {
-    return this.collection(query, 'community playlists', signal, 30);
+  /** A public playlist matching the words (a vibe, genre, mood or name).
+   *  `spare: false`: its songs won't be looked up through `prepare` (a quiz's clips). */
+  playlist(query: string, signal: AbortSignal, o: { spare?: boolean } = {}): Promise<Collection | undefined> {
+    return this.collection(query, 'community playlists', signal, 30, o.spare);
   }
 
   /** A podcast: the show's recent episodes, or one episode. */
@@ -901,7 +1017,7 @@ export class YoutubeSource implements MusicSource {
       return;
     }
     if (!t.id) return;
-    const r = await this.resolve(t.id, signal);
+    const r = await this.resolve(t.id, signal, {}, this.spares.get(t)?.take(signal));
     if (!r) throw new Error('that one is unavailable');
     t.ref = r.ref;
     t.title = r.title;
@@ -1627,11 +1743,11 @@ export class MusicPlayer {
     this.o.log.info('music search', { query: q, mode });
     // Most of these are songs: the search runs beside Deezer's answer, so a song
     // loses nothing to it. For a well-known artist the search is dropped, but not
-    // before there's a list to play instead. It searches what Deezer is asked
-    // ("fleetwood mac", not "some fleetwood mac").
+    // before there's a list to play instead. The song is searched as asked:
+    // only the artist check leaves "some" off ("Some Nights" is a song).
     const lookup = new AbortController();
     let foundAt: number | undefined;
-    const song = this.lookup(name.slice(0, 200), AbortSignal.any([signal, lookup.signal])).finally(() => (foundAt = performance.now()));
+    const song = this.lookup(q, AbortSignal.any([signal, lookup.signal])).finally(() => (foundAt = performance.now()));
     song.catch(() => {}); // it may never be asked for
     const best = await this.knownArtist(name, signal);
     if (best.tracks.length >= MIN_TOP) {
