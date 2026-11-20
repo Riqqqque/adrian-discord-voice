@@ -8,7 +8,9 @@
 // "Nothing found."). `record(name, args)` sees every call.
 // `pc`: 'connected' (a PC answers with `answers`), 'absent' (the PC tools and
 // rule are there, as live, but this person has no PC connected: the pc_ tools
-// run and say so), or false.
+// run and say so), or false. `runPc`: with a connected PC the pc_ tools run
+// for real too (their own checks included), and every action that reaches the
+// PC goes to `onPc(name, args)` and is answered from `answers`.
 import { genderLines } from '../dist/app/identity.js';
 import { matureContext } from '../dist/brain/mature.js';
 import { tavilySearchTool, timeTool } from '../dist/brain/tools.js';
@@ -39,7 +41,7 @@ const quiet = { info() {}, warn() {}, error() {}, debug() {} };
 /** Run for real: no network, no sound, nothing outside this process. */
 const LOCAL = new Set(['get_time', 'set_reminder', 'set_alarm', 'set_timer', 'edit_alarm', 'list_timers', 'cancel_timer', 'alarm_control', 'alarm_options', 'remember', 'forget', 'roll_dice', 'flip_coin', 'game', 'music_taste']);
 
-export function prodKit(c, { record = () => {}, answers = {}, pc = 'connected', player } = {}) {
+export function prodKit(c, { record = () => {}, answers = {}, pc = 'connected', player, runPc = false, onPc = () => {} } = {}) {
   const tz = c.timezone;
   const stubPlayer =
     player ??
@@ -57,7 +59,7 @@ export function prodKit(c, { record = () => {}, answers = {}, pc = 'connected', 
   const clock = new AlarmClock(undefined, tz, { placeFor: () => 'discord', ring: () => ({ stop() {}, alive: () => true }), dm: async () => true });
   const notes = new UserNotes(undefined);
   const nobody = { candidates: () => [] };
-  const fakePc = { action: async (name) => ({ ok: true, result: answers[name]?.({}) ?? 'Done.' }) };
+  const fakePc = { action: async (name, args) => (onPc(name, args), { ok: true, result: answers[name]?.(args ?? {}) ?? 'Done.' }) };
   const headlines = new Headlines(c.news?.feeds ?? [], async () => new Response(''));
   const weather = new Weather(c.weather ?? {}, tz, async () => new Response('{}'));
   const briefing = new Briefing({ weather, headlines, reminders: () => [], calendarFor: () => false, timezone: tz, headlineCount: 3 });
@@ -93,8 +95,9 @@ export function prodKit(c, { record = () => {}, answers = {}, pc = 'connected', 
     ...t,
     run: async (args, signal, ctx) => {
       record(t.spec.name, args);
-      if (answers[t.spec.name]) return answers[t.spec.name](args);
-      if (LOCAL.has(t.spec.name) || (pc === 'absent' && t.spec.name.startsWith('pc_'))) return t.run(args, signal, ctx);
+      const pcRuns = t.spec.name.startsWith('pc_') && (pc === 'absent' || (pc && runPc));
+      if (answers[t.spec.name] && !pcRuns) return answers[t.spec.name](args);
+      if (LOCAL.has(t.spec.name) || pcRuns) return t.run(args, signal, ctx);
       return 'Nothing found.';
     },
   }));
@@ -112,6 +115,7 @@ export function prodKit(c, { record = () => {}, answers = {}, pc = 'connected', 
   return {
     tools,
     taste,
+    notes,
     options: {
       spokenName: 'Adrian',
       writtenName: 'A.D.R.I.A.N.',
@@ -123,7 +127,8 @@ export function prodKit(c, { record = () => {}, answers = {}, pc = 'connected', 
       filler: () => 'One sec.',
       ...(creator ? { creator: { name: creator, spoken: c.identity.creatorSpoken ?? creator, heardAs: c.identity.creatorHeardAs } } : {}),
       stableLines,
-      context: (x) => [LANGS.en.prompt, music.musicState(stubPlayer), ...taste.context(x.userId, x.speaker)].filter(Boolean),
+      // As stack.ts: the asker's notes (only the ones fit for where they are), then music.
+      context: (x) => [LANGS.en.prompt, ...notes.context(x.userId, x.speaker, x), music.musicState(stubPlayer), ...taste.context(x.userId, x.speaker)].filter(Boolean),
     },
   };
 }

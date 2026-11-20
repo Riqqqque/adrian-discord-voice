@@ -80,7 +80,7 @@ process.on('exit', () => {
     wordsMedian: median(w),
     wordsMean: w.length ? w.reduce((a, b) => a + b, 0) / w.length : undefined,
     over20: w.length ? w.filter((x) => x > 20).length / w.length : undefined,
-    perTurn: turns.map((t) => ({ text: t.text, words: words(t.said), calls: t.calls, cost: Number(t.cost.toFixed(6)), said: t.said.slice(0, 400) })),
+    perTurn: turns.map((t) => ({ text: t.text, words: words(t.said), calls: t.calls, cost: Number(t.cost.toFixed(6)), firstChunkMs: t.firstChunkMs === undefined ? undefined : Math.round(t.firstChunkMs), said: t.said.slice(0, 400) })),
   };
   if (process.env.METER_OUT) writeFileSync(process.env.METER_OUT, JSON.stringify(r, null, 1));
   const { perTurn: _drop, ...head } = r;
