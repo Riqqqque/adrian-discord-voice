@@ -17,7 +17,9 @@
 #   adrian restore FILE
 #   adrian update                 install the newest release from GitHub (checksum verified);
 #                                 rolls back if it does worse than the old one. Also: update
-#                                 BUNDLE.tar.gz, update --check (is there a newer one?)
+#                                 BUNDLE.tar.gz [--require-checksum], update --check (is there
+#                                 a newer one?). By hand it runs in the background: its log
+#                                 is /opt/adrian/update.log
 #   adrian auto-update on|off|status   check every hour and update by itself, only while
 #                                 nobody is in her call and nothing is playing
 #   adrian rollback               switch back to the previous version
@@ -38,9 +40,14 @@ UNIT=/etc/systemd/system/$SERVICE.service
 # The version the last update had to give up on. Root's, not in $VAR: the
 # service must not be able to clear it, or plant one to stop an update.
 FAILED=$OPT/update-failed
-# An update under way: "OLD NEW prep|switched", and the service file from before
-# it (.unit). Left behind only when an update was cut off (power cut, killed).
+# An update under way: "OLD NEW PHASE PREVIOUS" (PHASE: prep, switched, or
+# rollback while it goes back; PREVIOUS: where "previous" pointed before it, or
+# -), and the service file from before it (.unit). Left behind only when an
+# update was cut off (power cut, killed), for the next update to finish.
 MARK=$OPT/update-in-progress
+# Where a by-hand update writes (it runs in the background).
+UPDATE_LOG=$OPT/update.log
+RUN_SYSTEMD=/run/systemd/system
 # Free space an update needs under /opt: the bundle, the unpacked release and,
 # now and then, a new Node.
 UPDATE_NEEDS_MB=500
@@ -109,32 +116,85 @@ reachable() { # any HTTP answer counts: this is about the connection
   code=$(curl -s -o /dev/null -w '%{http_code}' --connect-timeout 8 --max-time 12 -I "$1" 2>/dev/null) || true
   [ -n "$code" ] && [ "$code" != 000 ]
 }
+valid_version() { [[ $1 =~ ^[0-9A-Za-z][0-9A-Za-z.+-]*$ && $1 != *..* ]]; }
+put_mark() { # put_mark OLD NEW PHASE PREVIOUS: whole or not at all, even if cut off while writing
+  refuse_symlinks "$MARK" "$MARK.new"
+  printf '%s\n' "$*" >"$MARK.new" && mv -f "$MARK.new" "$MARK"
+}
+unit_back() { # the service file from before the update (saved in $MARK.unit), if it changed
+  if [ -s "$MARK.unit" ] && ! cmp -s "$MARK.unit" "$UNIT"; then
+    install -m 0644 "$MARK.unit" "$UNIT"
+    systemctl daemon-reload
+  fi
+}
+# roll_back OLD NEW PREVIOUS: give NEW up and go back to OLD under its own
+# service file. The mark says so before the first step, and every step can be
+# done twice, so one cut off halfway is finished by the next update or rollback.
+roll_back() {
+  local old=$1 new=$2 prev=${3:--}
+  put_mark "$old" "$new" rollback "$prev"
+  echo "$new" >"$FAILED"
+  [ "$(current_version)" = "$old" ] || switch_to "$old"
+  unit_back
+  # "previous" goes back to what it was before the update: never the failed one.
+  if [ "$prev" != - ] && [ "$prev" != "releases/$new" ] && [ -d "$OPT/$prev" ]; then
+    ln -sfn "$prev" "$OPT/previous"
+  else
+    rm -f "$OPT/previous"
+  fi
+  systemctl restart "$SERVICE"
+  rm -rf "${OPT:?}/releases/$new"
+  rm -f "$MARK" "$MARK.unit"
+}
+answers_as() { grep -qF "\"version\":\"$1\"" <<<"$2"; } # answers_as VERSION HEALTH
 # An update that was cut off: judge it now, so a half-done one never stays.
 finish_interrupted() {
   [ -f "$MARK" ] || return 0
   refuse_symlinks "$MARK" "$MARK.unit"
-  local old new phase cur
-  read -r old new phase <"$MARK" || true
+  local old="" new="" phase="" prev="" cur out crashes
+  read -r old new phase prev <"$MARK" || true
+  if ! valid_version "$old" || ! valid_version "$new"; then
+    echo "An update was cut off while it started; there was nothing of it to undo." >&2
+    rm -f "$MARK" "$MARK.unit"; return 0
+  fi
+  [[ ${prev:--} =~ ^releases/[0-9A-Za-z][0-9A-Za-z.+-]*$ && $prev != *..* ]] || prev=-
   cur=$(current_version)
   set +e
-  if [ -n "$new" ] && [ "$cur" = "$new" ] && [ -n "$old" ] && [ -d "$OPT/releases/$old" ]; then
-    if wait_healthy 90 >/dev/null; then
+  if [ "$phase" = rollback ] || { [ "$phase" = switched ] && [ "$cur" = "$old" ] && [ "$(previous_version)" = "$new" ]; }; then
+    # Cut off while it went back. (Back on the old one with the new one as
+    # "previous" is a rollback under way too, from a note that didn't say so.)
+    # Finish it, failure and all.
+    echo "The update to $new failed and was being undone when it was cut off. Finishing that: back to $old." >&2
+    roll_back "$old" "$new" "$prev"
+    if wait_healthy 60 >/dev/null; then echo "Back on $old."; else echo "Back on $old, but it isn't healthy either: sudo adrian logs" >&2; fi
+  elif [ "$cur" = "$new" ] && [ "$phase" != prep ] && [ -d "$OPT/releases/$old" ]; then
+    # Only the new version's own answer counts: cut off between the switch and
+    # the restart, the old process is still the one answering.
+    out=$(wait_healthy 90 2>/dev/null) || out=""
+    if ! answers_as "$new" "$out"; then
+      echo "The update to $new was cut off before its checks finished. Starting $new to check it."
+      systemctl restart "$SERVICE"
+      crashes=$(systemctl show -p NRestarts --value "$SERVICE" 2>/dev/null)
+      out=$(wait_healthy 120 2>/dev/null) || out=""
+      [ "$(systemctl show -p NRestarts --value "$SERVICE" 2>/dev/null)" = "$crashes" ] || out=""
+    fi
+    if answers_as "$new" "$out"; then
       echo "The update to $new was cut off before its checks finished. $new is running and healthy, so it stays."
     else
       echo "The update from $old to $new was cut off, and $new isn't healthy. Going back to $old." >&2
-      switch_to "$old"
-      rm -f "$OPT/previous"
-      if [ -s "$MARK.unit" ] && ! cmp -s "$MARK.unit" "$UNIT"; then install -m 0644 "$MARK.unit" "$UNIT"; systemctl daemon-reload; fi
-      systemctl restart "$SERVICE"
-      echo "$new" >"$FAILED"
-      rm -rf "${OPT:?}/releases/$new"
+      roll_back "$old" "$new" "$prev"
       if wait_healthy 60 >/dev/null; then echo "Back on $old."; else echo "Back on $old, but it isn't healthy either: sudo adrian logs" >&2; fi
     fi
-  elif [ -n "$new" ] && [ "$cur" != "$new" ]; then
-    # Cut off before the switch: what it had changed goes back.
-    if [ -s "$MARK.unit" ] && ! cmp -s "$MARK.unit" "$UNIT"; then install -m 0644 "$MARK.unit" "$UNIT"; systemctl daemon-reload; fi
+  elif [ "$cur" = "$old" ]; then
+    # Cut off before the switch took: what it had changed goes back.
+    unit_back
+    if [ "$prev" != - ] && [ "$prev" != "releases/$new" ] && [ -d "$OPT/$prev" ]; then ln -sfn "$prev" "$OPT/previous"; fi
     [ "$(previous_version)" = "$new" ] || rm -rf "${OPT:?}/releases/$new"
-    echo "An update to $new was cut off before it switched over. Nothing of it is left; $cur is still the one running."
+    echo "An update to $new was cut off before it switched over. What it changed is undone; $old is still the one running."
+  else
+    # Something else (the installer, or a rollback by hand) has put $cur in place since.
+    [ "$cur" = "$new" ] || [ "$(previous_version)" = "$new" ] || rm -rf "${OPT:?}/releases/$new"
+    echo "An update ($old -> $new) was cut off, and $cur has been installed since; it stays."
   fi
   rm -f "$MARK" "$MARK.unit"
   set -e
@@ -142,12 +202,92 @@ finish_interrupted() {
 update_running() { # another adrian update holds the lock right now
   command -v flock >/dev/null && [ -f "$OPT/update.lock" ] && ! flock -n "$OPT/update.lock" true
 }
+follow_hint() { # how to follow the update that holds the lock
+  if systemctl is-active --quiet adrian-update.service 2>/dev/null; then echo "sudo journalctl -u adrian-update -f"
+  else echo "sudo tail -f $UPDATE_LOG"; fi
+}
 take_update_lock() { # take_update_lock WHAT: one update (or rollback) at a time
   command -v flock >/dev/null || return 0
   exec 9>"$OPT/update.lock"
   flock -n 9 && return 0
   [ "$1" = --auto ] && { echo "update check skipped: another update is running"; exit 0; }
-  die "another update is already running (the hourly check, or another terminal). Wait for it to finish: sudo journalctl -u adrian-update -f"
+  die "another update is already running (the hourly check, or another terminal). Wait for it to finish; follow it: $(follow_hint)"
+}
+start_log() { # a by-hand update in the background, now holding the lock: its log starts afresh
+  refuse_symlinks "$UPDATE_LOG"
+  : >"$UPDATE_LOG"
+  chmod 0600 "$UPDATE_LOG"
+  exec >>"$UPDATE_LOG" 2>&1
+  echo "== Update started $(date '+%F %T')${ADRIAN_UPDATE_TOKEN:+ (run $ADRIAN_UPDATE_TOKEN)}"
+}
+follow_running() { # another update holds the lock: follow it, and touch nothing of it
+  local w rc
+  if systemctl is-active --quiet adrian-update.service 2>/dev/null; then
+    die "the hourly update check is updating her right now. Follow it: sudo journalctl -u adrian-update -f"
+  fi
+  echo "Another update is already running. Following its log, $UPDATE_LOG; Ctrl+C stops watching, not the update."
+  ( while update_running; do command sleep 1; done ) &
+  w=$!
+  trap 'kill "$w" 2>/dev/null; echo; echo "Stopped watching. The update carries on: sudo tail -f $UPDATE_LOG"; exit 130' INT
+  tail -n +1 -f --pid="$w" "$UPDATE_LOG" 2>/dev/null || true
+  wait "$w" 2>/dev/null || true
+  rc=$(cat "$OPT/update.rc" 2>/dev/null) || rc=""
+  [[ $rc =~ ^[0-9]+$ ]] || rc=0
+  exit "$rc"
+}
+# By hand at a terminal, an update runs on its own and this terminal only
+# follows its log. Where systemd can, as a service of its own: outside the login
+# session, so neither a dropped SSH connection nor logind ending the session at
+# logout (KillUserProcesses) can stop it halfway. Otherwise in a session of its
+# own (setsid), which a hang-up or Ctrl+C can't reach. Returns only if neither
+# is there, to run here as before.
+detach_update() { # detach_update ARGS...
+  local rcf=$OPT/update.rc self token unit pid="" how="" started=0 envs v rc
+  local run='bash "$1" update "${@:3}" </dev/null; echo $? >"$2"' # the update's exit code, for this terminal
+  refuse_symlinks "$UPDATE_LOG" "$rcf"
+  update_running && follow_running
+  self=$(cd "$(dirname "$0")" && pwd)/$(basename "$0")
+  token="$$-$RANDOM$RANDOM"
+  rm -f "$rcf"
+  if [ -d "$RUN_SYSTEMD" ] && command -v systemd-run >/dev/null; then
+    unit=adrian-update-by-hand-$(date +%Y%m%d-%H%M%S)
+    # A unit starts with systemd's environment, not this one.
+    envs=(-E ADRIAN_DETACHED=1 -E "ADRIAN_UPDATE_TOKEN=$token" -E "PATH=$PATH")
+    for v in ADRIAN_UPDATE_REPO ADRIAN_DOWNLOAD_CACHE https_proxy HTTPS_PROXY http_proxy HTTP_PROXY no_proxy NO_PROXY all_proxy ALL_PROXY; do
+      [ -z "${!v:-}" ] || envs+=(-E "$v=${!v}")
+    done
+    if systemd-run --unit="$unit" --collect --quiet "${envs[@]}" "$(command -v bash)" -c "$run" adrian-update "$self" "$rcf" "$@" </dev/null >/dev/null 2>&1; then
+      started=1
+      pid=$(systemctl show -p MainPID --value "$unit" 2>/dev/null) || pid=""
+      [[ $pid =~ ^[1-9][0-9]*$ ]] || pid="" # done already
+      how="as its own service, $unit"
+    fi
+  fi
+  if [ "$started" = 0 ]; then
+    command -v setsid >/dev/null || return 0
+    ADRIAN_DETACHED=1 ADRIAN_UPDATE_TOKEN=$token setsid bash -c "$run" adrian-update "$self" "$rcf" "$@" </dev/null >/dev/null 2>&1 &
+    pid=$!
+    how="in a session of its own"
+  fi
+  echo "Updating in the background ($how), so a dropped connection can't stop it halfway."
+  echo "Following along here; Ctrl+C stops watching, not the update."
+  echo "Its log: $UPDATE_LOG (follow it from anywhere: sudo tail -f $UPDATE_LOG)"
+  trap 'echo; echo "Stopped watching. The update carries on: sudo tail -f $UPDATE_LOG, or sudo adrian status"; exit 130' INT
+  # Until it holds the lock and has started its log afresh: never an earlier run's lines.
+  for _ in $(seq 1 300); do
+    [[ $(head -n 1 "$UPDATE_LOG" 2>/dev/null) == *"$token"* ]] && break
+    [ ! -f "$rcf" ] || break
+    [ -z "$pid" ] || kill -0 "$pid" 2>/dev/null || break
+    command sleep 0.1
+  done
+  if [[ $(head -n 1 "$UPDATE_LOG" 2>/dev/null) == *"$token"* ]]; then
+    if [ -n "$pid" ]; then tail -n +1 -f --pid="$pid" "$UPDATE_LOG" 2>/dev/null || true; else cat "$UPDATE_LOG"; fi
+  else
+    echo "It didn't start: another update got there first. Follow that one: $(follow_hint)" >&2
+  fi
+  rc=$(cat "$rcf" 2>/dev/null) || rc=""
+  [[ $rc =~ ^[0-9]+$ ]] || rc=1
+  exit "$rc"
 }
 interrupted_note() { # for status and doctor: "running" while one is, "cut off" only when none is
   [ -f "$MARK" ] || return 0
@@ -309,27 +449,22 @@ case "$cmd" in
     wait_healthy 60 >/dev/null && echo "Restored and running." || die "restored, but the service is not healthy: adrian logs" ;;
   update)
     need_root update
-    b=${1:-latest}
-    # By hand at a terminal: run in its own session, so a dropped SSH connection
-    # (or Ctrl+C) can't stop it halfway; this terminal only follows along.
+    b=latest require_sha=0
+    for a in "$@"; do case "$a" in --require-checksum) require_sha=1 ;; *) b=$a ;; esac; done
+    # A bundle by its full path: the update may run from another folder.
+    [ ! -f "$b" ] || b=$(cd "$(dirname "$b")" && pwd)/$(basename "$b")
+    # By hand at a terminal: the update runs in the background, so a dropped SSH
+    # connection (or Ctrl+C) can't stop it halfway; this terminal follows along.
     if [ "$b" != --check ] && [ "$b" != --auto ] && [ -z "${ADRIAN_DETACHED:-}" ] && [ "${ADRIAN_DETACH:-}" != 0 ] \
-      && { [ -t 1 ] || [ "${ADRIAN_DETACH:-}" = 1 ]; } && command -v setsid >/dev/null; then
-      log=$OPT/update.log
-      refuse_symlinks "$log"
-      : >"$log"
-      echo "Updating in the background, so a dropped connection can't stop it halfway."
-      echo "Following along here; Ctrl+C stops watching, not the update. Log: $log"
-      ADRIAN_DETACHED=1 setsid bash "$0" update "$@" >"$log" 2>&1 </dev/null &
-      upid=$!
-      trap 'echo; echo "Stopped watching. The update carries on: sudo adrian status, or $log"; exit 130' INT
-      tail -n +1 -f --pid="$upid" "$log" 2>/dev/null || true
-      rc=0; wait "$upid" || rc=$?
-      exit "$rc"
+      && { [ -t 1 ] || [ "${ADRIAN_DETACH:-}" = 1 ]; }; then
+      if [ "$require_sha" = 1 ]; then detach_update "$b" --require-checksum; else detach_update "$b"; fi
     fi
     # One update at a time: the hourly check and one by hand must not cross.
     # --check only looks, so it takes no lock and leaves everything alone.
     if [ "$b" != --check ]; then
       take_update_lock "$b"
+      # In the background: only now, holding the lock, does its log start afresh.
+      [ "${ADRIAN_DETACHED:-}" != 1 ] || start_log
       rm -rf "$OPT"/.update-* "$OPT"/.prep-* # left by one that was cut off; nothing else uses them while the lock is held
       finish_interrupted
     fi
@@ -362,17 +497,38 @@ case "$cmd" in
         b=$(fetch_release "$v" "$dl") || die "the download of $v failed or didn't match its checksum; nothing was changed. Check the internet connection and run it again."
         ;;
     esac
-    [ -f "$b" ] || die "usage: adrian update [BUNDLE.tar.gz | --check]"
-    if [ -f "$b.sha256" ]; then (cd "$(dirname "$b")" && sha256sum -c --status "$(basename "$b").sha256") || die "bundle checksum mismatch"; fi
+    [ -f "$b" ] || die "usage: adrian update [BUNDLE.tar.gz [--require-checksum] | --check]"
+    if [ -f "$b.sha256" ]; then
+      (cd "$(dirname "$b")" && sha256sum -c --status "$(basename "$b").sha256") || die "bundle checksum mismatch"
+    elif [ "$require_sha" = 1 ]; then
+      die "there's no $(basename "$b").sha256 next to $b, so it can't be checked (--require-checksum). Nothing was changed. Download the .sha256 from the same Releases page and put it next to the bundle."
+    else
+      echo "warning: NOT CHECKED: there's no $(basename "$b").sha256 next to $b, so a damaged or changed bundle would go unnoticed. Put the .sha256 from the same Releases page next to it (--require-checksum refuses to go on without one). sudo adrian update with no file downloads the newest and checks it." >&2
+    fi
+    if [ -z "${dl:-}" ]; then
+      room=$(free_mb "$OPT")
+      if [ -n "$room" ] && [ "$room" -lt "$UPDATE_NEEDS_MB" ]; then
+        die "only $room MB free under $OPT, and the update needs about $UPDATE_NEEDS_MB MB. Free some space (for example: sudo apt-get clean) and run it again. Nothing was changed."
+      fi
+    fi
     tmp=$(mktemp -d "$OPT/.update-XXXXXX"); trap 'rm -rf "$tmp" ${dl:+"$dl"}' EXIT
     tar -xzf - -C "$tmp" --no-same-owner <"$b" || die "can't unpack $b (a damaged download, or a full disk); nothing was changed"
     new=$("$NODE" -p "require('$tmp/package.json').version")
-    [[ $new =~ ^[0-9A-Za-z][0-9A-Za-z.+-]*$ && $new != *..* ]] || die "bad version in bundle"
+    valid_version "$new" || die "bad version in bundle"
     old=$(current_version)
     prev_before=$(readlink "$OPT/previous" 2>/dev/null || true)
     [ "$new" != "$old" ] || die "version $new is already installed"
     rm -rf "$OPT/releases/$new"; mv "$tmp" "$OPT/releases/$new"; trap ${dl:+"rm -rf '$dl'"} EXIT
     chown -R root:root "$OPT/releases/$new"; chmod -R go-w "$OPT/releases/$new"; chmod 0755 "$OPT/releases/$new"
+    # Room for what the new release still has to fetch (its models, a new Node),
+    # from its own list: archives are staged under /opt, models unpack under /var/lib.
+    # shellcheck source=/dev/null
+    short=$( . "$OPT/releases/$new/packaging/downloads.sh" >/dev/null 2>&1 && declare -F disk_short >/dev/null && disk_short "$OPT" "$VAR/models" ) || short=""
+    if [ -n "$short" ]; then
+      rm -rf "${OPT:?}/releases/$new"
+      [ "${auto:-0}" = 1 ] && { echo "update $new waits: ${short//$'\n'/; }"; exit 0; }
+      die "not enough disk for $new: ${short//$'\n'/; }. Free some space (for example: sudo apt-get clean) and run it again. Nothing was changed."
+    fi
     # Can the new code run this config? Asked as the service, before root runs
     # anything from the release, and only if she's running: unfinished setup is a 3 too.
     was=$(health 5 2>/dev/null || true)
@@ -383,7 +539,7 @@ case "$cmd" in
     unit_before=$MARK.unit; trap ${dl:+"rm -rf '$dl'"} EXIT
     refuse_symlinks "$MARK" "$unit_before"
     cp "$UNIT" "$unit_before" 2>/dev/null || : >"$unit_before"
-    echo "$old $new prep" >"$MARK"
+    put_mark "$old" "$new" prep "${prev_before:--}"
     # The NEW release knows which models and service file it needs.
     if [ -f "$OPT/releases/$new/packaging/upgrade-prep.sh" ]; then
       bash "$OPT/releases/$new/packaging/upgrade-prep.sh" || { put_unit_back; rm -rf "${OPT:?}/releases/$new"; rm -f "$MARK" "$unit_before"; die "could not prepare $new (models, service file or Node); nothing was switched"; }
@@ -396,7 +552,7 @@ case "$cmd" in
       echo "update $new waits: someone is in her call or music is playing"; exit 0
     fi
     echo "Switching $old -> $new"
-    echo "$old $new switched" >"$MARK"
+    put_mark "$old" "$new" switched "${prev_before:--}"
     switch_to "$new"
     echo "Watching $new for a minute or two"
     # A join alone can take 20 s after login, and a crash can come after a good
@@ -415,15 +571,9 @@ case "$cmd" in
       # wait_healthy at the end is what tells the person how it went.
       set +e
       echo "Version $new did worse than $old; rolling back." >&2
-      switch_to "$old"
-      # Its service file came in with it: back to the one $old ran under.
-      put_unit_back
-      systemctl restart "$SERVICE"
-      echo "$new" >"$FAILED"
-      # Forget the failed release: "previous" goes back to what it was before this update.
-      if [ -n "$prev_before" ]; then ln -sfn "$prev_before" "$OPT/previous"; else rm -f "$OPT/previous"; fi
-      rm -rf "${OPT:?}/releases/$new"
-      rm -f "$MARK" "$unit_before"
+      # Back under the service file $old ran under, "previous" back to what it
+      # was before this update, and the failed release gone and remembered.
+      roll_back "$old" "$new" "${prev_before:--}"
       wait_healthy 60 >/dev/null && die "rolled back to $old" || die "rolled back to $old, but it is not healthy either: adrian logs"
     fi ;;
   auto-update)
@@ -460,6 +610,6 @@ case "$cmd" in
     wait_healthy 60 >/dev/null && echo "Rolled back to $prev." || die "rolled back, but not healthy: adrian logs" ;;
   uninstall) need_root uninstall; exec bash "$APP/packaging/install.sh" --uninstall "$@" ;;
   version) current_version ;;
-  -h|--help|help) sed -n '2,25p' "$0" ;;
+  -h|--help|help) sed -n '2,27p' "$0" ;;
   *) die "unknown command: $cmd (adrian help)" ;;
 esac
