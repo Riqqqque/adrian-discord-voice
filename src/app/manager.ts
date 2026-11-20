@@ -12,6 +12,8 @@ import { ParakeetStt } from '../speech/sherpa.js';
 import { readConfigFile } from '../web/secrets-file.js';
 import type { SecretsFile } from '../web/secrets-file.js';
 import { baseConfig, type InstallPaths } from '../web/settings.js';
+import { cloudVoicePrimary } from './local-voice.js';
+import { LowMemoryError, memoryFields, startNeedMb, tooLittleMemory, type MemInfo } from './memory.js';
 import { startVoiceStack, type VoiceStack } from './stack.js';
 
 export type StackState = 'setup' | 'starting' | 'running' | 'failed' | 'stopped';
@@ -30,6 +32,11 @@ export class SpeechModels {
     return this.stt.p;
   }
 
+  /** Parakeet is loaded, or loading: a restart adds no more of it. */
+  get sttHeld(): boolean {
+    return this.stt !== undefined;
+  }
+
   ttsFor(modelDir: string, threads: number): KokoroTts {
     const key = `${modelDir}|${threads}`;
     if (this.tts?.key !== key) this.tts = { key, v: new KokoroTts({ modelDir, threads }) };
@@ -41,6 +48,9 @@ export class SpeechModels {
 const FIRST_RETRY_MS = 30_000;
 /** ...doubling up to this. */
 const MAX_RETRY_MS = 5 * 60_000;
+/** A start put off for memory loads anyway after this long, in case the
+ *  estimate is wrong: being killed beats never starting. */
+const MAX_MEMORY_WAIT_MS = 15 * 60_000;
 const NETWORK_CODES = new Set([
   'ENOTFOUND', 'EAI_AGAIN', 'ECONNREFUSED', 'ECONNRESET', 'ECONNABORTED', 'EPIPE', 'ETIMEDOUT', 'ENETDOWN', 'ENETUNREACH', 'EHOSTDOWN', 'EHOSTUNREACH',
   'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT', 'UND_ERR_SOCKET',
@@ -53,7 +63,7 @@ export function canRecover(e: unknown): boolean {
   for (let c = e, depth = 0; c instanceof Error && depth < 5; c = c.cause, depth++) {
     const { code, status } = c as Error & { code?: unknown; status?: unknown };
     if (typeof code === 'string' && NETWORK_CODES.has(code)) return true;
-    if (c.name === 'AbortError' || c.name === 'TimeoutError') return true;
+    if (c.name === 'AbortError' || c.name === 'TimeoutError' || c.name === 'LowMemoryError') return true;
     if (typeof status === 'number' && status >= 500) return true;
     if (/^Unexpected server response: 5\d\d$/.test(c.message)) return true; // the gateway's handshake
   }
@@ -90,6 +100,8 @@ export class StackManager {
   private chain: Promise<unknown> = Promise.resolve();
   private retryTimer: NodeJS.Timeout | undefined;
   private retryMs = FIRST_RETRY_MS;
+  /** When the current wait for memory began. */
+  private lowMemorySince: number | undefined;
   readonly models = new SpeechModels();
 
   constructor(
@@ -100,6 +112,9 @@ export class StackManager {
     /** Installer-owned paths (models, state); filled into every config. */
     private readonly paths?: InstallPaths,
     private readonly start: typeof startVoiceStack = startVoiceStack,
+    /** The machine's memory (main.ts passes /proc/meminfo); without it, no check. */
+    private readonly memInfo: () => MemInfo | undefined = () => undefined,
+    private readonly now: () => number = Date.now,
   ) {}
 
   get state(): StackState {
@@ -161,9 +176,13 @@ export class StackManager {
         this._state = 'starting';
         this._error = undefined;
         const config = this.config()!;
-        this.stack = await this.start(config, this.secrets.read(), this.log, this.ledger, this.models, this.paths?.stateDir);
+        const secrets = this.secrets.read();
+        this.roomToStart(config, secrets);
+        const t = performance.now();
+        this.stack = await this.start(config, secrets, this.log, this.ledger, this.models, this.paths?.stateDir);
         this.startedAt = Date.now();
         this._state = 'running';
+        this.log.info('voice stack ready', { ms: Math.round(performance.now() - t), ...memoryFields(this.memInfo()) });
       } catch (e) {
         this._state = 'failed';
         this._error = redact((e as Error).message).slice(0, 300);
@@ -180,6 +199,29 @@ export class StackManager {
     const p = this.chain.then(run, run);
     this.chain = p.catch(() => undefined);
     return p;
+  }
+
+  /** A first start loads the speech models: only when they fit (see memory.ts). */
+  private roomToStart(config: PocConfig, secrets: Map<string, string>): void {
+    if (this.models.sttHeld) {
+      this.lowMemorySince = undefined;
+      return; // a restart: the big models are already here
+    }
+    const info = this.memInfo();
+    const needMb = startNeedMb(!cloudVoicePrimary(config.cloudVoice, secrets));
+    this.log.info('voice stack starting', { needMb, ...memoryFields(info) });
+    const short = tooLittleMemory(needMb, info);
+    if (!short) {
+      this.lowMemorySince = undefined;
+      return;
+    }
+    this.lowMemorySince ??= this.now();
+    if (this.now() - this.lowMemorySince >= MAX_MEMORY_WAIT_MS) {
+      this.log.warn('starting anyway after waiting for memory', { waitedS: Math.round((this.now() - this.lowMemorySince) / 1000) });
+      this.lowMemorySince = undefined;
+      return;
+    }
+    throw new LowMemoryError(short);
   }
 
   async stop(): Promise<void> {

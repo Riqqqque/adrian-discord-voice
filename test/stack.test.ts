@@ -2543,3 +2543,56 @@ describe('a ringing alarm', () => {
     await r.stack.stop();
   });
 });
+
+describe('the local voice at start', () => {
+  const kokoroFile = (dir: string) => writeFileSync(join(dir, 'model.onnx'), '');
+
+  it('is loaded and calibrated when it speaks English', async () => {
+    const r = await rig();
+    expect(r.logged.some((l) => l.m === 'tts loaded and calibrated')).toBe(true);
+    await r.stack.stop();
+  });
+
+  it('waits for its first use when the cloud voice speaks English, and stands in when the cloud fails', async () => {
+    const r = await rig({ cloudVoice: { enabled: true } }, { prepare: kokoroFile });
+    expect(r.logged.some((l) => l.m === 'tts loaded and calibrated')).toBe(false);
+    expect(r.logged.some((l) => l.m === 'local voice loads on first use')).toBe(true);
+    // The rig's fetch refuses Speechify: every line falls to the local voice.
+    r.steps.push({ parts: [text('Canberra.'), usage(10, 2)] });
+    r.heard(r.connect().pipe, OWNER, 'hey adrian capital', 'capital of australia');
+    await until(() => r.tts.calls.includes('Canberra.'), 'the answer in the local voice');
+    expect(r.warned).toContain('cloud voice failed; local voice for a minute');
+    await r.stack.stop();
+  });
+
+  it('stays unloaded while the cloud voice works: answers, fixed replies and the short lines all go to the cloud', async () => {
+    const cloudSaid: string[] = [];
+    vi.spyOn(SpeechifyTts.prototype, 'synthesize').mockImplementation(async (t: string) => {
+      cloudSaid.push(t);
+      return { samples: new Float32Array(960), sampleRate: 48_000, synthMs: 1 } as never;
+    });
+    const r = await rig({ cloudVoice: { enabled: true } }, { prepare: kokoroFile });
+    r.loggedIn();
+    const { pipe } = r.connect();
+    r.steps.push({ parts: [text('Canberra.'), usage(10, 2)] });
+    r.heard(pipe, OWNER, 'hey adrian capital', 'capital of australia');
+    await until(() => cloudSaid.includes('Canberra.'), 'the answer in the cloud voice');
+    r.heard(pipe, OWNER, 'hey adrian what time is it', 'what time is it');
+    await until(() => cloudSaid.some((t) => t.startsWith("It's ")), 'the time, said without the model');
+    await until(() => cloudSaid.includes('Yes?'), 'the short lines fetched at start');
+    expect(r.tts.calls).toEqual([]);
+    await r.stack.stop();
+  });
+
+  it('loads at start when the month of cloud characters is already spent', async () => {
+    const r = await rig({ cloudVoice: { enabled: true, monthlyChars: 10 } }, {
+      prepare: (dir) => {
+        kokoroFile(dir);
+        const month = new Date().toISOString().slice(0, 7);
+        writeFileSync(join(dir, 'voice-usage.json'), JSON.stringify({ version: 1, months: { [month]: 10 } }));
+      },
+    });
+    expect(r.logged.some((l) => l.m === 'tts loaded and calibrated')).toBe(true);
+    await r.stack.stop();
+  });
+});
