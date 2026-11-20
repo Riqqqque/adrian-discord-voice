@@ -133,7 +133,8 @@ export interface ToolSpec {
 export type LlmEvent =
   | { type: 'text'; delta: string }
   | { type: 'toolCalls'; calls: ToolCall[] }
-  | { type: 'usage'; inputTokens: number; cachedTokens: number; outputTokens: number; cacheWriteTokens?: number };
+  /** `fallback`: the secondary model answered (its cache isn't the primary's). */
+  | { type: 'usage'; inputTokens: number; cachedTokens: number; outputTokens: number; cacheWriteTokens?: number; fallback?: boolean };
 
 export interface LlmProvider {
   readonly model: string;

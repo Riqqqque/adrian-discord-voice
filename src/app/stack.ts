@@ -1935,6 +1935,7 @@ export async function startVoiceStack(
       music?.stop();
       mixer.stopAll();
       await satServer?.close();
+      await orchestrator?.stopWarming(); // a stopped warm-up's cost lands before the save
       ledger.flush();
       voiceBudget.flush();
       try {
