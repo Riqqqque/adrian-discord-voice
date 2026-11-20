@@ -18,6 +18,7 @@ import { readJsonFile, SecretsFile } from '../web/secrets-file.js';
 import { createAdminServer } from '../web/server.js';
 import { toWav } from '../audio/wav.js';
 import { StackManager } from './manager.js';
+import { reraise, shutdownOnSignal } from './shutdown.js';
 
 const log = createLogger(process.env.LOG_LEVEL === 'debug' ? 'debug' : 'info');
 const pkgRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -79,23 +80,22 @@ web.listen(port, host, () => {
   if (codeFile) log.info('waiting for setup: open the admin UI and enter the setup code (`sudo adrian setup-code` shows it)');
 });
 
-await stack.restart();
-
-let stopping = false;
-const shutdown = async (sig: string) => {
-  if (stopping) return;
-  stopping = true;
-  log.info('shutting down', { signal: sig });
-  web.close();
-  try {
-    await stack.stop();
-  } finally {
-    ledger.flush();
-    process.exit(0);
-  }
-};
+// Before the voice stack starts: a signal while the models load must be logged too.
+const shutdown = shutdownOnSignal({
+  log,
+  state: () => stack.state,
+  uptimeS: () => Math.round(process.uptime()),
+  closeWeb: () => web.close(),
+  stopStack: () => stack.stop(),
+  flush: () => ledger.flush(),
+  exit: (code) => process.exit(code),
+  exitNow: (signal) => reraise(signal),
+  stopTimeoutMs: 20_000,
+});
 // A stray rejection (a dropped connection, a failed write) is logged, not
 // fatal: one bad request must not take the whole bot down.
 process.on('unhandledRejection', (e) => log.error('unhandled rejection', { error: e instanceof Error ? e.message : String(e) }));
 process.on('SIGINT', () => void shutdown('SIGINT'));
 process.on('SIGTERM', () => void shutdown('SIGTERM'));
+
+await stack.restart();
