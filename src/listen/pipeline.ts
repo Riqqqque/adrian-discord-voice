@@ -117,7 +117,8 @@ export interface TurnOptions {
 export interface EarlyOptions {
   /** The shorter silence wait, s. Both waits must be whole Silero windows
    *  (32 ms) or the two VADs cut the same speech a few samples apart and
-   *  nothing is ever reused; the option is then off. */
+   *  nothing is ever reused; the option is then off. The cut doesn't depend on
+   *  how the client frames its audio: SileroVad hands sherpa one window at a time. */
   minSilence: number;
   /** The words of an early clip, for starting a second listen early. `samples`
    *  is the array the heard event will carry if the full wait closes the same
