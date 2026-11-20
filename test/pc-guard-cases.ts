@@ -216,6 +216,8 @@ export const CASES: Case[] = [
     ['turn off the lights and the computer', SHUTDOWN, 'go'],
     ['mute the tv and pause my music', PAUSE, 'go'],
     ['mute the tv and pause my music', MUTE, 'no'],
+    ['pause the tv and mute', MUTE, 'no'],
+    ['mute the tv and pause', PAUSE, 'no'],
     ['open youtube and turn off the lights', youtube('lofi'), 'go'],
     ['open youtube and turn off the lights', SO, 'no'],
     ['shut down my computer, then lock the front door', SHUTDOWN, 'go'],
@@ -356,6 +358,10 @@ export const CASES: Case[] = [
     ['turn the lights off and resume', PLAY],
     ['shut the garage, mute', MUTE],
     ['shut the garage, quieter', DOWN],
+    // A bare "mute" the model takes for a pause, and the other way round.
+    ['mute, let me open the garage', PAUSE],
+    ['pause, let me lock the door', MUTE],
+    ['stop, someone is at the door', MUTE],
   ]),
   // Plain PC orders.
   ...rows('plain PC orders', 'go', [

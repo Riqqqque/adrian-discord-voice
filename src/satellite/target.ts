@@ -609,6 +609,8 @@ const CANDIDATES: Record<string, Cls[]> = {
   pc_media: ['media', 'stop', 'off', 'on'],
   pc_open: ['open', 'search', 'media', 'on'],
 };
+/** A bare "mute" may be taken for a pause, and a bare "pause" or "stop" for a mute. */
+const BARE_TOO: Record<string, Cls[]> = { pc_volume: ['media', 'stop'], pc_media: ['mute'] };
 /** Never refused: refusing a call-off lets the power-down happen, and these only look or put back. */
 const NEVER = new Set(['pc_system.cancel_shutdown', 'pc_volume.get', 'pc_media.status']);
 
@@ -623,7 +625,7 @@ export function judge(said: string | undefined, name: string, action: string): J
   const system = name === 'pc_system';
   let ask = false;
   let thing: string | undefined;
-  for (const o of p.orders.filter((x) => cands.includes(x.cls))) {
+  for (const o of p.orders.filter((x) => cands.includes(x.cls) || (!x.objs.length && BARE_TOO[key]?.includes(x.cls)))) {
     const t = targetOf(o, p);
     if (t.to === 'pc') return { go: true };
     if (t.to === 'house') thing ??= t.thing;
