@@ -33,9 +33,19 @@ export function recentLogLines(): readonly string[] {
   return recent;
 }
 
-export function createLogger(min: Level = 'info', out: (line: string) => void = (l) => process.stdout.write(l)): Logger {
+/** Sees every line written, before it is turned into text (the dashboard's counters). */
+export type LogObserver = (level: Level, msg: string, fields: Record<string, unknown> | undefined) => void;
+
+export function createLogger(min: Level = 'info', out: (line: string) => void = (l) => process.stdout.write(l), observe?: LogObserver): Logger {
   const write = (level: Level, msg: string, fields?: Record<string, unknown>) => {
     if (ORDER[level] < ORDER[min]) return;
+    if (observe) {
+      try {
+        observe(level, msg, fields);
+      } catch {
+        /* counting must never break logging */
+      }
+    }
     const line = redact(JSON.stringify({ t: new Date().toISOString(), level, msg, ...fields }));
     recent.push(line);
     if (recent.length > RECENT_MAX) recent.splice(0, recent.length - RECENT_MAX);

@@ -11,7 +11,9 @@ import { readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { MODEL_LAYOUT } from '../web/checks.js';
+import { onCall } from '../core/calls.js';
 import { createLogger } from '../core/logger.js';
+import { Metrics } from '../web/metrics.js';
 import { UsageLedger } from '../limits/usage-ledger.js';
 import { AdminAuth } from '../web/auth.js';
 import { readJsonFile, SecretsFile } from '../web/secrets-file.js';
@@ -19,7 +21,6 @@ import { createAdminServer } from '../web/server.js';
 import { toWav } from '../audio/wav.js';
 import { StackManager } from './manager.js';
 
-const log = createLogger(process.env.LOG_LEVEL === 'debug' ? 'debug' : 'info');
 const pkgRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const version = (JSON.parse(readFileSync(join(pkgRoot, 'package.json'), 'utf8')) as { version: string }).version;
 
@@ -31,6 +32,12 @@ const secretsFile = resolve(
 const stateDir = resolve(process.env.ADRIAN_STATE ?? '/var/lib/adrian');
 const modelsDir = resolve(process.env.ADRIAN_MODELS ?? join(stateDir, 'models'));
 const timezone = typeof raw.timezone === 'string' ? raw.timezone : 'UTC';
+// The dashboard's counters read the log as it's written (src/web/metrics.ts).
+const metrics = new Metrics({ file: join(stateDir, 'dashboard.json'), timezone, version });
+const log = createLogger(process.env.LOG_LEVEL === 'debug' ? 'debug' : 'info', undefined, metrics.observe);
+onCall(metrics.noteCall);
+metrics.begin();
+process.on('uncaughtExceptionMonitor', (e) => metrics.crashed(e.message));
 const limitsRaw = (raw.limits ?? {}) as { usageFile?: string };
 
 const secrets = new SecretsFile(secretsFile);
@@ -65,6 +72,8 @@ const web = createAdminServer({
   secrets,
   ledger,
   stack,
+  metrics,
+  ...(process.env.ADRIAN_UPDATE_REPO ? { releaseRepo: process.env.ADRIAN_UPDATE_REPO } : {}),
   voicePreview,
   allowedHosts: Array.isArray(server.allowedHosts) ? server.allowedHosts.filter((x: unknown): x is string => typeof x === 'string') : [],
   ...(server.tls ? { tls: server.tls } : {}),
@@ -91,6 +100,7 @@ const shutdown = async (sig: string) => {
     await stack.stop();
   } finally {
     ledger.flush();
+    metrics.flush();
     process.exit(0);
   }
 };
