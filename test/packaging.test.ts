@@ -11,7 +11,8 @@ import { fileURLToPath } from 'node:url';
 import { gzipSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
 
-const packaging = fileURLToPath(new URL('../packaging/', import.meta.url)).replaceAll('\\', '/');
+// ADRIAN_PACKAGING_UNDER_TEST points these tests at another copy (an older release's, say).
+const packaging = (process.env.ADRIAN_PACKAGING_UNDER_TEST ?? fileURLToPath(new URL('../packaging/', import.meta.url))).replaceAll('\\', '/').replace(/\/?$/, '/');
 // On Windows a plain `bash` may be WSL's launcher.
 const bash = process.platform === 'win32' ? join(process.env.ProgramFiles ?? 'C:\\Program Files', 'Git', 'bin', 'bash.exe') : 'bash';
 const hasBash = spawnSync(bash, ['-c', 'tar --version && gzip --version'], { stdio: 'ignore' }).status === 0;
@@ -362,6 +363,12 @@ describe.skipIf(!hasBash)('adrian update, judged against the version it replaces
     failed?: string;
     /** And how long ago it was written. */
     failedHoursAgo?: number;
+    /** The update is killed (a power cut) during this restart: 1 is the switch's, 2 the rollback's. */
+    cutAtRestart?: number;
+    /** MB free on the disk (df), instead of the real figure. */
+    freeMb?: number;
+    /** The MODELS entries of the new release's downloads.sh (none by default). */
+    models?: string;
   }
 
   // The fake clock runs ten times as fast, so the waits can keep their real lengths.
@@ -376,7 +383,10 @@ describe.skipIf(!hasBash)('adrian update, judged against the version it replaces
     systemctl() {
       case "$1" in
         show) [ -f watched ] && cat restarts 2>/dev/null || echo 0 ;;
-        restart) echo "restart under: $(cat adrian-voice.service)" >>log; [ ! -f no-starts ] && { [ ! -f bad-unit ] || ! grep -q ${NEW} adrian-voice.service; } ;;
+        restart) echo "restart under: $(cat adrian-voice.service)" >>log
+          local n=$(( $(cat restarts.n 2>/dev/null || echo 0) + 1 )); echo $n >restarts.n
+          [ "$(cat cut-at 2>/dev/null)" != "$n" ] || kill -9 $$
+          [ ! -f no-starts ] && { [ ! -f bad-unit ] || ! grep -q ${NEW} adrian-voice.service; } ;;
         daemon-reload) echo reload >>log; : >prepared ;;
       esac
     }
@@ -401,7 +411,11 @@ describe.skipIf(!hasBash)('adrian update, judged against the version it replaces
         *" check") echo "Config is complete." ;;
       esac
     }
-    export -f install sleep journalctl systemctl curl runuser
+    df() {
+      [ -f free-mb ] || { command df "$@"; return; }
+      printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\\nfs 1 1 %s 1%% /\\n' $(( $(cat free-mb) * 1024 ))
+    }
+    export -f install sleep journalctl systemctl curl runuser df
     exec bash adrian "$@"`;
 
   /** A server on the old version, with the new one out. */
@@ -431,7 +445,7 @@ exec "${process.execPath.replaceAll('\\', '/')}" "$@"\n`;
       'new/packaging/downloads.sh',
       readFileSync(`${packaging}downloads.sh`, 'utf8')
         .replace(/^NODE_VERSION=.*$/m, `NODE_VERSION=${r.prepFails ? NEW : OLD}`)
-        .replace(/^MODELS=\([\s\S]*?^\)$/m, 'MODELS=()'),
+        .replace(/^MODELS=\([\s\S]*?^\)$/m, `MODELS=(${r.models ?? ''})`),
     );
     const name = `adrian-voice-${NEW}-linux-x64.tar.gz`;
     expect(sh(root, `set -e; tar -czf "published/${name}" -C new .; cd published; sha256sum "${name}" >"${name}.sha256"`).code).toBe(0);
@@ -446,6 +460,8 @@ exec "${process.execPath.replaceAll('\\', '/')}" "$@"\n`;
     if (r.noStarts) put('no-starts', '');
     if (r.unitStuck) put('unit-stuck', '');
     if (r.markerStuck) mkdirSync(join(root, 'opt/update-failed'));
+    if (r.cutAtRestart) put('cut-at', String(r.cutAtRestart));
+    if (r.freeMb !== undefined) put('free-mb', String(r.freeMb));
     put('check.exit', String(r.check?.[0] ?? 0));
     put('check.says', r.check?.[1] ?? 'Config is complete.\n');
     const marker = join(root, 'opt/update-failed');
@@ -707,6 +723,105 @@ exec "${process.execPath.replaceAll('\\', '/')}" "$@"\n`;
       expect(m.log()).not.toContain(`asked ${NEW}`);
       expect(m.version()).toBe(NEW);
     }, 60_000);
+  });
+
+  // A power cut in the middle of the rollback itself: the next run must still
+  // know the release failed, and never offer it as the one to go back to.
+  describe('cut off during its own rollback', () => {
+    it('is finished by the next run: the failure remembered, "previous" as before, no retry at once', () => {
+      const m = machine({ after: null, cutAtRestart: 2 });
+      const cut = m.hourly();
+      expect(cut.code).not.toBe(0); // killed
+      expect(m.version()).toBe(OLD);
+      expect(m.marker()).toBe(NEW); // written before the rollback's restart
+      // The power comes back; the next hourly run finds the note.
+      rmSync(join(m.root, 'cut-at'));
+      const next = m.hourly();
+      expect(next.err).toContain(`was being undone when it was cut off. Finishing that: back to ${OLD}`);
+      expect(next.out).toContain(`update ${NEW} skipped: it failed here in the last day`);
+      expect(m.downloads()).toHaveLength(1);
+      expect(m.version()).toBe(OLD);
+      expect(m.previous()).toBe('0.9.0');
+      expect(m.unpacked(NEW)).toBe(false);
+      expect(m.unit()).toBe(`unit of ${OLD}`);
+      expect(existsSync(join(m.root, 'opt/update-in-progress'))).toBe(false);
+      // And a rollback by hand goes to the release before, not onto the failed one.
+      expect(m.run('rollback').out).toContain(`Switching ${OLD} -> 0.9.0`);
+    }, 60_000);
+  });
+
+  describe('the disk', () => {
+    // Bundled with the new release: one model it doesn't have yet, 3 GB to stage and 4 GB unpacked.
+    const big = '"big|https://example.invalid/big.tar.bz2|00|tar.bz2||3000:4000:4000"';
+
+    it("waits when the new release's models won't fit, before fetching any or switching", () => {
+      const m = machine({ models: big, freeMb: 5000 });
+      const r = m.hourly();
+      expect(r.code).toBe(0);
+      expect(r.out).toMatch(new RegExp(`update ${NEW} waits: only 5000 MB free on the disk that holds .*, and the downloads still to do need about 7100 MB`));
+      expect(m.log()).not.toContain('big.tar.bz2');
+      expect(m.version()).toBe(OLD);
+      expect(m.unpacked(NEW)).toBe(false);
+      expect(m.marker()).toBeUndefined(); // waiting isn't failing
+      expect(m.unit()).toBe(`unit of ${OLD}`);
+    }, 60_000);
+
+    it('says so by hand, and changes nothing', () => {
+      const m = machine({ models: big, freeMb: 5000 });
+      const r = m.run('update');
+      expect(r.code).not.toBe(0);
+      expect(r.err).toContain(`not enough disk for ${NEW}`);
+      expect(r.err).toContain('Nothing was changed');
+      expect(m.version()).toBe(OLD);
+    }, 60_000);
+
+    it('checks the room for a bundle given by hand too', () => {
+      const m = machine({ freeMb: 100 });
+      const r = m.run('update', `${m.root}/published/adrian-voice-${NEW}-linux-x64.tar.gz`);
+      expect(r.code).not.toBe(0);
+      expect(r.err).toContain('only 100 MB free under');
+      expect(m.version()).toBe(OLD);
+    }, 60_000);
+  });
+
+  describe('a bundle given by hand', () => {
+    const bare = (m: ReturnType<typeof machine>) => {
+      mkdirSync(join(m.root, 'byhand'));
+      sh(m.root, `cp published/adrian-voice-${NEW}-linux-x64.tar.gz byhand/`);
+      return `${m.root}/byhand/adrian-voice-${NEW}-linux-x64.tar.gz`;
+    };
+
+    it('says plainly when it has no .sha256 to be checked against', () => {
+      const m = machine();
+      const r = m.run('update', bare(m));
+      expect(r.err).toContain('NOT CHECKED');
+      expect(m.version()).toBe(NEW);
+    }, 60_000);
+
+    it('is refused without one under --require-checksum, and nothing changes', () => {
+      const m = machine();
+      const r = m.run('update', bare(m), '--require-checksum');
+      expect(r.code).not.toBe(0);
+      expect(r.err).toContain('--require-checksum');
+      expect(m.version()).toBe(OLD);
+      expect(m.unpacked(NEW)).toBe(false);
+    }, 60_000);
+
+    it('goes ahead under --require-checksum when its .sha256 matches', () => {
+      const m = machine();
+      const r = m.run('update', `${m.root}/published/adrian-voice-${NEW}-linux-x64.tar.gz`, '--require-checksum');
+      expect(r.code).toBe(0);
+      expect(m.version()).toBe(NEW);
+    }, 60_000);
+  });
+});
+
+describe('pinned model sizes', () => {
+  it('are there for every model, so the disk checks count it', () => {
+    const block = /^MODELS=\(([\s\S]*?)^\)$/m.exec(readFileSync(`${packaging}downloads.sh`, 'utf8'))![1]!;
+    const entries = block.split('\n').filter((l) => l.trim().startsWith('"'));
+    expect(entries.length).toBeGreaterThan(5);
+    for (const e of entries) expect(e, e).toMatch(/\|\d+:\d+:\d+"$/);
   });
 });
 

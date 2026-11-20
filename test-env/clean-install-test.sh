@@ -94,6 +94,30 @@ check "install.sh again over a live install" [ $rc = 0 ]
 check "  keeps port 8790 on loopback" bash -c "grep -q '\"port\": 8790' /etc/adrian/config.json && ss -Hltn | grep -q '127.0.0.1:8790 '"
 check "  keeps the admin account" bash -c "adrian setup-code 2>&1 | grep -q 'already exists'"
 check "  keeps the keys" bash -c "adrian secret list | grep -q DISCORD_TOKEN"
+# Again, with the admin page on this machine's own address only and over TLS
+# (a certificate of its own making): the installer has to find her there.
+IP=$(hostname -I | awk '{print $1}')
+setjson() { /opt/adrian/node/bin/node -e 'const fs=require("fs"),f="/etc/adrian/config.json",c=JSON.parse(fs.readFileSync(f,"utf8"));c.server=JSON.parse(process.argv[1]);fs.writeFileSync(f,JSON.stringify(c,null,2)+"\n")' "$1"; }
+if command -v openssl >/dev/null && openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj "/CN=$IP" \
+  -addext "subjectAltName=IP:$IP" -addext "basicConstraints=critical,CA:FALSE" \
+  -keyout /etc/adrian/tls.key -out /etc/adrian/tls.crt >/dev/null 2>&1; then
+  chown adrian:adrian /etc/adrian/tls.key /etc/adrian/tls.crt; chmod 0600 /etc/adrian/tls.key
+  setjson "{\"host\":\"$IP\",\"port\":8790,\"tls\":{\"cert\":\"/etc/adrian/tls.crt\",\"key\":\"/etc/adrian/tls.key\"}}"
+  systemctl restart adrian-voice
+  ADRIAN_DOWNLOAD_CACHE=/dl bash /tmp/inst/packaging/install.sh --yes --bundle "$BUNDLE" >/tmp/reinstall-tls.log 2>&1
+  rc=$?
+  sed 's/^/  | /' /tmp/reinstall-tls.log | tail -3
+  check "install.sh again, admin page on $IP over TLS" [ $rc = 0 ]
+  check "  she answers there over https" bash -c "curl -sk https://$IP:8790/api/health | grep -q '\"state\":'"
+  check "  and says that address" grep -q "Admin UI:   https://$IP:8790/" /tmp/reinstall-tls.log
+  check "  adrian url says so too" bash -c "[ \"\$(adrian url)\" = https://$IP:8790/ ]"
+  # Back to plain loopback for the rest.
+  setjson '{"host":"127.0.0.1","port":8790}'
+  rm -f /etc/adrian/tls.key /etc/adrian/tls.crt
+  systemctl restart adrian-voice
+else
+  bad "openssl can't make a test certificate here"
+fi
 check "backup" adrian backup /tmp/b.tar.gz
 check "backup has no models" bash -c "! tar -tzf /tmp/b.tar.gz | grep -q models/"
 check "backup is 0600" bash -c '[ "$(stat -c %a /tmp/b.tar.gz)" = 600 ]'

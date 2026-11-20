@@ -3,7 +3,7 @@
 // ...) are stand-ins that record what they were asked. These cover what a
 // person sees when the machine isn't ready, and running it again on a live install.
 
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -37,6 +37,8 @@ interface Machine {
   tools?: string[];
   env?: Record<string, string>;
   systemd?: boolean;
+  /** The MODELS entries of its downloads.sh (none by default). */
+  models?: string;
 }
 
 /** A sandbox machine with a release bundle of `version` next to the installer. */
@@ -56,7 +58,7 @@ function machine(m: Machine = {}) {
     // Older copies test /run/systemd/system directly.
     .replaceAll('[ -d /run/systemd/system ]', `[ -d ${root}/run-systemd ]`);
   put('inst/install.sh', moved);
-  const pins = readFileSync(`${packaging}downloads.sh`, 'utf8').replace(/^MODELS=\([\s\S]*?^\)$/m, 'MODELS=()');
+  const pins = readFileSync(`${packaging}downloads.sh`, 'utf8').replace(/^MODELS=\([\s\S]*?^\)$/m, `MODELS=(${m.models ?? ''})`);
   // install_node has its own tests (packaging.test.ts). Its swap of the opt/node
   // link can't be done twice with Git Bash's stand-in links, so here it only
   // puts a Node in place.
@@ -106,6 +108,7 @@ function run(cwd: string, script: string, args: string[] = [], env: Record<strin
 where.bash = spawnSync(bash, ['-c', 'command -v bash'], { encoding: 'utf8' }).stdout.trim();
 
 const serverOf = (config: string) => (JSON.parse(config) as { server: { host: string; port: number } }).server;
+const hasFlock = hasBash && spawnSync(bash, ['-c', 'command -v flock'], { stdio: 'ignore' }).status === 0;
 
 describe.skipIf(!hasBash)('install.sh on a machine that is not ready', () => {
   it('lists every problem at once, with what to do, and changes nothing', () => {
@@ -160,6 +163,37 @@ describe.skipIf(!hasBash)('install.sh on a machine that is not ready', () => {
     expect(r.code).toBe(0);
     expect(r.out).toContain('ready for A.D.R.I.A.N.');
     expect(m.exists('opt')).toBe(false);
+  }, 60_000);
+
+  // musl's getconf has no GNU_LIBC_VERSION, and a failing probe under set -e
+  // used to end the script before the list was printed: exit 1, nothing said.
+  it.each([
+    ['getconf fails (musl)', { GETCONF: 'fail', LDD: 'musl libc (x86_64)' }],
+    ['getconf is missing (musl)', { GETCONF: 'missing', LDD: 'musl libc (x86_64)' }],
+  ])('still lists every problem when %s, with df failing too', (_, env) => {
+    const m = machine({ env: { ARCH: 'aarch64', DF_FAILS: '1', ...env } });
+    const r = m.install(['--check']);
+    expect(r.code).toBe(1);
+    expect(r.err).toContain('Nothing was changed');
+    expect(r.err).toContain('ARM processor (aarch64)');
+    expect(r.err).toContain('has no glibc');
+  }, 60_000);
+
+  it('reads the glibc version from ldd when there is no getconf, and only warns when it can tell nothing', () => {
+    const old = machine({ env: { GETCONF: 'missing', LDD: 'ldd (GNU libc) 2.17' } }).install(['--check']);
+    expect(old.err).toContain('glibc 2.17');
+    const blind = machine({ env: { GETCONF: 'missing' } }).install(['--check']);
+    expect(blind.code).toBe(0);
+    expect(blind.out).toContain("couldn't tell which C library");
+  }, 60_000);
+
+  it('counts the speech models still to download: their archives under /opt and what they unpack to', () => {
+    // 5 GB on one disk was enough for the flat figure (3 GB); a 3 GB archive that unpacks to 4 GB isn't.
+    const big = '"big|https://example.invalid/big.tar.bz2|00|tar.bz2||3000:4000:4000"';
+    const m = machine({ models: big, env: { OPT_MB: '5000', VAR_MB: '5000' } });
+    const r = m.install(['--check']);
+    expect(r.code).toBe(1);
+    expect(r.err).toMatch(/Not enough free disk: 4\.9 GB free on the disk that holds \/opt and \/var\/lib, and A\.D\.R\.I\.A\.N\. needs about 7\.\d GB/);
   }, 60_000);
 
   it('refuses a damaged bundle before creating anything', () => {
@@ -256,6 +290,79 @@ describe.skipIf(!hasBash)('install.sh run again on a live install', () => {
     const after = JSON.parse(m.read('etc/config.json')) as Record<string, unknown>;
     expect(after.guildId).toBe('100000000000000000');
     expect(after.voice).toEqual({ voice: 'am_michael' });
+  }, 60_000);
+
+  /** Her config, changed by hand the way a person would: a key set, as JSON. */
+  const edit = (m: ReturnType<typeof machine>, change: (c: { server: Record<string, unknown> }) => void) => {
+    const c = JSON.parse(m.read('etc/config.json')) as { server: Record<string, unknown> };
+    change(c);
+    m.put('etc/config.json', `${JSON.stringify(c, null, 2)}\n`);
+  };
+
+  it('finishes when her admin page listens on one address only, and shows that address', () => {
+    const m = live();
+    edit(m, (c) => (c.server.host = '192.0.2.5'));
+    const r = m.install(['--yes', '--bundle', m.bundle('1.0.1')]);
+    expect(r.err).not.toContain('error:');
+    expect(r.code).toBe(0);
+    expect(serverOf(m.read('etc/config.json')).host).toBe('192.0.2.5');
+    expect(r.out).toContain('Admin UI:   http://192.0.2.5:8790/');
+    expect(r.out).not.toContain('ssh -L'); // reached at that address, not through a tunnel
+  }, 60_000);
+
+  it('finishes when her admin page uses TLS (a certificate of its own making), and shows https', () => {
+    const m = live();
+    edit(m, (c) => (c.server.tls = { cert: '/etc/adrian/cert.pem', key: '/etc/adrian/key.pem' }));
+    const r = m.install(['--yes', '--bundle', m.bundle('1.0.1')]);
+    expect(r.err).not.toContain('error:');
+    expect(r.code).toBe(0);
+    expect(r.out).toContain('Admin UI:   https://127.0.0.1:8790/');
+    expect(r.out).toContain('then open https://localhost:8790/');
+  }, 60_000);
+
+  it('takes the place of an update that was cut off, so the next update does not undo this install', () => {
+    const m = live();
+    // An update to 1.0.1 was cut off while it fetched its models.
+    m.put('opt/releases/1.0.1/half', '');
+    m.put('opt/update-in-progress', '1.0.0 1.0.1 prep -\n');
+    m.put('opt/update-in-progress.unit', 'unit of 1.0.0\n');
+    m.put('opt/.prep-abc/model.tar.bz2', 'half a download');
+    const r = m.install(['--yes', '--bundle', m.bundle('1.0.2')]);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain('An update (1.0.0 -> 1.0.1) had been cut off; this install takes its place.');
+    expect(m.exists('opt/update-in-progress')).toBe(false);
+    expect(m.exists('opt/update-in-progress.unit')).toBe(false);
+    expect(m.exists('opt/releases/1.0.1')).toBe(false);
+    expect(m.exists('opt/.prep-abc')).toBe(false);
+    expect(m.exists('opt/releases/1.0.0')).toBe(true);
+  }, 60_000);
+
+  it.runIf(hasFlock)('waits for an update that is running: changes nothing under it', () => {
+    const m = live();
+    const held = spawn('flock', [`${m.root}/opt/update.lock`, 'sleep', '5']);
+    spawnSync('sleep', ['0.5']);
+    try {
+      const r = m.install(['--yes', '--bundle', m.bundle('1.0.1')]);
+      expect(r.code).not.toBe(0);
+      expect(r.err).toContain('an update of A.D.R.I.A.N. is running right now. Nothing was changed.');
+      expect(r.err).toContain('sudo tail -f');
+      expect(m.exists('opt/releases/1.0.1')).toBe(false);
+      expect(m.read('calls.log')).not.toContain('restart');
+    } finally {
+      held.kill();
+    }
+  }, 60_000);
+
+  it('says loudly that a bundle without its .sha256 is not checked, and --require-checksum refuses it', () => {
+    const m = live();
+    const r = m.install(['--yes', '--bundle', m.bundle('1.0.1', { sha: false })]);
+    expect(r.code).toBe(0);
+    expect(r.err).toContain('NOT CHECKED');
+    const strict = m.install(['--yes', '--require-checksum', '--bundle', m.bundle('1.0.2', { sha: false })]);
+    expect(strict.code).not.toBe(0);
+    expect(strict.err).toContain('--require-checksum');
+    expect(m.exists('opt/releases/1.0.2')).toBe(false);
+    expect(m.install(['--yes', '--require-checksum', '--bundle', m.bundle('1.0.3')]).code).toBe(0);
   }, 60_000);
 
   it('refuses an older bundle and says how to go back or update instead', () => {
