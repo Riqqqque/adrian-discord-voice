@@ -367,7 +367,7 @@ Details: [usage.md](usage.md) for what can be asked, [tools.md](tools.md) for th
 ```
 
 - **Ring state is on disk.** `ringingSince` is saved, so a restart or a move picks the ring up again. One that came due while the bot was down rings late if still inside its ring time, else she sends a DM.
-- **PC backup ring.** Every connected PC of the owner gets an `alarms` message on connect, on every change and hourly, listing what rings now and what is due in the next 8 days (`PC_AHEAD_MS`). If the server hasn't rung one within 20 s of its time, or the link drops mid-ring, the PC app rings it itself with its own beeps and reports `alarm_done` after the next welcome. The server applies that only if the occurrence still matches.
+- **PC backup ring.** Every connected PC of the owner gets an `alarms` message on connect, on every change and hourly, listing what rings now and what is due in the next 8 days (`PC_AHEAD_MS`). If the server hasn't rung one within 20 s of its time, or the link drops mid-ring, the PC app rings it itself with its own beeps and reports `alarm_done` after the next welcome. The server applies that only if the occurrence still matches and is ringing, snoozed or due by its own clock (a PC whose clock ran ahead rings early, and its Stop must not cancel the real ring), and only once.
 - **Updates wait.** `busySoon()` (an alarm ringing, snoozed, or due within 5 minutes) makes `/api/health` report busy, so auto-update holds off.
 - **Reminders** (`src/features/reminders.ts`, `reminders.json`) are said once, not rung: in her call, at the PC they were set at plus a DM, or by DM. Quiet-while-gaming holds them until the match ends.
 - The alarm tools, sounds, dismiss modes and phrases are in [usage.md](usage.md) and [tools.md](tools.md).

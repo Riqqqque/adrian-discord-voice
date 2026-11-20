@@ -811,3 +811,133 @@ describe('alarm DM buttons', () => {
   });
 });
 
+
+describe('review 9 fixes', () => {
+  it('a repeating alarm deleted right after its stop stays deleted, however the snooze comes', async () => {
+    for (const how of ['button', 'old button', 'slash', 'voice'] as const) {
+      const w = world();
+      await w.text('set', { time: '13:05', repeat: 'daily' });
+      w.advance(5 * MIN);
+      const dm = w.dms.at(-1)!;
+      await w.text('stop');
+      expect(await w.text('delete', { which: w.clock.forUser(SAM)[0]!.id })).toBe('Deleted your 1:05 PM alarm.');
+      if (how === 'button') await w.press(ids(dm)[1]!, dm.text);
+      else if (how === 'old button') await w.press(`alarm:snooze:${SAM}`, 'an old message');
+      else if (how === 'slash') await w.text('snooze');
+      else w.clock.heard(SAM, "wait, I'm not up");
+      expect(w.clock.forUser(SAM), how).toHaveLength(0);
+      w.advance(24 * 60 * MIN);
+      expect(w.clock.forUser(SAM), how).toHaveLength(0);
+    }
+  });
+
+  it('a stop then a snooze, without a delete, still puts it back', async () => {
+    const w = world();
+    await w.text('set', { time: '13:05', repeat: 'daily' });
+    w.advance(5 * MIN);
+    await w.text('stop');
+    expect(await w.text('snooze')).toMatch(/^Okay, it's back on/);
+  });
+
+  it('a timer moved by a fractional add_minutes keeps buttons that work', async () => {
+    const w = world();
+    await w.text('timer', { minutes: 1, label: 'tea' });
+    const edit = alarmTools({ clock: w.clock, reminders: new Reminders(undefined, TZ, () => {}, () => w.now()), english: () => true, reach: () => 'none', preview: async () => true, musicOk: true, now: () => w.now() }).find((x) => x.spec.name === 'edit_alarm')!;
+    for (const m of [0.33333, 1 / 6]) await edit.run({ which: 'tea', add_minutes: m }, AbortSignal.timeout(1000), { userId: SAM, speaker: 'Sam' } as never);
+    const t = w.clock.forUser(SAM)[0]!;
+    expect(Number.isInteger(t.base)).toBe(true);
+    expect(Number.isInteger(t.durationMs)).toBe(true);
+    w.advance(3 * MIN);
+    const dm = w.dms.at(-1)!;
+    expect(ids(dm)[0]).toMatch(/^alarm:stop:\d+:\w+:[0-9a-z]+$/);
+    expect(w.clock.ringingFor(SAM)).toHaveLength(1);
+    await w.press(ids(dm)[0]!, dm.text);
+    expect(w.clock.ringingFor(SAM)).toHaveLength(0);
+  });
+
+  it('a fractional base from an older file still matches its button', async () => {
+    const w = world();
+    await w.text('timer', { minutes: 1 });
+    const t = w.clock.forUser(SAM)[0]!;
+    t.at = t.base = t.at + 0.8;
+    w.advance(2 * MIN);
+    const dm = w.dms.at(-1)!;
+    expect(ids(dm)[0]).not.toContain('.');
+    await w.press(ids(dm)[0]!, dm.text);
+    expect(w.clock.ringingFor(SAM)).toHaveLength(0);
+  });
+
+  it("a button stops its own alarm only, not others ringing with it", async () => {
+    const w = world();
+    await w.text('timer', { minutes: 1, label: 'tea' });
+    await w.text('timer', { minutes: 2, label: 'pizza' });
+    w.advance(MIN);
+    w.advance(MIN);
+    const pizza = w.dms.at(-1)!;
+    expect(w.clock.ringingFor(SAM).map((a) => a.label).sort()).toEqual(['pizza', 'tea']);
+    await w.press(ids(pizza)[0]!, pizza.text);
+    expect(w.clock.ringingFor(SAM).map((a) => a.label)).toEqual(['tea']);
+    expect(w.clock.forUser(SAM).map((a) => a.label)).toEqual(['tea']);
+  });
+
+  it('a Snooze button snoozes its own alarm only', async () => {
+    const w = world();
+    await w.text('timer', { minutes: 1, label: 'tea' });
+    await w.text('timer', { minutes: 2, label: 'pizza' });
+    w.advance(MIN);
+    w.advance(MIN);
+    const pizza = w.dms.at(-1)!;
+    await w.press(ids(pizza)[1]!, pizza.text);
+    expect(w.clock.ringingFor(SAM).map((a) => a.label)).toEqual(['tea']);
+    expect(w.clock.forUser(SAM).find((a) => a.label === 'pizza')!.snoozed).toBe(true);
+  });
+
+  it("an old-format Stop leaves a snoozed alarm alone; it acts only on what rings now", async () => {
+    const w = world();
+    await w.text('set', { time: '13:05', label: 'meds' });
+    w.advance(5 * MIN);
+    await w.text('snooze');
+    const c = await w.press(`alarm:stop:${SAM}`, 'a message from last week');
+    expect(c.map((x) => x.data.content)).toContain('Nothing is ringing.');
+    expect(w.clock.forUser(SAM)[0]!.snoozed).toBe(true);
+    w.advance(9 * MIN);
+    expect(w.clock.ringingFor(SAM)).toHaveLength(1);
+    await w.press(`alarm:stop:${SAM}`, 'a message from last week');
+    expect(w.clock.forUser(SAM)).toHaveLength(0);
+  });
+
+  it('stopping a snoozed alarm is not spoken where they are; stopping a ring is', async () => {
+    const w = world();
+    await w.text('set', { time: '13:05' });
+    w.advance(5 * MIN);
+    const dm = w.dms.at(-1)!;
+    await w.text('snooze');
+    expect(w.said).toHaveLength(1); // it was ringing
+    w.said.length = 0;
+    expect(await w.text('stop', {}, SAM, 'guild')).toMatch(/^Alarm off/);
+    expect(w.said).toHaveLength(0);
+    // The same through a button.
+    await w.text('set', { time: '13:20' });
+    w.advance(15 * MIN);
+    const dm2 = w.dms.at(-1)!;
+    w.advance(10 * MIN); // nobody answered: snoozed itself
+    expect(w.clock.forUser(SAM)[0]!.snoozed).toBe(true);
+    w.said.length = 0;
+    expect(dm2).not.toBe(dm);
+    const c = await w.press(ids(dm2)[0]!, dm2.text);
+    expect(String(c[0]!.data.content)).toContain('→ Alarm off');
+    expect(w.said).toHaveLength(0);
+  });
+
+  it('an edit that fails for another reason still says what happened, never "that didn\'t work"', async () => {
+    const w = world();
+    const r = await ringing(w);
+    w.failWith((kind) => (kind === 7 ? new DiscordAPIError({ code: 50035, message: 'Invalid Form Body' }, 50035, 400, 'POST', 'https://discord.com/api/v10/interactions/x/y/callback', { body: undefined }) : undefined));
+    const c = await w.press(r.stop, r.dm.text);
+    expect(w.clock.forUser(SAM)).toHaveLength(0);
+    const ok = c.filter((x) => !x.failed);
+    expect(ok).toHaveLength(1);
+    expect(ok[0]!.data.content).toBe('Timer stopped.');
+    expect(ephemeral(ok[0]!)).toBe(true);
+  });
+});

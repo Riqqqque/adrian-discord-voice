@@ -229,7 +229,9 @@ Alarms and timers ring with a sound until you stop them, the way an alarm clock 
   - Only you can stop your alarm by voice. An owner can stop anyone's, but only with the name ("Adrian, stop the alarm").
   - Only whole sentences count: "stop by the store later" or a song called *Stop* does nothing to it, and neither do music commands or "stop listening".
   - "Wait, I'm not up" or "turn it back on" within 3 minutes of a stop puts it back, snoozed.
-  - Also from the Stop and Snooze buttons in the PC app's window and tray, the DM buttons, or `/alarm stop`. A DM's buttons work only for the ring they were sent for: an older message's Stop leaves a newer alarm ringing.
+  - Also from the Stop and Snooze buttons in the PC app's window and tray, the DM buttons, or `/alarm stop`. A DM's buttons work only for the alarm and ring they were sent for: an older message's Stop leaves a newer alarm ringing, and with two ringing at once, each message's buttons stop only their own. Buttons on messages from before 0.17.2 act only on what rings right now.
+  - A DM button, `/alarm stop` or a typed stop also turns off an alarm that is waiting out a snooze, in every turn-off mode: in "firm" and "math" mode they count as you deciding on purpose. A spoken "stop" during a snooze does nothing; in firm mode it takes "I'm up". Stopping one that wasn't ringing isn't said out loud in the call or at your PC.
+  - Deleting an alarm right after a stop is final: "wait, I'm not up" or a Snooze button doesn't bring it back.
 - **Nobody answers:** an alarm rings for 10 minutes, snoozes itself, and rings again, 3 times in all. After that you get a DM saying you missed it. A timer rings for 5 minutes, then sends the DM.
 - **Restarts and updates:**
   - Alarms are saved to disk. A restart while one rings picks the ring up again.

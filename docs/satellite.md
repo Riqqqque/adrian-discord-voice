@@ -115,7 +115,7 @@ per-socket limit before the welcome relies on a private field of `ws` 8
 | `ping` | | Keep-alive; answered with `pong`. |
 | `activity` | `gaming`, optional `game` | A game is being played on this PC now, or no longer is. `game` is cleaned to letters, digits and ` .:'&+-!`, cut to 60 characters, and kept only while `gaming` is true. Sent when it changes and after every `welcome` while playing. See [Quiet while gaming](#quiet-while-gaming). |
 | `alarm_action` | `action` (`stop` or `snooze`), optional `minutes` | Stop or Snooze pressed in the window or tray on an alarm the service is ringing. Her reply is spoken in that PC's room. |
-| `alarm_done` | `id` (at most 40 characters), `base`, `action` (`stop` or `snooze`), `at`, optional `minutes` | An alarm this PC rang by itself and how it was answered there. Sent after a `welcome`, one per alarm, until delivered. Applied only if `base` is still that alarm's current occurrence. |
+| `alarm_done` | `id` (at most 40 characters), `base`, `action` (`stop` or `snooze`), `at`, optional `minutes` | An alarm this PC rang by itself and how it was answered there. `at` is when, by the PC's estimate of the service's clock. Sent after a `welcome`, one per alarm, until delivered; sending one again is harmless. Applied only if `base` is still that alarm's current occurrence and it is ringing, snoozed, or due within a minute by the service's clock, `at` is no more than a minute ahead of that clock, and no answer stamped later already reached it. Anything else is logged and dropped without a reply; the next `alarms` message shows the service's view. |
 
 Before the `welcome`, the app sends only `hello`, its keep-alive `ping` and
 an `ok: false` answer to any `action`; audio, typing, push-to-talk and the
@@ -135,7 +135,7 @@ afterwards.
 | *(binary)* | PCM s16le mono 48 kHz | Her voice, music and sounds, in real time: the room's 48 kHz stereo mix averaged to mono. |
 | `audio_stop` | | Drop any audio still buffered (she was interrupted or stopped). |
 | `action` | `id`, `name`, `args` | Do a PC action and answer with `action_result`. Ids count up per connection. |
-| `alarms` | `ringing`, `list`, `snoozeMin`, `ringMin`, `now` | The owner's alarms. Sent right after `welcome`, on every change to that owner's alarms, and hourly. `ringing`: `[{ id, kind, label, base }]`, what the service is ringing now (its sound comes as ordinary audio); the app shows Stop / Snooze for it. `list`: `[{ id, kind, label, at, base, sound }]`, the enabled alarms not ringing now that are due within the next 8 days (`PC_AHEAD_MS`), without skipped days. `now` is the service's clock, so the app can correct for clock skew. |
+| `alarms` | `ringing`, `list`, `snoozeMin`, `ringMin`, `now` | The owner's alarms. Sent right after `welcome`, on every change to that owner's alarms, and hourly. `ringing`: `[{ id, kind, label, base }]`, what the service is ringing now (its sound comes as ordinary audio); the app shows Stop / Snooze for it. `list`: `[{ id, kind, label, at, base, sound }]`, the enabled alarms not ringing now that are due within the next 8 days (`PC_AHEAD_MS`), without skipped days. Entries in both carry `snoozeMin` when that alarm has its own snooze length (service 0.17.2 and later); otherwise the top-level `snoozeMin` applies. `now` is the service's clock, so the app can correct for clock skew. |
 | `pong` | | Answer to `ping`. |
 
 What the app does with `alarms`: if an alarm in `list` is 20 seconds past due

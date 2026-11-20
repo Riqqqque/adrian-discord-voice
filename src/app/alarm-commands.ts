@@ -30,17 +30,18 @@ import { type AlarmClock, type SavedSound, clockText, LIMITS, localDate } from '
 const PC_AHEAD_MS = 8 * 24 * 3_600_000;
 
 /** Sent to the owner's PCs on every change: what's ringing (for the buttons)
- *  and what's coming (to ring by itself if the server is gone at that time). */
+ *  and what's coming (to ring by itself if the server is gone at that time).
+ *  An alarm with its own snooze length carries it; the rest use `snoozeMin`. */
 export function alarmState(clock: AlarmClock, userId: UserId, now = Date.now()): Record<string, unknown> {
   const mine = clock.forUser(userId);
   const p = clock.prefs(userId);
   return {
     type: 'alarms',
-    ringing: mine.filter((a) => a.ringingSince !== undefined).map((a) => ({ id: a.id, kind: a.kind, label: a.label, base: a.base })),
+    ringing: mine.filter((a) => a.ringingSince !== undefined).map((a) => ({ id: a.id, kind: a.kind, label: a.label, base: a.base, ...(a.snoozeMin !== undefined ? { snoozeMin: a.snoozeMin } : {}) })),
     list: mine
       // A skipped day isn't sent: the PC would ring it if the server were down.
       .filter((a) => a.enabled && a.ringingSince === undefined && a.at - now <= PC_AHEAD_MS && !(a.skip?.includes(localDate(a.base, a.tz)) && !a.snoozed))
-      .map((a) => ({ id: a.id, kind: a.kind, label: a.label, at: a.at, base: a.base, sound: clock.soundOf(a) })),
+      .map((a) => ({ id: a.id, kind: a.kind, label: a.label, at: a.at, base: a.base, sound: clock.soundOf(a), ...(a.snoozeMin !== undefined ? { snoozeMin: a.snoozeMin } : {}) })),
     snoozeMin: p.snoozeMin,
     ringMin: p.ringMin,
     now,
@@ -53,7 +54,7 @@ export function alarmState(clock: AlarmClock, userId: UserId, now = Date.now()):
  *  An older message's buttons then can't stop what rings now. Messages sent
  *  before 0.17.2 carry only `alarm:<action>:<owner>`, and still work. */
 export function alarmButtons(userId: UserId, ring?: { alarmId: string; base: number }): ActionRowBuilder<ButtonBuilder> {
-  const tail = ring ? `:${ring.alarmId}:${ring.base.toString(36)}` : '';
+  const tail = ring ? `:${ring.alarmId}:${Math.round(ring.base).toString(36)}` : '';
   return new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder().setCustomId(`alarm:stop:${userId}${tail}`).setLabel('Stop').setStyle(ButtonStyle.Danger),
     new ButtonBuilder().setCustomId(`alarm:snooze:${userId}${tail}`).setLabel('Snooze').setStyle(ButtonStyle.Secondary),
@@ -335,7 +336,8 @@ export function registerAlarmCommands(d: AlarmCommandDeps): void {
       case 'stop':
       case 'snooze': {
         const r = d.clock.control(u, sub, o.getInteger('minutes') ?? undefined, { typed: true });
-        if (r.done) d.said?.(u, r.say);
+        // Spoken where they are only if it was ringing there.
+        if (r.rang) d.said?.(u, r.say);
         out = r.say;
         break;
       }
@@ -390,16 +392,23 @@ export function registerAlarmCommands(d: AlarmCommandDeps): void {
       await i.reply({ content: "That's someone else's alarm.", flags: MessageFlags.Ephemeral });
       return;
     }
-    const r = d.clock.control(owner, action, undefined, { typed: true, ...(only ? { only } : {}) });
+    // A button from before 0.17.2 doesn't say which alarm it was for: it acts
+    // only on what rings now, never on a snooze or on a stop just before.
+    const r = only || d.clock.ringingFor(owner).length ? d.clock.control(owner, action, undefined, { typed: true, ...(only ? { only } : {}) }) : { done: false, say: 'Nothing is ringing.' };
     d.log.info('alarm button', { user: i.user.id, for: owner, action, done: r.done });
     if (r.done) {
-      d.said?.(owner, r.say);
+      // Spoken where they are only if it was ringing there.
+      if (r.rang) d.said?.(owner, r.say);
       // The message keeps what it said, without the buttons, plus what happened.
-      await i.update({ content: `${i.message.content}\n→ ${r.say}`.slice(0, 1900), components: [] });
+      // If that edit fails (an expired press or anything else), they still get the outcome.
+      await i.update({ content: `${i.message.content}\n→ ${r.say}`.slice(0, 1900), components: [] }).catch(async (e: unknown) => {
+        d.log.warn('alarm button edit failed', { error: (e as Error).message });
+        await i.reply({ content: r.say, flags: MessageFlags.Ephemeral }).catch(() => undefined);
+      });
       return;
     }
     // Still waiting out a snooze: the buttons stay for later.
-    if (only && d.clock.forUser(owner).some((a) => a.id === only.id && (only.base === undefined || a.base === only.base))) {
+    if (only && d.clock.forUser(owner).some((a) => a.id === only.id && (only.base === undefined || Math.round(a.base) === only.base))) {
       await i.reply({ content: r.say, flags: MessageFlags.Ephemeral });
       return;
     }
