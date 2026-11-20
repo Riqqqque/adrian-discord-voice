@@ -2033,6 +2033,15 @@ describe('startup', () => {
     await r.stack.stop();
   });
 
+  it('a stop lets go of Smart Turn: each restart would otherwise leave a worker and its model behind', async () => {
+    const close = vi.fn(async () => undefined);
+    vi.spyOn(SmartTurn, 'load').mockResolvedValue({ complete: async () => 1, close } as never);
+    const r = await rig(heavy, { prepare: models });
+    expect(close).not.toHaveBeenCalled();
+    await r.stack.stop();
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps trying when the join at startup fails', async () => {
     const r = await rig();
     h.connecting = async () => {
