@@ -73,6 +73,8 @@ interface EarlyClip {
   words: Promise<Words>;
   /** Aborted when the clip is dropped: its recognition, and whatever onWords started. */
   ctl: AbortController;
+  /** The full wait closed the same audio: someone waits on these words now. */
+  taken?: boolean;
 }
 
 export interface UserState {
@@ -117,7 +119,8 @@ export interface TurnOptions {
 export interface EarlyOptions {
   /** The shorter silence wait, s. Both waits must be whole Silero windows
    *  (32 ms) or the two VADs cut the same speech a few samples apart and
-   *  nothing is ever reused; the option is then off. */
+   *  nothing is ever reused; the option is then off. The cut doesn't depend on
+   *  how the client frames its audio: SileroVad hands sherpa one window at a time. */
   minSilence: number;
   /** The words of an early clip, for starting a second listen early. `samples`
    *  is the array the heard event will carry if the full wait closes the same
@@ -271,15 +274,22 @@ export class ListeningPipeline extends EventEmitter {
     this.dropEarly(u);
     if (onlyTheEnd || samples.length / ASR_SAMPLE_RATE < MIN_SEGMENT_SECONDS) return;
     const ctl = new AbortController();
-    const words = this.stt.transcribe(samples, ASR_SAMPLE_RATE, ctl.signal);
+    const clip: Partial<EarlyClip> = { samples, ctl };
+    // Nobody waits on it until the full wait closes the same audio: until then
+    // every other clip waiting for the recognizer (her call's too) goes first.
+    const words = this.stt.transcribe(samples, ASR_SAMPLE_RATE, ctl.signal, { background: () => !clip.taken });
     void words.catch(() => undefined);
-    u.clip = { samples, words, ctl };
+    clip.words = words;
+    u.clip = clip as EarlyClip;
     const onWords = this.early?.onWords;
     if (!onWords) return;
     // As heard will judge it: from the full wait's close, minus the clip.
     const startedAt = performance.now() + (this.vadOptions.minSilence - this.early!.minSilence) * 1000 - (samples.length / ASR_SAMPLE_RATE) * 1000;
     void words
       .then(({ text }) => {
+        // Already talking again (the quick VAD hears them): the full wait will close
+        // more than this, so a second listen on it would only be thrown away.
+        if (!clip.taken && u.early?.isSpeaking()) return;
         if (text && !ctl.signal.aborted) onWords(userId, { text, samples, startedAt, signal: ctl.signal });
       }, () => undefined)
       .catch((e: Error) => this.emit('error', userId, e));
@@ -295,7 +305,10 @@ export class ListeningPipeline extends EventEmitter {
     const c = u?.clip;
     if (!c) return undefined;
     delete u.clip;
-    if (sameSamples(c.samples, samples)) return c;
+    if (sameSamples(c.samples, samples)) {
+      c.taken = true;
+      return c;
+    }
     c.ctl.abort();
     return undefined;
   }
@@ -359,12 +372,21 @@ export class ListeningPipeline extends EventEmitter {
     if (!turn.shouldHold && !turn.onHeldWords) return;
     void (h.words ??= this.decode(h.samples))
       .then(
-        ({ text }) => {
+        ({ text, decodeMs }) => {
           if (u.held !== h) return; // joined, or the wait already ran out
           if (turn.shouldHold) {
             if (!turn.shouldHold(userId, text, h.samples.length / ASR_SAMPLE_RATE)) {
               // talking again: that's the rest of it, whatever the words so far say
-              if (!u.vad.isSpeaking()) this.release(userId, u);
+              const letGo = () => {
+                if (u.held === h && !u.vad.isSpeaking()) this.release(userId, u);
+              };
+              // Early words are in before a decode started at the close would be.
+              // Ask then, not sooner, so what's joined doesn't depend on the head
+              // start (side talk and requests for her alike). The cloud's listen,
+              // started early too, usually takes longer than this anyway.
+              const wait = h.early ? h.closedAt + decodeMs - performance.now() : 0;
+              if (wait > 0) setTimeout(letGo, wait);
+              else letGo();
               return;
             }
             holding();

@@ -179,7 +179,7 @@ async function rig(over: Record<string, unknown> | ((dir: string) => Record<stri
   });
   const steps: { parts: unknown[]; hang?: boolean; lingerMs?: number }[] = [];
   const llmBodies: any[] = [];
-  const groq = { calls: 0, done: 0, aborted: 0, delay: 0, reply: '' };
+  const groq = { calls: 0, done: 0, aborted: 0, delay: 0, reply: '', status: 200 };
   const search = { calls: 0 };
   vi.stubGlobal('fetch', async (url: unknown, init: any) => {
     const u = String(url);
@@ -195,6 +195,7 @@ async function rig(over: Record<string, unknown> | ((dir: string) => Record<stri
         init.signal?.addEventListener('abort', () => (clearTimeout(t), groq.aborted++, rej(new DOMException('aborted', 'AbortError'))), { once: true });
       });
       groq.done++;
+      if (groq.status !== 200) return new Response('{}', { status: groq.status });
       return new Response(JSON.stringify({ text: groq.reply }), { status: 200 });
     }
     if (u.endsWith('/chat/completions')) {
@@ -2160,6 +2161,33 @@ describe('the cloud listen during the silence wait', () => {
     conn.emit('ptt');
     say(earlyOf(pipe)!, 'what is the capital of australia');
     await until(() => r.groq.calls === 1, 'the cloud listen');
+    await r.stack.stop();
+  });
+
+  it("early listens stop near Groq's minute limit; a clip someone waits on still gets its own", async () => {
+    const r = await rig(cloud);
+    const { pipe } = r.connect();
+    for (let i = 0; i < 20; i++) say(earlyOf(pipe)!, QUESTION, new Float32Array(16_000 + i));
+    await sleep(50);
+    expect(r.groq.calls).toBe(14);
+    r.groq.reply = QUESTION;
+    r.heard(pipe, OWNER, 'hey adrian what is the capital of australia', 'what is the capital of australia');
+    await until(() => r.llmBodies.length === 1, 'the model');
+    expect(r.groq.calls).toBe(15);
+    await r.stack.stop();
+  });
+
+  it('after a rate limit, no early listen', async () => {
+    const r = await rig(cloud);
+    const { pipe } = r.connect();
+    r.groq.status = 429;
+    r.heard(pipe, OWNER, 'hey adrian what is the capital of australia', 'what is the capital of australia');
+    await until(() => r.llmBodies.length === 1, 'the model');
+    expect(r.groq.calls).toBe(1);
+    r.groq.status = 200;
+    say(earlyOf(pipe)!, QUESTION);
+    await sleep(30);
+    expect(r.groq.calls).toBe(1);
     await r.stack.stop();
   });
 });

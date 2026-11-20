@@ -65,7 +65,7 @@ function setup(o: Setup = {}) {
       decoded.push(s);
       await wait(o.decodeMs ?? 5);
       if (signal?.aborted) cancelled.push(s);
-      return { text: `words ${s.length}`, decodeMs: 1 };
+      return { text: `words ${s.length}`, decodeMs: o.decodeMs ?? 5 };
     },
   } as unknown as SpeechToText;
   const wake = { match: (t: string) => ({ woke: t.startsWith('words'), remainder: t }) } as unknown as WakeDetector;
@@ -182,6 +182,15 @@ describe('recognizing during the silence wait', () => {
     expect(t.words).toHaveLength(0);
   });
 
+  it('no early words for a second listen once they are talking again', async () => {
+    const t = setup({ decodeMs: 30 });
+    t.quickClose(speech(1));
+    t.p.quick.speaking = true; // the quick VAD hears them again before the words are in
+    await wait(60);
+    expect(t.decoded).toHaveLength(1);
+    expect(t.words).toHaveLength(0);
+  });
+
   it('only says the words of a clip still in play', async () => {
     const t = setup({ decodeMs: 30 });
     t.quickClose(speech(1));
@@ -263,25 +272,43 @@ describe('recognizing during the silence wait', () => {
     expect(t.heard[0]!.early).toBe(true);
   });
 
-  it('side talk Smart Turn doubts is let go as soon as the check answers, since its words are already there', async () => {
-    // Without early words, "talking again?" is asked when the decode ends; with them, when
-    // Smart Turn answers. Speech that resumes in between is joined in one case, not the other.
+  // Smart Turn doubts a clip, and shouldHold lets it go: side talk, or a request for
+  // her that doesn't stop mid-thought. Without early words, "talking again?" is asked
+  // when the decode ends. Early words are in sooner, but the question waits for the same
+  // moment, so speech that resumes in between is joined just as it was.
+  it.each(['side talk', 'a request for her that ends on a whole thought'])('%s that Smart Turn doubts: speech resuming before a fresh decode would end is joined, early words or not', async () => {
     const turn = { holdMs: 500, detector: { complete: async () => 0.2 }, shouldHold: () => false };
     const run = async (early: boolean) => {
-      const t = setup({ turn, decodeMs: 40, ...(early ? {} : { early: false as const }) });
+      const t = setup({ turn, decodeMs: 60, ...(early ? {} : { early: false as const }) });
       const clip = speech(1);
       if (early) {
         t.quickClose(clip);
-        await wait(60); // its words are in before the full wait closes
+        await wait(80); // its words are in before the full wait closes
       }
       t.fullClose(Float32Array.from(clip));
-      await wait(10);
+      await wait(20); // Smart Turn has answered
       t.p.vad.speaking = true; // they start talking again before a fresh decode would end
-      await wait(80);
+      await wait(100);
       return t.heard.length;
     };
     expect(await run(false)).toBe(0); // held, to be joined with what comes next
-    expect(await run(true)).toBe(1); // released on its own
+    expect(await run(true)).toBe(0); // the same
+  });
+
+  it('a doubted clip that is let go goes when a fresh decode would have ended, not later', async () => {
+    const turn = { holdMs: 2_000, detector: { complete: async () => 0.2 }, shouldHold: () => false };
+    const t = setup({ turn, decodeMs: 60 });
+    const clip = speech(1);
+    t.quickClose(clip);
+    await until(() => t.words.length === 1);
+    const closed = performance.now();
+    t.fullClose(Float32Array.from(clip));
+    await until(() => t.heard.length === 1);
+    const after = performance.now() - closed;
+    expect(after).toBeGreaterThanOrEqual(55);
+    expect(after).toBeLessThan(400); // not the 2 s hold
+    expect(t.heard[0]!.early).toBe(true);
+    expect(t.decoded).toHaveLength(1);
   });
 
   it('is off unless both waits are whole Silero windows', () => {

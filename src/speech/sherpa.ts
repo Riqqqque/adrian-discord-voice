@@ -2,9 +2,12 @@
 // Parakeet recognizer with at most one decode at a time (brief section 7).
 
 import sherpa from 'sherpa-onnx-node';
-import type { SpeechToText, VoiceActivityDetector } from '../core/interfaces.js';
+import type { DecodeOptions, SpeechToText, VoiceActivityDetector } from '../core/interfaces.js';
+import { DecodeQueue } from './decode-queue.js';
 
 export const ASR_SAMPLE_RATE = 16_000;
+/** Silero's window at 16 kHz, samples. */
+const WINDOW = 512;
 
 export interface SileroOptions {
   model: string;
@@ -27,6 +30,9 @@ export class SileroVad implements VoiceActivityDetector {
   /** Samples accepted since the last reset (Silero's segment.start is
    *  relative to the same origin). */
   private total = 0;
+  /** Input not yet handed to sherpa: less than one window. */
+  private readonly part = new Float32Array(WINDOW);
+  private partLen = 0;
 
   constructor(o: SileroOptions) {
     this.prerollSamples = Math.round((o.preroll ?? 0.25) * ASR_SAMPLE_RATE);
@@ -39,7 +45,7 @@ export class SileroVad implements VoiceActivityDetector {
           minSilenceDuration: o.minSilence,
           minSpeechDuration: o.minSpeech,
           maxSpeechDuration: o.maxSpeech,
-          windowSize: 512,
+          windowSize: WINDOW,
         },
         sampleRate: ASR_SAMPLE_RATE,
         numThreads: 1,
@@ -51,13 +57,33 @@ export class SileroVad implements VoiceActivityDetector {
     );
   }
 
+  /** sherpa is handed one Silero window per call. It ends a segment at the end
+   *  of the call that heard the last silent window, so a call holding several
+   *  windows moves the cut by up to a call's length, with the framing: two VADs
+   *  on the same audio then cut the same speech apart. One window per call cuts
+   *  where the window does, however the audio arrives. 20 ms frames already
+   *  gave sherpa at most one window per call, so their segments are unchanged. */
   accept(samples: Float32Array): Float32Array[] {
     this.remember(samples);
-    this.vad.acceptWaveform(samples);
+    let o = 0;
+    if (this.partLen) {
+      o = Math.min(WINDOW - this.partLen, samples.length);
+      this.part.set(samples.subarray(0, o), this.partLen);
+      this.partLen += o;
+      if (this.partLen < WINDOW) return [];
+      this.vad.acceptWaveform(this.part);
+      this.partLen = 0;
+    }
+    for (; o + WINDOW <= samples.length; o += WINDOW) this.vad.acceptWaveform(samples.subarray(o, o + WINDOW));
+    this.part.set(samples.subarray(o), 0);
+    this.partLen = samples.length - o;
     return this.drain();
   }
 
   flush(): Float32Array[] {
+    // sherpa keeps a part window to itself, as it did when frames went in whole
+    if (this.partLen) this.vad.acceptWaveform(this.part.slice(0, this.partLen));
+    this.partLen = 0;
     this.vad.flush();
     const out = this.drain();
     this.reset();
@@ -67,6 +93,7 @@ export class SileroVad implements VoiceActivityDetector {
   reset(): void {
     this.vad.reset();
     this.total = 0;
+    this.partLen = 0;
   }
 
   /** Speech is currently detected (Silero above threshold). */
@@ -116,7 +143,7 @@ export interface ParakeetOptions {
 }
 
 export class ParakeetStt implements SpeechToText {
-  private queue: Promise<unknown> = Promise.resolve();
+  private readonly queue = new DecodeQueue();
 
   private constructor(private readonly recognizer: InstanceType<typeof sherpa.OfflineRecognizer>) {}
 
@@ -139,22 +166,24 @@ export class ParakeetStt implements SpeechToText {
     return new ParakeetStt(r);
   }
 
-  /** Decodes are serialized: one ASR job at a time. A request cancelled
-   *  while queued never starts. */
+  /** Decodes are serialized: one ASR job at a time, background ones last
+   *  (DecodeQueue). A request cancelled while queued never starts. */
   transcribe(
     samples: Float32Array,
     sampleRate: number,
     signal?: AbortSignal,
+    options?: DecodeOptions,
   ): Promise<{ text: string; decodeMs: number }> {
-    const job = this.queue.then(async () => {
-      if (signal?.aborted) throw new Error('cancelled');
-      const stream = this.recognizer.createStream();
-      stream.acceptWaveform({ samples, sampleRate });
-      const t0 = performance.now();
-      const r = await this.recognizer.decodeAsync(stream);
-      return { text: r.text.trim(), decodeMs: Math.round(performance.now() - t0) };
-    });
-    this.queue = job.catch(() => undefined);
-    return job;
+    return this.queue.run(
+      async () => {
+        const stream = this.recognizer.createStream();
+        stream.acceptWaveform({ samples, sampleRate });
+        const t0 = performance.now();
+        const r = await this.recognizer.decodeAsync(stream);
+        return { text: r.text.trim(), decodeMs: Math.round(performance.now() - t0) };
+      },
+      signal,
+      options,
+    );
   }
 }
