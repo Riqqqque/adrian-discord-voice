@@ -108,8 +108,10 @@ app connects: then she shows as not connected, and the settings say why.
 - **In the bot's Discord call too?** While you're in the same voice channel
   and not muted, the call answers instead of the PC, so music plays for
   everyone. PC orders ("pause Spotify", "open Valorant") still reach your PC.
-  Mute yourself in Discord, hold Ctrl+Alt+Space or type in the window to talk
-  to the PC alone.
+  Muted in that call, your speakers still play it and the PC's mic would hear
+  everyone in it, so the PC then takes only Ctrl+Alt+Space (push-to-talk) and
+  typing in the window. Deafen yourself, or leave the call, to talk to the PC
+  hands-free again.
 - **Quiet while gaming:** while a game is in front, she only answers to her
   name (or push-to-talk), keeps answers to one short sentence, and holds
   reminders said at that PC until the game ends. "Quiet while I play" in the

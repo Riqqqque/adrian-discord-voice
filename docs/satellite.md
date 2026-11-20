@@ -26,10 +26,19 @@ When the owner is also in the voice call the bot is in, the call hears the
 same words, so the call answers and the PC stays quiet (its window shows
 "Answering in the Discord call."). Music and sounds then play for everyone in
 the call, and PC orders ("pause Spotify", "open Valorant") still reach the
-PC through the PC tools. The PC takes over again when the owner is muted or
-deafened in Discord, leaves the call, holds push-to-talk, or types in the
-window. Their requests in the call get the same cloud speech-to-text as the
-PC (`cloudStt`).
+PC through the PC tools. Their requests in the call get the same cloud
+speech-to-text as the PC (`cloudStt`).
+
+While the owner is in that call and not deafened, their speakers play it, so
+the PC's mic hears everyone in it, and everything a PC hears counts as its
+owner. The PC app's echo gate only knows her own audio, not Discord's. So in
+that case (muted in the call, or her voice link down) the PC takes only
+push-to-talk and typing in the window; spoken words get "Your Discord call
+plays on this PC, so here I only take push-to-talk." A stop still works by
+voice: it stops what she's saying at the PC and calls off a restart counting
+down, and nothing else. Deafened, or out of her call, the PC takes speech as
+usual. A different voice channel or app playing through the speakers can't be
+seen from here, so a headset (or push-to-talk) is the safe setup in calls.
 
 ## Connection
 
