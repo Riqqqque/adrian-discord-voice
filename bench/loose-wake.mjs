@@ -28,8 +28,9 @@ const LINES = [
   { said: 'is so slow today', for: false, from: '"Adrian is so slow today"' },
   { said: 'went home already', for: false, from: '"Adrian went home already"' },
 ];
-const IN = 1 / 1e6;
-const OUT = 5 / 1e6;
+// $ per token, as bench/prewarm.mjs prices Haiku (cache writes counted as plain input).
+const IN = 0.1 / 1e6;
+const OUT = 0.5 / 1e6;
 const results = [];
 let cost = 0;
 for (let r = 0; r < reps; r++) {
