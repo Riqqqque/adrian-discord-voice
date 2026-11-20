@@ -358,7 +358,7 @@ export async function startVoiceStack(
   let whisper: Promise<WhisperStt | undefined> | undefined;
   const languagesOn = !!config.languages && existsSync(join(whisperDir, 'small-encoder.int8.onnx'));
   const whisperFor = () =>
-    (whisper ??= WhisperStt.load({ modelDir: whisperDir, threads: listen.asrThreads }).then(
+    (whisper ??= WhisperStt.load({ modelDir: whisperDir, threads: listen.whisperThreads }).then(
       (w) => (log.info('whisper loaded', { languages: Object.keys(LANGS) }), w),
       (e: Error) => (log.warn('whisper failed to load; English only', { error: e.message }), undefined),
     ));

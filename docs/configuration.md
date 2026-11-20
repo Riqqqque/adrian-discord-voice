@@ -100,7 +100,8 @@ Every key not in the file takes its default from the tables below.
 |---|---|---|---|---|
 | `listen.vadModel` | path | installer-owned | Silero VAD model file | - |
 | `listen.asrModelDir` | path | installer-owned | Parakeet speech-recognition model folder | - |
-| `listen.asrThreads` | integer 1-8 | `4` | CPU threads for Parakeet, and for Whisper when it loads. 4 matches the service's 4-core CPU quota | `2` |
+| `listen.asrThreads` | integer 1-8 | `2` | CPU threads for Parakeet. Everything anyone says goes through it, side talk included. onnxruntime's idle threads spin, so 4 threads cost about twice the CPU of 2 for the same words and answer only 10-50 ms sooner. 1 saves more CPU but adds about 100 ms per phrase | `1` |
+| `listen.whisperThreads` | integer 1-8 | `4` | CPU threads for Whisper, the second listen to questions that aren't in English (only when `languages` is on) | `2` |
 | `listen.vadThreshold` | number 0.1-0.95 | `0.5` | Voice detection sensitivity. Higher ignores more background noise but can miss quiet speech | `0.6` |
 | `listen.minSilence` | seconds 0.1-3 | `0.5` | Pause that ends a phrase. PC rooms always use at least 0.8 | `0.7` |
 | `listen.minSpeech` | seconds 0.05-2 | `0.25` | Shortest sound counted as speech | `0.3` |
