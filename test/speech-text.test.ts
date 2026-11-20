@@ -52,6 +52,25 @@ describe('forSpeech (English voices)', () => {
     ['It costs €20, or £15.', 'It costs 20 euros, or 15 pounds.'],
     ['€1,500 total', '1,500 euros total'],
     ['On 11/21 the store opens.', 'On November 21st the store opens.'],
+    // Ratings, scores and dates are not fractions (REVIEW-11)
+    ['IMDb rates it 7.8/10.', 'IMDb rates it 7.8 out of 10.'],
+    ['It has a 4.5/5 rating.', 'It has a 4.5 out of 5 rating.'],
+    ['Critics gave it 4/5 stars.', 'Critics gave it 4 out of 5 stars.'],
+    ['I would give it a 9/10.', 'I would give it a 9 out of 10.'],
+    ['Reviewers say 3/4 stars.', 'Reviewers say 3 out of 4 stars.'],
+    ['Forecast for Friday 1/10.', 'Forecast for Friday January 10th.'],
+    ["Mon 2/6 at 7:00", "Mon February 6th at 7 o'clock"],
+    ['The show is Fri, 11/21.', 'The show is Fri, November 21st.'],
+    ['The release is 11/21.', 'The release is November 21st.'],
+    ['They won 3/1 last night.', 'They won 3 to 1 last night.'],
+    ['He went 3/3 at the plate.', 'He went 3 for 3 at the plate.'],
+    ['Add 3/4 of a cup of milk.', 'Add three quarters of a cup of milk.'],
+    ['Use 3/8 inch screws.', 'Use 3 eighths inch screws.'],
+    ['Only 1/10 of a second.', 'Only one tenth of a second.'],
+    ['Top speed is 60km/h.', 'Top speed is 60 kilometers per hour.'],
+    ['Step 2/6 is the hardest.', 'Step 2 of 6 is the hardest.'],
+    ['Episode 5/12 is out.', 'Episode 5 of 12 is out.'],
+    ['Doors open 11/21 at 8.', 'Doors open November 21st at 8.'],
   ];
   for (const [text, said] of cases) it(text, () => expect(forSpeech(text)).toBe(said));
 
@@ -61,6 +80,11 @@ describe('forSpeech (English voices)', () => {
       "It's seventy two degrees and sunny.",
       'It is 3:45 PM and 17:00 in Berlin.',
       'Main St. Then left.', // Street, not Saint
+      'Turn left on 5th St. Then go two blocks.', // after a number too
+      'It is open 24/7.',
+      'There are 3/20 players online.', // a count before a noun, not a date
+      'You have watched 5/12 episodes.',
+      'Dated 11/21/2026.', // a full date is the voice's
       'Grand Theft Auto V is out.', // single-letter numerals are too often letters
       'The score was 3-1 at halftime.', // Kokoro reads ranges; "2 to 3" made "40 to 60" heard as "4 to 60"
       'You have 300 GB free.',

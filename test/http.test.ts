@@ -153,6 +153,18 @@ describe('provider connections', () => {
     expect(b.seen).toHaveLength(2);
   });
 
+  it('a provider forgotten (a new stack without it) is no longer opened by wake()', async () => {
+    const a = await server();
+    let now = 1_000_000;
+    const p = pool({ idleMs: { [a.origin]: 60_000 }, now: () => now });
+    p.register(`${a.origin}/v1/x`);
+    p.forgetProviders();
+    now += 4_000_000;
+    p.wake();
+    await sleep(100);
+    expect(a.seen).toHaveLength(0);
+  });
+
   it('wake() leaves origins without a known idle limit alone (a local model server)', async () => {
     const local = await server();
     const p = pool({ idleMs: {} });

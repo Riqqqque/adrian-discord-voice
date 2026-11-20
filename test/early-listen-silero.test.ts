@@ -51,7 +51,7 @@ interface Count {
 }
 
 /** Feeds utterances through a PC-style pipeline (0.8 s wait, 0.32 s early) and counts. */
-function run(audio: Record<string, Int16Array>, utterances: Utterance[], framing: Framing, early = true): Promise<Count> {
+function run(audio: Record<string, Int16Array>, utterances: Utterance[], framing: Framing, early = true, cutAfter?: number): Promise<Count> {
   const transport = new EventEmitter();
   const c: Count = { clips: 0, reused: 0, decodes: 0, lengths: [] };
   const stt = {
@@ -70,13 +70,15 @@ function run(audio: Record<string, Int16Array>, utterances: Utterance[], framing
       if (pause) parts.push(quiet(pause, 99));
       parts.push(audio[clip]!);
     }
-    parts.push(quiet(1.2, 5));
+    parts.push(quiet(cutAfter ?? 1.2, 5));
     const all = join16(...parts);
     for (let o = 0; o < all.length; ) {
       const n = framing.next();
       transport.emit('audio', 'u1', { samples: all.subarray(o, o + n), sampleRate: 48_000, receivedAt: performance.now() });
       o += n;
     }
+    // A push-to-talk key going up this long after the last word, before the full wait closes it.
+    if (cutAfter !== undefined) p.cut('u1');
     transport.emit('speechEnd', 'u1');
   }
   return new Promise((done) =>
@@ -112,6 +114,19 @@ describe.skipIf(!ON)('the early listen on real Silero', () => {
       expect(apart.clips).toBe(2);
       expect(apart.reused).toBe(2);
     }
+  }, 120_000);
+
+  it('a key-up between the quick and the full wait keeps the quick clip: one decode each', async () => {
+    const audio = await clips(MODELS!);
+    const lines: string[] = [];
+    for (const f of framings()) {
+      const cut = await run(audio, SINGLES, f, true, 0.5);
+      lines.push(`${f.name.padEnd(16)} key-up 0.5 s after: ${cut.reused}/${cut.clips} reused, ${cut.decodes} decodes`);
+      expect(cut.clips).toBe(SINGLES.length);
+      expect(cut.reused).toBe(cut.clips);
+      expect(cut.decodes).toBe(cut.clips);
+    }
+    process.stderr.write(`early listen, key-up cut:\n${lines.join('\n')}\n`);
   }, 120_000);
 
   it('the full wait cuts the same clips with or without it', async () => {

@@ -133,6 +133,12 @@ export class Connections {
     if (origin) this.registered.add(origin);
   }
 
+  /** A new stack is starting: it registers the providers it uses again, and
+   *  one turned off in the settings stops being opened on every wake. */
+  forgetProviders(): void {
+    this.registered.clear();
+  }
+
   /** Whether a connection to this origin is probably still open. */
   isOpen(url: string): boolean {
     const origin = originOf(url);

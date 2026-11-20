@@ -91,6 +91,62 @@ function setup(o: Setup = {}) {
   return { p, transport: transport as unknown as EventEmitter, heard, decoded, cancelled, words, quickClose, fullClose, audio };
 }
 
+describe('a flush before the full wait (the push-to-talk key going up)', () => {
+  const quietAfter = (clip: Float32Array, s: number) => {
+    const out = new Float32Array(clip.length + Math.round(s * 16_000));
+    out.set(clip);
+    for (let i = clip.length; i < out.length; i++) out[i] = (i % 7) * 1e-4; // room noise
+    return out;
+  };
+
+  it('reuses the early clip when only quiet followed it: one decode, and the early listen stands', async () => {
+    const t = setup({ turn: false });
+    const clip = speech(1.5);
+    t.quickClose(clip);
+    await until(() => t.words.length === 1);
+    t.p.vad.queue.push(quietAfter(clip, 0.4));
+    t.p.cut('u1');
+    await until(() => t.heard.length === 1);
+    expect(t.decoded).toHaveLength(1);
+    expect(t.heard[0]!.early).toBe(true);
+    expect(t.heard[0]!.samples).toBe(t.words[0]!.samples);
+    expect(t.words[0]!.signal.aborted).toBe(false);
+  });
+
+  it('with Smart Turn too', async () => {
+    const t = setup();
+    const clip = speech(1.5);
+    t.quickClose(clip);
+    await until(() => t.words.length === 1);
+    t.p.vad.queue.push(quietAfter(clip, 0.4));
+    t.p.cut('u1');
+    await until(() => t.heard.length === 1);
+    expect(t.decoded).toHaveLength(1);
+    expect(t.heard[0]!.samples).toBe(t.words[0]!.samples);
+  });
+
+  it('not when they were talking again, or something loud came after', async () => {
+    const a = setup({ turn: false });
+    const clip = speech(1.5);
+    a.quickClose(clip);
+    a.p.quick.speaking = true;
+    a.p.vad.queue.push(quietAfter(clip, 0.4));
+    a.p.cut('u1');
+    await until(() => a.heard.length === 1);
+    expect(a.decoded).toHaveLength(2);
+    expect(a.heard[0]!.early).toBeUndefined();
+    const b = setup({ turn: false });
+    b.quickClose(clip);
+    const more = quietAfter(clip, 0.4);
+    more.set(speech(0.2, 99), clip.length + 1_000);
+    b.p.vad.queue.push(more);
+    b.p.cut('u1');
+    await until(() => b.heard.length === 1);
+    expect(b.decoded).toHaveLength(2);
+    expect(b.heard[0]!.samples!.length).toBe(more.length);
+  });
+});
+
 describe('recognizing during the silence wait', () => {
   it('reuses the early words when the full wait closes the same audio', async () => {
     const t = setup();

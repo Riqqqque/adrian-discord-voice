@@ -198,7 +198,8 @@ async function rig(over: Record<string, unknown> | ((dir: string) => Record<stri
   });
   const steps: { parts: unknown[]; hang?: boolean; lingerMs?: number }[] = [];
   const llmBodies: any[] = [];
-  const groq = { calls: 0, done: 0, aborted: 0, delay: 0, reply: '', status: 200 };
+  /** `replies`: one per call, in order, before `reply`. */
+  const groq = { calls: 0, done: 0, aborted: 0, delay: 0, reply: '', replies: [] as string[], status: 200 };
   const search = { calls: 0 };
   vi.stubGlobal('fetch', async (url: unknown, init: any) => {
     const u = String(url);
@@ -209,13 +210,14 @@ async function rig(over: Record<string, unknown> | ((dir: string) => Record<stri
     }
     if (u.includes('audio/transcriptions')) {
       groq.calls++;
+      const reply = groq.replies.shift() ?? groq.reply;
       await new Promise<void>((res, rej) => {
         const t = setTimeout(res, groq.delay);
         init.signal?.addEventListener('abort', () => (clearTimeout(t), groq.aborted++, rej(new DOMException('aborted', 'AbortError'))), { once: true });
       });
       groq.done++;
       if (groq.status !== 200) return new Response('{}', { status: groq.status });
-      return new Response(JSON.stringify({ text: groq.reply }), { status: 200 });
+      return new Response(JSON.stringify({ text: reply }), { status: 200 });
     }
     if (u.endsWith('/chat/completions')) {
       llmBodies.push(JSON.parse(init.body));
@@ -328,6 +330,20 @@ describe('what an answer costs', () => {
     r.steps.push({ parts: [text('Lima.'), usage(1000, 100)] });
     r.heard(r.discordPipe, OWNER, 'hey adrian capital of peru', 'capital of peru');
     await until(() => r.llmBodies.length === 2, 'the owner answered');
+    await r.stack.stop();
+  });
+
+  it("a guest past their share isn't told so for words that may not be for her", async () => {
+    const r = await rig({ owners: [OWNER], limits: { perUserPerHour: 0, dailyUsd: 1, monthlyUsd: 0, guestDailyUsd: 0.001 } });
+    r.steps.push({ parts: [text('Canberra.'), usage(1000, 100)] }); // $0.0015
+    r.heard(r.discordPipe, SAM, 'hey adrian capital of australia', 'capital of australia');
+    await until(() => r.stack.answers().length === 1, 'the answer');
+    await sleep(20);
+    r.heard(r.discordPipe, SAM, 'did you see that, adrian', 'did you see that', 1, { loose: true }); // game talk
+    await until(() => r.logged.some((l) => l.m === 'limited'), 'the cap check');
+    await sleep(100);
+    expect(r.llmBodies).toHaveLength(1);
+    expect(r.tts.calls.filter((t) => t.includes('share of today'))).toEqual([]);
     await r.stack.stop();
   });
 
@@ -840,6 +856,111 @@ describe('push-to-talk held down (apps from 0.17.2)', () => {
     expect(asPrompt(r.llmBodies[1])).not.toContain(JUDGE_LINE);
     expect(JSON.stringify(r.llmBodies[1].messages.at(-1).content)).toContain('and turn it up');
     conn.emit('pttUp');
+    await r.stack.stop();
+  });
+
+  it('two parts of one press still in their cloud listen reach her in order, as one request', async () => {
+    const r = await rig({ cloudStt: { enabled: true, rooms: 'all' } });
+    r.voiceStates.set(OWNER, MUTED);
+    const { conn, pipe } = r.connect();
+    r.groq.delay = 400; // a slow cloud listen: the first part is still in it when the second lands
+    r.groq.replies = ['open the mod page', 'for JEI on Modrinth'];
+    r.steps.push({ parts: [], hang: true }); // the model is still on the first part
+    conn.emit('ptt', { hold: true });
+    r.heard(pipe, OWNER, 'open the mod page');
+    await sleep(150);
+    r.heard(pipe, OWNER, 'for jei on modrinth');
+    await until(() => r.stack.answers().length >= 1 && r.llmBodies.some((b) => JSON.stringify(b.messages.at(-1).content).includes('JEI')), 'the answer');
+    const asked = JSON.stringify(r.llmBodies.at(-1).messages.at(-1).content);
+    expect(asked).toMatch(/open the mod page.*for JEI on Modrinth/);
+    expect(r.logged.map((l) => l.m)).not.toContain('replaced by newer request');
+    conn.emit('pttUp');
+    await r.stack.stop();
+  });
+
+  it('a later part of the press said once her answer is audible joins it, it is not dropped', async () => {
+    const r = await rig();
+    r.voiceStates.set(OWNER, MUTED);
+    const { conn, pipe } = r.connect();
+    r.steps.push({ parts: [text('Tokyo is huge. ')], hang: true }); // she's still going
+    conn.emit('ptt', { hold: true });
+    r.heard(pipe, OWNER, 'tell me about tokyo');
+    await until(() => conn.states.some((x) => x.speaking), 'her answer, audible');
+    r.heard(pipe, OWNER, 'and its weather');
+    await until(() => r.llmBodies.length === 2, 'the rest of the request');
+    expect(JSON.stringify(r.llmBodies[1].messages.at(-1).content)).toMatch(/tell me about tokyo.*and its weather/);
+    conn.emit('pttUp');
+    await r.stack.stop();
+  });
+
+  it('with the key held, her name at the end is not a maybe: no judge, and the cloud words count', async () => {
+    const r = await rig({ cloudStt: { enabled: true, rooms: 'all' } });
+    r.voiceStates.set(OWNER, MUTED);
+    const { conn, pipe } = r.connect();
+    r.groq.reply = 'What is the weather tomorrow in Tokyo?'; // the cloud dropped her name
+    conn.emit('ptt', { hold: true });
+    r.heard(pipe, OWNER, 'what is the weather tomorrow in tokio, adrian', 'what is the weather tomorrow in tokio', 1, { loose: true });
+    await until(() => r.llmBodies.length === 1, 'the model');
+    expect(asPrompt(r.llmBodies[0])).not.toContain('maybe about you rather than to you');
+    expect(JSON.stringify(r.llmBodies[0].messages.at(-1).content)).toContain('in Tokyo');
+    conn.emit('pttUp');
+    await r.stack.stop();
+  });
+
+  it('with the key held, a loose wake goes to the model whole, her name and all', async () => {
+    const r = await rig();
+    r.voiceStates.set(OWNER, MUTED);
+    const { conn, pipe } = r.connect();
+    conn.emit('ptt', { hold: true });
+    r.heard(pipe, OWNER, 'adrian is so slow today', 'is so slow today', 1, { loose: true });
+    await until(() => r.llmBodies.length === 1, 'the model');
+    expect(JSON.stringify(r.llmBodies[0].messages.at(-1).content)).toContain('adrian is so slow today');
+    expect(asPrompt(r.llmBodies[0])).not.toContain('maybe about you rather than to you');
+    conn.emit('pttUp');
+    await r.stack.stop();
+  });
+
+  it('with the key held, "what time is it, adrian" is the quick local answer', async () => {
+    const r = await rig();
+    r.voiceStates.set(OWNER, MUTED);
+    const { conn, pipe } = r.connect();
+    conn.emit('ptt', { hold: true });
+    r.heard(pipe, OWNER, 'what time is it, adrian', 'what time is it', 1, { loose: true });
+    await until(() => r.tts.calls.length >= 1, 'her answer');
+    await sleep(40);
+    expect(r.llmBodies).toHaveLength(0);
+    conn.emit('pttUp');
+    await r.stack.stop();
+  });
+
+  it("a press's words heard after the next press began are still pressed: a guarded PC takes them", async () => {
+    const r = await rig();
+    r.voiceStates.set(OWNER, MUTED);
+    const { conn, pipe } = r.connect();
+    conn.emit('ptt', { hold: true });
+    await sleep(10);
+    const spoke = performance.now();
+    conn.emit('pttUp');
+    await until(() => cuts(pipe).length === 2, 'the release cut');
+    conn.emit('ptt', { hold: true }); // again, before the words of the first came back
+    r.heard(pipe, OWNER, 'open spotify', undefined, 1, { vadClosedAt: spoke });
+    await until(() => r.llmBodies.length === 1, 'the first press, answered');
+    conn.emit('pttUp');
+    await r.stack.stop();
+  });
+
+  it("one PC dropping doesn't free their words while their other PC is mid-press", async () => {
+    const r = await rig();
+    r.voiceStates.set(OWNER, { channelId: CALL, mute: false, deaf: false });
+    const a = r.connect(OWNER, 'd1');
+    const b = r.connect(OWNER, 'd2');
+    b.conn.emit('ptt', { hold: true });
+    a.conn.open = false;
+    a.conn.emit('closed');
+    r.heard(r.discordPipe, OWNER, 'hey adrian open spotify', 'open spotify'); // the call's copy of what B hears
+    await sleep(100);
+    expect(r.llmBodies).toHaveLength(0);
+    b.conn.emit('pttUp');
     await r.stack.stop();
   });
 
@@ -2044,6 +2165,15 @@ describe('startup', () => {
     r.heard(r.discordPipe, SAM, 'hey adrian ni hao ma xian zai ji dian', 'ni hao ma xian zai ji dian');
     await until(() => whisper.mock.calls.length === 1, 'the first load');
     await r.stack.stop();
+  });
+
+  it('a stop lets go of Smart Turn: each restart would otherwise leave a worker and its model behind', async () => {
+    const close = vi.fn(async () => undefined);
+    vi.spyOn(SmartTurn, 'load').mockResolvedValue({ complete: async () => 1, close } as never);
+    const r = await rig(heavy, { prepare: models });
+    expect(close).not.toHaveBeenCalled();
+    await r.stack.stop();
+    expect(close).toHaveBeenCalledTimes(1);
   });
 
   it('keeps trying when the join at startup fails', async () => {

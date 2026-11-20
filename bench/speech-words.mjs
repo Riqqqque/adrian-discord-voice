@@ -4,7 +4,7 @@
 // rate against the words she should say (bench/speech-lines.json; any of the
 // listed readings counts). "oracle" synthesizes the intended words themselves,
 // which measures what Kokoro + Parakeet get wrong on their own.
-//   node bench/speech-words.mjs <dist dir> <kokoro dir> <parakeet dir> [--oracle] [--dev] [--json out.json] [--wav dir] [--voice af_heart]
+//   node bench/speech-words.mjs <dist dir> <kokoro dir> <parakeet dir> [--oracle] [--dev] [--json out.json] [--wav dir] [--voice af_heart] [--lines other.json]
 // --dev hides the held-out quarter (every 4th line) while working on fixes.
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -23,7 +23,7 @@ const voice = opt('--voice') ?? 'af_heart';
 const wavDir = opt('--wav');
 if (wavDir) mkdirSync(wavDir, { recursive: true });
 
-const lines = JSON.parse(readFileSync(new URL('./speech-lines.json', import.meta.url), 'utf8')).map((l, i) => ({ ...l, heldOut: i % 4 === 3 }));
+const lines = JSON.parse(readFileSync(opt('--lines') ? resolve(opt('--lines')) : new URL('./speech-lines.json', import.meta.url), 'utf8')).map((l, i) => ({ ...l, heldOut: i % 4 === 3 }));
 const tts = new KokoroTts({ modelDir: kokoroDir, threads: 2 });
 const stt = await ParakeetStt.load({ modelDir: parakeetDir, threads: 2 });
 

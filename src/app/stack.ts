@@ -71,7 +71,7 @@ import { linksLine, PLAY_THAT_LINK, RecentLinks } from '../features/links.js';
 import { CloudBudget } from '../speech/cloud-budget.js';
 import { ParakeetStt } from '../speech/sherpa.js';
 import { prepareLocalVoice } from './local-voice.js';
-import { rssMb } from './memory.js';
+import { LOCAL_VOICE_MB, readMemInfo, rssMb, tooLittleMemory } from './memory.js';
 import { DiscordVoiceTransport } from '../transport/discord.js';
 import { Speaker } from '../voice/speaker.js';
 import { TextWakeDetector } from '../wake/text-wake.js';
@@ -137,6 +137,8 @@ export async function startVoiceStack(
   if (!listen || !voice) throw new Error('config needs "listen" and "voice" sections');
   const token = secrets.get('DISCORD_TOKEN');
   if (!token) throw new Error('DISCORD_TOKEN is not set');
+  // The providers kept open are the ones this start sets up, not the last one's.
+  connections.forgetProviders();
 
   // Messages: ones that @mention the bot (and DMs) carry their text anyway.
   // Reading the rest of a channel needs the Message Content intent, which is
@@ -196,7 +198,7 @@ export async function startVoiceStack(
   const voiceBudget = new CharBudget(stateDir ? join(stateDir, 'voice-usage.json') : undefined, cv?.monthlyChars ?? 0, config.timezone);
   const cloud =
     cv && cloudKey
-      ? new SpeechifyTts({ apiKey: cloudKey, voiceId: cv.voiceId, model: cv.model, timeoutMs: cv.timeoutMs, speed: cv.speed, budget: voiceBudget, log }, tts, voice.voice)
+      ? new SpeechifyTts({ apiKey: cloudKey, voiceId: cv.voiceId, model: cv.model, timeoutMs: cv.timeoutMs, speed: cv.speed, budget: voiceBudget, log, memoryShort: () => tooLittleMemory(LOCAL_VOICE_MB, readMemInfo()), roomSpeed: voice.speed }, tts, voice.voice)
       : undefined;
   if (cloud) log.info('cloud voice', { provider: cv!.provider, voice: cv!.voiceId, usedChars: voiceBudget.used(), monthlyChars: cv!.monthlyChars });
   // Kokoro loads now only when it speaks English; as the cloud's stand-in it loads on first use.
@@ -1211,6 +1213,12 @@ export async function startVoiceStack(
       source = fixed("I'm not fully set up yet. My language model hasn't been configured.");
     } else if (!allowed.ok) {
       log.info('limited', { user: userId, reason: allowed.reason });
+      // Words that may not be for her (no name, or a maybe) get no notice: the
+      // judge that would have said so never ran.
+      if (followUp) {
+        clearTimeout(genTimer);
+        return 'silent';
+      }
       // Say why once per reason per 10 minutes; otherwise stay quiet.
       const key = allowed.reason === 'user-rate' || allowed.reason === 'guest-daily' ? `${allowed.reason}:${userId}` : allowed.reason;
       if (performance.now() - (pausedNotified.get(key) ?? -Infinity) < 600_000) return;
@@ -1586,14 +1594,52 @@ export async function startVoiceStack(
         config.satellite.earlyListen ? { minSilence: EARLY_SILENCE, onWords: (userId, { text, samples, startedAt, signal }) => listenEarly(userId, text, samples, startedAt, { dropped: signal, unlessDangling: true, warm: 'early' }) } : undefined,
       )
     : new ListeningPipeline(source, stt, wakeDetector, vad);
-  pipeline.on('heard', (e) => void heard(e).catch((err: Error) => log.warn('heard failed', { error: err.message })));
-  async function heard(e: HeardEvent): Promise<void> {
+  pipeline.on('heard', (e) => void inOrder(e).catch((err: Error) => log.warn('heard failed', { error: err.message })));
+  /** Per held press, the last of its segments still on the way to the controller. */
+  const pressTail = new Map<number, Promise<void>>();
+  /** Segments of one held press reach the controller in the order they were
+   *  said: a later part waits while an earlier one is still in its cloud or
+   *  Whisper listen, or it would be a request of its own and replace it. Its
+   *  own cloud listen starts meanwhile. A stop doesn't wait. */
+  async function inOrder(e: HeardEvent): Promise<void> {
     // Asking whether push-to-talk covers it also uses up a one-shot press, whatever was said.
     const p = ptt?.said(e.vadClosedAt ?? e.segmentClosedAt) ?? { ptt: false, first: false };
+    const stopsBefore = stopsFrom(rm, e.userId);
+    const said = e.woke ? e.command : e.text;
+    const kind = classify(said)?.kind;
+    if (p.press === undefined || kind === 'stop') return heard(e, p, stopsBefore);
+    const press = p.press;
+    const before = pressTail.get(press);
+    let done!: () => void;
+    const mine = new Promise<void>((r) => (done = r));
+    pressTail.set(press, mine);
+    try {
+      if (before) {
+        if (e.samples && said.trim() && kind !== 'name' && !early.has(e.samples) && cloudSttFor(rm, e.userId)) early.set(e.samples, cloudListen(e.samples));
+        await before;
+      }
+      await heard(e, p, stopsBefore);
+    } finally {
+      done();
+      if (pressTail.get(press) === mine) pressTail.delete(press);
+    }
+  }
+  async function heard(e: HeardEvent, p: { ptt: boolean; first: boolean }, stopsBefore: number): Promise<void> {
+    // Pressed: for her, not a maybe. Her name at the end ("what's the weather,
+    // Adrian") needs no judge, and the cloud's words count without it.
+    const pressedLoose = p.ptt && !!e.loose;
+    if (pressedLoose) e = { ...e, loose: false };
     // The first thing said with it needs no name. What follows in the same hold
-    // while she's still on it goes on as more of it; once she's done, it's a new
-    // request of its own, not a follow-up to judge.
-    if (!e.woke && p.ptt && (p.first || !ctl.busy)) e = { ...e, woke: true, command: e.text };
+    // while she's still on it is more of the same request (the controller joins
+    // it, or queues it behind an order she's carrying out); once she's done,
+    // it's a new request of its own, not a follow-up to judge.
+    let more = false;
+    /** Its own stop counts as one of the stops so far (see the check below). */
+    const ownStop = () => (noteStop(rm, e.userId), stopsBefore++);
+    if (!e.woke && p.ptt) {
+      if (p.first || !ctl.busy) e = { ...e, woke: true, command: e.text };
+      else more = true;
+    }
     const first = classify(e.woke ? e.command : e.text);
     const stop = first?.kind === 'stop';
     // They're heard in her call itself, and it answers. It can still reach this PC through the PC tools.
@@ -1605,7 +1651,7 @@ export async function startVoiceStack(
     // Not alarms, follow-ups, questions or orders.
     const pcHearsCall = !!rm.ui && !p.ptt && !deferred && pcGuarded(rm.ui);
     if ((deferred || pcHearsCall) && stop) {
-      noteStop(rm, e.userId);
+      ownStop();
       if (!first.weak) callOff(e.userId, ctl);
     }
     if (deferred && !(stop && ctl.busy)) {
@@ -1628,18 +1674,17 @@ export async function startVoiceStack(
     // An alarm of theirs ringing: stop / snooze / "I'm up" are for it, in any room, before anything else.
     if (!held) {
       if (alarmHeard(rm, e.userId, e.woke ? e.command || e.text : e.text, e.woke)) return;
-      if (stop) noteStop(rm, e.userId);
+      if (stop) ownStop();
       if (first?.kind === 'stop' && !first.weak) callOff(e.userId, ctl);
     }
     if (!rm.ui && !stop && (pcHasWords.get(e.userId) ?? 0) > performance.now()) return;
     // The windows are judged from when they started talking, not when the words land.
     const startedAt = (e.vadClosedAt ?? e.segmentClosedAt) - e.audioSeconds * 1000;
-    const forBot = e.woke || ctl.listeningTo(e.userId, startedAt);
+    const forBot = e.woke || p.ptt || ctl.listeningTo(e.userId, startedAt);
     const before = userLang.get(e.userId) ?? 'en';
     // Said to her: a second, more accurate listen in the cloud for the words
     // (the local model already decided it was for her). Stops and her name
     // alone don't need it.
-    const stopsBefore = stopsFrom(rm, e.userId);
     const local = e.text;
     let cloud: string | undefined;
     let groqMs: number | undefined;
@@ -1724,7 +1769,10 @@ export async function startVoiceStack(
     if (!e.woke && quizzes.heard(rm.key, e.userId, e.text)) return;
     if (e.woke) rm.mixer.duckFor(8_000);
     if (e.woke) log.info('wake', { user: e.userId, sttLatencyMs: e.sttLatencyMs, audioSeconds: e.audioSeconds, ...(e.loose ? { loose: true } : {}) });
-    ctl.heard({ userId: e.userId, text: e.text, woke: e.woke, command: e.command, startedAt, ...(e.loose ? { loose: true } : {}) });
+    // What was a loose wake goes to the model whole ("Adrian is so slow today"
+    // keeps its subject); only the quick local answers take the words without her name.
+    if (pressedLoose && e.woke && e.command.trim() && !classify(e.command) && !classifyMusic(e.command) && !isTimeQuestion(e.command)) e = { ...e, command: e.text };
+    ctl.heard({ userId: e.userId, text: e.text, woke: e.woke, command: e.command, startedAt, ...(e.loose ? { loose: true } : {}), ...(more ? { more: true } : {}) });
   }
   // Before the question reaches it: after a long quiet Speechify stalls on the first sentence.
   // Connections to the providers too, after one closed while it was quiet (core/http.ts).
@@ -1908,6 +1956,8 @@ export async function startVoiceStack(
   } catch (e) {
     clearInterval(idleTimer);
     clearInterval(alarmRefresh);
+    // Home control's retries would go on pushing into this dead stack's tools.
+    mcpLink?.stop();
     throw e;
   }
 
@@ -1956,10 +2006,12 @@ export async function startVoiceStack(
         rm.ctl = ctl;
         // Push-to-talk: what's said with it is for her, no "Hey Adrian" needed.
         let pipe: ListeningPipeline | undefined;
+        /** The deadline this PC set last: another PC of theirs may have set a later one. */
+        let wordsUntil: number | undefined;
         const ptt = new PcPushToTalk({
           cut: () => pipe?.cut(conn.owner),
           // The call's copy of these words may still be on its way.
-          wordsHereUntil: (until) => pcHasWords.set(conn.owner, until),
+          wordsHereUntil: (until) => void pcHasWords.set(conn.owner, (wordsUntil = until)),
         });
         pipe = listenTo(conn, rm, ctl, ptt);
         conn.on('ptt', (p) => {
@@ -1998,8 +2050,9 @@ export async function startVoiceStack(
         });
         conn.on('closed', () => {
           ptt.close();
-          // A press cut short by the drop mustn't keep her call off their words.
-          pcHasWords.delete(conn.owner);
+          // A press cut short by the drop mustn't keep her call off their words,
+          // unless their other PC set it since.
+          if (pcHasWords.get(conn.owner) === wordsUntil) pcHasWords.delete(conn.owner);
           quiet.disconnected(conn);
           ctl.cancelAll();
           rm.music?.stop();
@@ -2050,10 +2103,14 @@ export async function startVoiceStack(
       headsUp.flush();
       music?.stop();
       mixer.stopAll();
-      await satServer?.close();
+      // Before the PCs' close, which can wait on a link that died without a word.
       await orchestrator?.stopWarming(); // a stopped warm-up's cost lands before the save
       ledger.flush();
       voiceBudget.flush();
+      // Its worker and model stay for good otherwise, one more per restart.
+      await turn?.detector.close?.().catch(() => undefined);
+      turn = undefined;
+      await satServer?.close();
       try {
         await transport.disconnect();
       } finally {

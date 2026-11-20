@@ -424,6 +424,22 @@ describe('review fixes', () => {
     expect(dms).toEqual([true]);
   });
 
+  it('the buttons come once the guard turns on while it rings (joined a call, muted in hers)', async () => {
+    const dms: boolean[] = [];
+    let now = Date.UTC(2026, 10, 18, 20, 0);
+    let guarded = false;
+    const c = new AlarmClock(undefined, TZ, { placeFor: () => 'sat:d1', needsButtons: () => guarded, ring: () => ({ stop() {}, alive: () => true }), dm: async (_u, _t, b) => (dms.push(!!b), true) }, () => now);
+    c.add({ userId: 'u1', speaker: 'S', kind: 'timer', label: '', at: now + 30_000, tz: TZ });
+    now += 60_000;
+    c.tick();
+    expect(dms).toEqual([]);
+    guarded = true;
+    now += 1_000;
+    c.tick();
+    c.tick();
+    expect(dms).toEqual([true]);
+  });
+
   it('"not now" snoozes, and 2:30 on the spring-forward night rings at 3:30', () => {
     expect(ringWord('not now')).toEqual({ action: 'snooze' });
     expect(ringWord('not yet')).toEqual({ action: 'snooze' });

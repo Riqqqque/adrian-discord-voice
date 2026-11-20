@@ -1,0 +1,17 @@
+[
+  {"id": "rating-decimal", "kind": "model", "text": "IMDb rates it 7.8/10.", "say": ["IMDb rates it seven point eight out of ten."]},
+  {"id": "rating-half", "kind": "model", "text": "It has a 4.5/5 rating on Steam.", "say": ["It has a four point five out of five rating on Steam."]},
+  {"id": "rating-stars", "kind": "model", "text": "Critics gave it 4/5 stars.", "say": ["Critics gave it four out of five stars."]},
+  {"id": "rating-ten", "kind": "model", "text": "I would give it a 9/10.", "say": ["I would give it a nine out of ten."]},
+  {"id": "date-weekday", "kind": "model", "text": "The forecast for Friday 1/10 looks clear.", "say": ["The forecast for Friday January tenth looks clear."]},
+  {"id": "date-short", "kind": "model", "text": "The show is Fri, 11/21.", "say": ["The show is Friday, November twenty first.", "The show is Fri, November twenty first."]},
+  {"id": "date-bare", "kind": "model", "text": "The release is 11/21.", "say": ["The release is November twenty first."]},
+  {"id": "score", "kind": "model", "text": "They won 3/1 last night.", "say": ["They won three to one last night."]},
+  {"id": "recipe", "kind": "model", "text": "Add 3/4 of a cup of milk.", "say": ["Add three quarters of a cup of milk."]},
+  {"id": "speed", "kind": "model", "text": "Top speed is 60km/h.", "say": ["Top speed is sixty kilometers per hour."]},
+  {"id": "stat-line", "kind": "model", "text": "He went 3/3 at the plate.", "say": ["He went three for three at the plate."]},
+  {"id": "rating-four", "kind": "model", "text": "Reviewers say 3/4 stars.", "say": ["Reviewers say three out of four stars."]},
+  {"id": "date-mon", "kind": "model", "text": "The match is Mon 2/6 at 7:00.", "say": ["The match is Monday February sixth at seven o'clock.", "The match is Mon February sixth at seven o'clock."]},
+  {"id": "step", "kind": "model", "text": "Step 2/6 is the hardest.", "say": ["Step two of six is the hardest."]},
+  {"id": "count", "kind": "model", "text": "There are 3/20 players online.", "say": ["There are three out of twenty players online.", "There are three of twenty players online."]}
+]
