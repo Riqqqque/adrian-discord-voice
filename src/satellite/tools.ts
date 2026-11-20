@@ -34,34 +34,81 @@ const NEEDS_YES = new Map([
 ]);
 const QUESTIONS = new Set([...NEEDS_YES.values()].map((n) => n.ask));
 
-/** Things in a house that no pc_ tool reaches. */
+/** Things in a house that no pc_ tool reaches (a few in Spanish too). */
 const HOUSE_THING =
-  /\b(doors?|deadbolts?|garage|gates?|car|house|lights?|lamps?|bulbs?|thermostat|heat(?:er|ing)?|furnace|a\/c|ac|air(?: conditioning| conditioner)?|fans?|oven|stove|dishwasher|washer|dryer|microwave|vacuum|roomba|sprinklers?|blinds|curtains|shades|doorbell|tv|television|telly|soundbar|stereo|roku|fire ?stick|chromecast)\b/;
-/** Words that make it an order. */
-const ORDER_WORD = /\b(turn(?:ed)?|switch|shut|lock(?:ed)?|unlock(?:ed)?|open|close[d]?|power|dim|brighten|mute|unmute|pause|stop|raise|lower|kill|cut|start|set|put|crank|bump)\b/;
+  /\b(doors?|deadbolts?|garage|gates?|car|house|lights?|lamps?|bulbs?|thermostat|heat(?:er|ers|ing)?|furnace|a\/c|ac|air(?: conditioning| conditioner)?|fans?|ovens?|stove|dishwasher|washer|dryer|microwave|vacuum|roomba|sprinklers?|blinds|curtains|shades|doorbell|tvs?|televisions?|telly|soundbar|stereo|roku|fire ?stick|chromecast|luz|luces|l[aá]mparas?|puertas?|port[oó]n|garaje|calefacci[oó]n|termostato|ventilador(?:es)?|tele|televisi[oó]n|aire acondicionado)\b/;
+/** The verb of an order on a house thing ("turn", "lock"; "apaga", "cierra"). */
+const ORDER_VERB = /^(turn(?:ed)?|switch|shut|lock|unlock|open|close|power|dim|brighten|mute|unmute|pause|stop|raise|lower|kill|cut|start|set|put|crank|bump|apaga|apague|apagar|enciende|encienda|prende|prenda|cierra|cierre|abre|abra|baja|sube|pon|ponga)$/;
+/** Between the verb and the thing: "turn off the living room lights", "cierra la puerta". */
+const FILLER = new Set(
+  'the my our a an all both these those of up down off on out back front side garage living room kitchen bedroom bathroom hallway porch upstairs downstairs basement outside inside please la las el los mi mis del de'.split(' '),
+);
+/** Only these get paused: "pause, the doorbell just rang" is about the music. */
+const NOT_PAUSED = /^(doors?|deadbolts?|garage|gates?|car|house|lights?|lamps?|bulbs?|doorbell|blinds|curtains|shades|thermostat)$/;
+/** Only these make a sound to mute. */
+const MUTED = /^(tvs?|televisions?|telly|tele|televisi[oó]n|soundbar|stereo|roku|fire ?stick|chromecast|doorbell)$/;
 /** "Lights off", "TV on": the thing, then off, or on to end it ("the doors on youtube" is a band). */
 const ON_OFF = /^\s+(?:off\b|on\s*$)/;
+/** "The house is locked up", "the garage door is closed". */
+const STATE_AFTER = /^\s+(?:\S+\s+){0,2}(?:locked|closed|shut)\b/;
 /** They named the PC itself ("lock my pc, I'm heading out the front door"). */
 const PC_WORD = /\b(pcs?|computers?|laptops?|desktops?|monitors?|screens?|displays?|keyboard|mouse|webcam|rig)\b/;
 /** Words about what plays on the PC: "turn the music down and the lights off" still means the music. */
 const MEDIA_WORD = /\b(music|songs?|tracks?|videos?|movies?|shows?|streams?|spotify|youtube|netflix|twitch|playlist|podcasts?|volume|sound|audio|it|this|that)\b/;
+/** An order for the PC's media or volume ("pause, gotta get the door": the pause is for the PC). */
+const MEDIA_VERB = /\b(pause|play|resume|unpause|skip|next|previous|stop|mute|unmute|louder|quieter|softer|volume)\b/;
+/** pc_system actions, as said in a clause of their own ("lock it and turn off the lights"). */
+const SYSTEM_VERB: Record<string, RegExp> = {
+  lock: /\block\b(?!\s+up\b)/,
+  screen_off: /\b(?:screens?|monitors?)\b/,
+  sleep: /\bsleep\b/,
+  restart: /\b(?:restart|reboot)\b/,
+  shutdown: /\bshut ?down\b|\bpower (?:it )?off\b/,
+};
 
-/** The house thing their own words give an order about, if any, and whether
- *  they named the PC or something playing on it too. Only their words count:
- *  the model can't write these. */
-export function houseOrder(said: string | undefined): { thing: string; pc: boolean; media: boolean } | undefined {
+/** Is this house thing what the clause's order is about? The verb has to
+ *  come right before it, past only words like "the", "off" or "front"
+ *  ("pause someone's at the door" is not an order on the door), or its state
+ *  right after it ("lights off", "the house is locked up"). */
+function orderOn(clause: string, m: RegExpExecArray): boolean {
+  const after = clause.slice(m.index + m[0].length);
+  if (ON_OFF.test(after) || STATE_AFTER.test(after)) return true;
+  const before = clause.slice(0, m.index).trim().split(/\s+/).filter(Boolean);
+  let i = before.length - 1;
+  while (i >= 0 && FILLER.has(before[i]!) && before.length - 1 - i < 5) i--;
+  const verb = before[i];
+  if (!verb || !ORDER_VERB.test(verb)) return false;
+  if (verb === 'pause') return !NOT_PAUSED.test(m[1]!);
+  if (verb === 'mute' || verb === 'unmute') return MUTED.test(m[1]!);
+  return true;
+}
+
+/** The house thing their own words give an order about, if any; whether
+ *  they named the PC or something playing on it too; and the other clauses
+ *  (orders for the PC may sit next to a house errand: "pause, I gotta open
+ *  the door"). Only their words count: the model can't write these. */
+export function houseOrder(said: string | undefined): { thing: string; pc: boolean; media: boolean; rest: string[] } | undefined {
   if (!said) return undefined;
-  // A TV show is something to watch, and Apple TV is an app.
-  const s = said.toLowerCase().replace(/\b(?:tv|television) (?:shows?|series|episodes?)\b/g, 'show').replace(/\bapple ?tv\b/g, 'appletv');
+  // A TV show is something to watch, Apple TV and "the TV app" are apps, and a screen door is a door.
+  const s = said
+    .toLowerCase()
+    .replace(/\b(?:tv|television) (?:shows?|series|episodes?)\b/g, 'show')
+    .replace(/\bapple ?tv\b/g, 'appletv')
+    .replace(/\btv app\b/g, 'tvapp')
+    .replace(/\bscreen (doors?)\b/g, '$1');
   let thing: string | undefined;
-  for (const clause of s.split(/[,.;!?]|\b(?:and|then|but|also|so)\b/)) {
-    const m = HOUSE_THING.exec(clause);
-    if (m && (ORDER_WORD.test(clause.replace(m[0], ' ')) || ON_OFF.test(clause.slice(m.index + m[0].length)))) {
-      thing = m[1]!;
-      break;
+  const rest: string[] = [];
+  for (const clause of s.split(/[,.;!?]|\b(?:and|then|but|also|so|y|luego)\b/)) {
+    let found: string | undefined;
+    if (/\block(?:ing)? up\b/.test(clause) && !PC_WORD.test(clause)) found = 'house';
+    for (const m of clause.matchAll(new RegExp(HOUSE_THING.source, 'g'))) {
+      if (found) break;
+      if (orderOn(clause, m as RegExpExecArray)) found = m[1]!;
     }
+    if (found) thing ??= found;
+    else if (clause.trim()) rest.push(clause.trim());
   }
-  return thing ? { thing, pc: PC_WORD.test(s), media: MEDIA_WORD.test(s) } : undefined;
+  return thing ? { thing, pc: PC_WORD.test(s), media: MEDIA_WORD.test(s), rest } : undefined;
 }
 
 /** An app name that is a house thing ("garage", "the lights"). */
@@ -70,12 +117,18 @@ const HOUSE_NAME = new RegExp(`^(?:the |my |our )?(?:(?:front|back|side|garage|l
 /** A refusal when an order is about the house, not the PC; undefined to go ahead. */
 function notThePc(name: string, a: Record<string, unknown>, ctx: ToolContext): string | undefined {
   const action = String(a.action ?? '');
+  // Calling a power-down off is never refused: refusing it lets it happen.
+  if (name === 'pc_system' && action === 'cancel_shutdown') return undefined;
   const appName = typeof a.name === 'string' ? a.name.trim().toLowerCase() : '';
+  const said = (ctx.said ?? '').toLowerCase();
   const order = houseOrder(ctx.said);
+  // Said as an order of its own, next to the house one.
+  const alsoSaid = (re: RegExp | undefined) => !!re && !!order?.rest.some((c) => re.test(c));
   let thing: string | undefined;
-  if (name === 'pc_apps' && ['open', 'close', 'focus', 'minimize'].includes(action) && HOUSE_NAME.test(appName)) thing = appName.replace(/^(?:the|my|our) /, '');
-  else if (order && !order.pc && name === 'pc_system') thing = order.thing;
-  else if (order && !order.pc && !order.media && ((name === 'pc_volume' && action !== 'get') || (name === 'pc_media' && action !== 'status'))) thing = order.thing;
+  if (name === 'pc_apps' && ['open', 'close', 'focus', 'minimize'].includes(action) && HOUSE_NAME.test(appName) && !new RegExp(`\\b${appName.replace(/[^\w ]/g, '.')} app\\b`).test(said))
+    thing = appName.replace(/^(?:the|my|our) /, '');
+  else if (order && !order.pc && name === 'pc_system' && !alsoSaid(SYSTEM_VERB[action])) thing = order.thing;
+  else if (order && !order.pc && !order.media && !alsoSaid(MEDIA_VERB) && ((name === 'pc_volume' && action !== 'get') || (name === 'pc_media' && action !== 'status'))) thing = order.thing;
   if (!thing) return undefined;
   return `${NOT_DONE}${ctx.speaker} asked about the ${thing}, which is in the house, not their PC: the pc_ tools only reach their computer. If another tool controls home devices, use that; otherwise say in a few words that you can't control the ${thing}.`;
 }
