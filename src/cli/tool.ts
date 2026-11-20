@@ -14,6 +14,7 @@
 //   satellite-add NAME OWNER_ID   pair a PC; prints its token once
 //   satellite-list
 //   satellite-remove ID|NAME
+//   explain-log            service log on stdin: the last failed start's reason, then what to do
 
 import { existsSync, readFileSync, unlinkSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -23,6 +24,7 @@ import { KOKORO_VOICES } from '../speech/voices.js';
 import { readConfigFile, readJsonFile, SecretsFile, writeConfigFile } from '../web/secrets-file.js';
 import { SatelliteDevices } from '../satellite/devices.js';
 import { baseConfig } from '../web/settings.js';
+import { lastStartFailure } from '../web/explain.js';
 
 const configFile = resolve(process.env.ADRIAN_CONFIG ?? '/etc/adrian/config.json');
 const stateDir = resolve(process.env.ADRIAN_STATE ?? '/var/lib/adrian');
@@ -196,6 +198,11 @@ switch (cmd) {
     if (problems.length) fail(`Not saved:\n${problems.join('\n')}`);
     writeConfigFile(configFile, next);
     console.log(value === null ? `${arg} removed. Restart to apply: sudo adrian restart` : `${arg} = ${JSON.stringify(value)}. Restart to apply: sudo adrian restart`);
+    break;
+  }
+  case 'explain-log': {
+    const f = lastStartFailure(await stdin());
+    if (f) console.log(f.fix ? `${f.error}\n${f.fix}` : f.error);
     break;
   }
   case 'version':

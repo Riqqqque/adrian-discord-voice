@@ -38,6 +38,12 @@ UNIT=/etc/systemd/system/$SERVICE.service
 # The version the last update had to give up on. Root's, not in $VAR: the
 # service must not be able to clear it, or plant one to stop an update.
 FAILED=$OPT/update-failed
+# An update under way: "OLD NEW prep|switched", and the service file from before
+# it (.unit). Left behind only when an update was cut off (power cut, killed).
+MARK=$OPT/update-in-progress
+# Free space an update needs under /opt: the bundle, the unpacked release and,
+# now and then, a new Node.
+UPDATE_NEEDS_MB=500
 
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 need_root() { [ "$(id -u)" = 0 ] || die "run with sudo: sudo adrian $*"; }
@@ -53,6 +59,12 @@ health() { # health [timeout_s] → prints JSON, exit 0 if healthy
   read -r proto host port < <(addr)
   [ "$host" = 0.0.0.0 ] && host=127.0.0.1
   curl -fsS -k --max-time "$t" "$proto://$host:$port/api/health"
+}
+health_body() { # health_body [timeout_s] → the answer whatever its status (a failed start is a 503)
+  local proto host port t=${1:-5}
+  read -r proto host port < <(addr)
+  [ "$host" = 0.0.0.0 ] && host=127.0.0.1
+  curl -sS -k --max-time "$t" "$proto://$host:$port/api/health"
 }
 # wait_healthy seconds [HEALTH]: healthy, and no worse than HEALTH (an earlier
 # reply): running if it was running, in her call if it was in her call.
@@ -80,9 +92,68 @@ refuse_symlinks() {
 }
 current_version() { basename "$(readlink -f "$APP")"; }
 latest_release() { # the newest published version, e.g. 0.14.9
-  local json
-  json=$(curl -fsSL --max-time 20 -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$REPO/releases/latest") || return 1
-  "$NODE" -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const t=String(JSON.parse(s).tag_name||"").replace(/^v/,"");if(!/^[0-9][0-9A-Za-z.+-]*$/.test(t)||t.includes(".."))process.exit(1);console.log(t)})' <<<"$json"
+  local json url tag
+  # The API answers 60 times an hour per address; the release page's redirect
+  # has no such limit, so a busy network (or a rate limit) still gets an answer.
+  if json=$(curl -fsSL --max-time 20 -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$REPO/releases/latest" 2>/dev/null); then
+    "$NODE" -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const t=String(JSON.parse(s).tag_name||"").replace(/^v/,"");if(!/^[0-9][0-9A-Za-z.+-]*$/.test(t)||t.includes(".."))process.exit(1);console.log(t)})' <<<"$json" && return 0
+  fi
+  url=$(curl -fsSL --max-time 20 -o /dev/null -w '%{url_effective}' "https://github.com/$REPO/releases/latest" 2>/dev/null) || return 1
+  tag=${url##*/tag/v}
+  [ "$tag" != "$url" ] && [[ $tag =~ ^[0-9][0-9A-Za-z.+-]*$ && $tag != *..* ]] || return 1
+  echo "$tag"
+}
+free_mb() { df -Pk "$1" 2>/dev/null | awk 'NR==2{print int($4/1024)}'; }
+reachable() { # any HTTP answer counts: this is about the connection
+  local code
+  code=$(curl -s -o /dev/null -w '%{http_code}' --connect-timeout 8 --max-time 12 -I "$1" 2>/dev/null) || true
+  [ -n "$code" ] && [ "$code" != 000 ]
+}
+# An update that was cut off: judge it now, so a half-done one never stays.
+finish_interrupted() {
+  [ -f "$MARK" ] || return 0
+  refuse_symlinks "$MARK" "$MARK.unit"
+  local old new phase cur
+  read -r old new phase <"$MARK" || true
+  cur=$(current_version)
+  set +e
+  if [ -n "$new" ] && [ "$cur" = "$new" ] && [ -n "$old" ] && [ -d "$OPT/releases/$old" ]; then
+    if wait_healthy 90 >/dev/null; then
+      echo "The update to $new was cut off before its checks finished. $new is running and healthy, so it stays."
+    else
+      echo "The update from $old to $new was cut off, and $new isn't healthy. Going back to $old." >&2
+      switch_to "$old"
+      rm -f "$OPT/previous"
+      if [ -s "$MARK.unit" ] && ! cmp -s "$MARK.unit" "$UNIT"; then install -m 0644 "$MARK.unit" "$UNIT"; systemctl daemon-reload; fi
+      systemctl restart "$SERVICE"
+      echo "$new" >"$FAILED"
+      rm -rf "${OPT:?}/releases/$new"
+      if wait_healthy 60 >/dev/null; then echo "Back on $old."; else echo "Back on $old, but it isn't healthy either: sudo adrian logs" >&2; fi
+    fi
+  elif [ -n "$new" ] && [ "$cur" != "$new" ]; then
+    # Cut off before the switch: what it had changed goes back.
+    if [ -s "$MARK.unit" ] && ! cmp -s "$MARK.unit" "$UNIT"; then install -m 0644 "$MARK.unit" "$UNIT"; systemctl daemon-reload; fi
+    [ "$(previous_version)" = "$new" ] || rm -rf "${OPT:?}/releases/$new"
+    echo "An update to $new was cut off before it switched over. Nothing of it is left; $cur is still the one running."
+  fi
+  rm -f "$MARK" "$MARK.unit"
+  set -e
+}
+update_running() { # another adrian update holds the lock right now
+  command -v flock >/dev/null && [ -f "$OPT/update.lock" ] && ! flock -n "$OPT/update.lock" true
+}
+take_update_lock() { # take_update_lock WHAT: one update (or rollback) at a time
+  command -v flock >/dev/null || return 0
+  exec 9>"$OPT/update.lock"
+  flock -n 9 && return 0
+  [ "$1" = --auto ] && { echo "update check skipped: another update is running"; exit 0; }
+  die "another update is already running (the hourly check, or another terminal). Wait for it to finish: sudo journalctl -u adrian-update -f"
+}
+interrupted_note() { # for status and doctor: "running" while one is, "cut off" only when none is
+  [ -f "$MARK" ] || return 0
+  local what; what=$(awk '{print $1" -> "$2}' "$MARK" 2>/dev/null)
+  if update_running; then echo "running: an update ($what) is under way right now"
+  else echo "cut off: an update ($what) was cut off before it finished; sudo adrian update checks it and finishes or undoes it"; fi
 }
 newer() { # newer A B: true when version A is above B
   "$NODE" -e 'const[a,b]=process.argv.slice(1).map(v=>v.split(/[.+-]/).map(n=>parseInt(n,10)||0));for(let i=0;i<Math.max(a.length,b.length);i++){const d=(a[i]||0)-(b[i]||0);if(d)process.exit(d>0?0:1)}process.exit(1)' "$1" "$2"
@@ -130,6 +201,7 @@ case "$cmd" in
     systemctl --no-pager --lines=0 status "$SERVICE" 2>/dev/null | sed -n '1,4p' || true
     if h=$(health 3 2>/dev/null); then echo "health: $h"; else echo "health: not responding"; fi
     read -r proto host port < <(addr); echo "admin UI: $proto://$host:$port/"
+    n=$(interrupted_note); [ -z "$n" ] || echo "${n#*: }"
     ;;
   logs) journalctl -u "$SERVICE" --no-pager -n 200 -o cat "$@" ;;
   start|stop|restart) need_root "$cmd"; systemctl "$cmd" "$SERVICE"; [ "$cmd" = stop ] || wait_healthy 60 >/dev/null || die "not healthy after 60 s: adrian logs" ;;
@@ -172,10 +244,31 @@ case "$cmd" in
     [ -x "$NODE" ] && ok "node $("$NODE" --version)" || bad "node runtime missing at $NODE"
     systemctl is-enabled --quiet "$SERVICE" && ok "service enabled" || bad "service not enabled"
     systemctl is-active --quiet "$SERVICE" && ok "service running" || bad "service not running"
-    if h=$(health 3 2>/dev/null); then ok "health: $h"; else bad "admin UI not responding"; fi
+    # A bot that failed to start still answers (503), so the page itself is up.
+    h=$(health_body 3 2>/dev/null || true)
+    if [ -z "$h" ]; then bad "admin UI not responding"
+    elif grep -q '"state":"failed"' <<<"$h"; then
+      # Why, in words, from the last failed start in the log.
+      why=$(journalctl -u "$SERVICE" --no-pager -o cat -n 2000 2>/dev/null | tool explain-log 2>/dev/null || true)
+      if [ -n "$why" ]; then
+        bad "the bot failed to start: ${why%%$'\n'*}"
+        [ "${why#*$'\n'}" = "$why" ] || printf '          what to do: %s\n' "${why#*$'\n'}"
+      else
+        bad "the bot failed to start; the admin page's Status tab says why"
+      fi
+    else ok "health: $h"; fi
     [ ! -f "$FAILED" ] || warn "update $(cat "$FAILED") failed here on $(date -r "$FAILED" '+%F %H:%M') and was undone; auto-update tries it again a day later, sudo adrian update any time"
+    n=$(interrupted_note)
+    case "$n" in running:*) warn "${n#*: }" ;; cut\ off:*) bad "${n#*: }" ;; esac
     [ "$(stat -c %a "$ETC/secrets.env")" = 600 ] && ok "secrets.env is 0600" || bad "secrets.env permissions are $(stat -c %a "$ETC/secrets.env") (want 600)"
     [ "$(stat -c %U "$ETC/secrets.env")" = adrian ] && ok "secrets.env owned by adrian" || bad "secrets.env owner is $(stat -c %U "$ETC/secrets.env")"
+    # Files a command run as root by hand left behind: the service can't read or replace them.
+    foreign=$(find "$ETC" "$VAR" -xdev \( -path "$VAR/models" -o -path "$VAR/install-manifest.json" \) -prune -o ! -user adrian -print 2>/dev/null | head -n 3 || true)
+    if [ -z "$foreign" ]; then ok "her files belong to her (adrian)"
+    else bad "files the service can't own: $(tr '\n' ' ' <<<"$foreign")(fix: sudo chown -R adrian:adrian $ETC $VAR && sudo chown -R root:adrian $VAR/models)"; fi
+    if reachable https://discord.com/api/v10/gateway; then ok "discord.com reachable"
+    else bad "can't reach discord.com: check this server's internet connection, DNS and firewall (outgoing HTTPS)"; fi
+    reachable https://api.github.com/ && ok "github.com reachable (updates)" || warn "can't reach github.com: updates can't be downloaded until it can"
     for m in silero_vad.onnx sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8 kokoro-multi-lang-v1_0 sherpa-onnx-whisper-small vits-piper-vi_VN-vais1000-medium; do
       [ -e "$VAR/models/$m" ] && ok "model $m" || bad "model $m missing (re-run the installer)"
     done
@@ -217,15 +310,38 @@ case "$cmd" in
   update)
     need_root update
     b=${1:-latest}
+    # By hand at a terminal: run in its own session, so a dropped SSH connection
+    # (or Ctrl+C) can't stop it halfway; this terminal only follows along.
+    if [ "$b" != --check ] && [ "$b" != --auto ] && [ -z "${ADRIAN_DETACHED:-}" ] && [ "${ADRIAN_DETACH:-}" != 0 ] \
+      && { [ -t 1 ] || [ "${ADRIAN_DETACH:-}" = 1 ]; } && command -v setsid >/dev/null; then
+      log=$OPT/update.log
+      refuse_symlinks "$log"
+      : >"$log"
+      echo "Updating in the background, so a dropped connection can't stop it halfway."
+      echo "Following along here; Ctrl+C stops watching, not the update. Log: $log"
+      ADRIAN_DETACHED=1 setsid bash "$0" update "$@" >"$log" 2>&1 </dev/null &
+      upid=$!
+      trap 'echo; echo "Stopped watching. The update carries on: sudo adrian status, or $log"; exit 130' INT
+      tail -n +1 -f --pid="$upid" "$log" 2>/dev/null || true
+      rc=0; wait "$upid" || rc=$?
+      exit "$rc"
+    fi
+    # One update at a time: the hourly check and one by hand must not cross.
+    # --check only looks, so it takes no lock and leaves everything alone.
+    if [ "$b" != --check ]; then
+      take_update_lock "$b"
+      rm -rf "$OPT"/.update-* "$OPT"/.prep-* # left by one that was cut off; nothing else uses them while the lock is held
+      finish_interrupted
+    fi
     case "$b" in
       --check)
-        v=$(latest_release) || die "couldn't reach GitHub"
+        v=$(latest_release) || die "couldn't reach GitHub to see the newest release; check this server's internet connection"
         if newer "$v" "$(current_version)"; then echo "Version $v is available (installed: $(current_version)). Install it: sudo adrian update"
         else echo "Up to date ($(current_version))."; fi
         exit 0 ;;
       latest|--auto)
         auto=0; [ "$b" = --auto ] && auto=1
-        v=$(latest_release) || { [ $auto = 1 ] && { echo "update check: couldn't reach GitHub"; exit 0; }; die "couldn't reach GitHub"; }
+        v=$(latest_release) || { [ $auto = 1 ] && { echo "update check: couldn't reach GitHub"; exit 0; }; die "couldn't reach GitHub to see the newest release; check this server's internet connection, then run it again"; }
         if ! newer "$v" "$(current_version)"; then [ $auto = 1 ] || echo "Up to date ($(current_version))."; exit 0; fi
         # No version gets healthy on a config.json that won't load: don't download,
         # restart twice and roll back every hour until someone fixes it.
@@ -235,15 +351,21 @@ case "$cmd" in
         if [ $auto = 1 ] && h=$(health 5 2>/dev/null) && grep -q '"busy":true' <<<"$h"; then
           echo "update $v waits: someone is in her call or music is playing"; exit 0
         fi
-        dl=$(mktemp -d); trap 'rm -rf "$dl"' EXIT
+        room=$(free_mb "$OPT")
+        if [ -n "$room" ] && [ "$room" -lt "$UPDATE_NEEDS_MB" ]; then
+          [ $auto = 1 ] && { echo "update $v waits: only $room MB free under $OPT, and it needs about $UPDATE_NEEDS_MB MB"; exit 0; }
+          die "only $room MB free under $OPT, and the update needs about $UPDATE_NEEDS_MB MB. Free some space (for example: sudo apt-get clean) and run it again. Nothing was changed."
+        fi
+        # On the app's own disk: /tmp is often a small RAM disk.
+        dl=$(mktemp -d "$OPT/.update-XXXXXX"); trap 'rm -rf "$dl"' EXIT
         echo "Downloading $v"
-        b=$(fetch_release "$v" "$dl") || die "download of $v failed"
+        b=$(fetch_release "$v" "$dl") || die "the download of $v failed or didn't match its checksum; nothing was changed. Check the internet connection and run it again."
         ;;
     esac
     [ -f "$b" ] || die "usage: adrian update [BUNDLE.tar.gz | --check]"
     if [ -f "$b.sha256" ]; then (cd "$(dirname "$b")" && sha256sum -c --status "$(basename "$b").sha256") || die "bundle checksum mismatch"; fi
-    tmp=$(mktemp -d); trap 'rm -rf "$tmp" ${dl:+"$dl"}' EXIT
-    tar -xzf "$b" -C "$tmp" --no-same-owner
+    tmp=$(mktemp -d "$OPT/.update-XXXXXX"); trap 'rm -rf "$tmp" ${dl:+"$dl"}' EXIT
+    tar -xzf - -C "$tmp" --no-same-owner <"$b" || die "can't unpack $b (a damaged download, or a full disk); nothing was changed"
     new=$("$NODE" -p "require('$tmp/package.json').version")
     [[ $new =~ ^[0-9A-Za-z][0-9A-Za-z.+-]*$ && $new != *..* ]] || die "bad version in bundle"
     old=$(current_version)
@@ -258,20 +380,23 @@ case "$cmd" in
       rm -rf "${OPT:?}/releases/$new"; echo "$new" >"$FAILED"
       die "version $new can't run this config, so nothing was changed:"$'\n'"$why"
     fi
-    unit_before=$(mktemp); trap 'rm -rf "$unit_before" ${dl:+"$dl"}' EXIT
+    unit_before=$MARK.unit; trap ${dl:+"rm -rf '$dl'"} EXIT
+    refuse_symlinks "$MARK" "$unit_before"
     cp "$UNIT" "$unit_before" 2>/dev/null || : >"$unit_before"
+    echo "$old $new prep" >"$MARK"
     # The NEW release knows which models and service file it needs.
     if [ -f "$OPT/releases/$new/packaging/upgrade-prep.sh" ]; then
-      bash "$OPT/releases/$new/packaging/upgrade-prep.sh" || { put_unit_back; rm -rf "${OPT:?}/releases/$new"; die "could not prepare $new (models, service file or Node); nothing was switched"; }
+      bash "$OPT/releases/$new/packaging/upgrade-prep.sh" || { put_unit_back; rm -rf "${OPT:?}/releases/$new"; rm -f "$MARK" "$unit_before"; die "could not prepare $new (models, service file or Node); nothing was switched"; }
     fi
     # What the new version has to live up to. Fetching models can take a while,
     # so this is also the last look at whether someone has joined her call.
     was=$(health 5 2>/dev/null || true)
     if [ "${auto:-0}" = 1 ] && grep -q '"busy":true' <<<"$was"; then
-      put_unit_back; rm -rf "${OPT:?}/releases/$new"
+      put_unit_back; rm -rf "${OPT:?}/releases/$new"; rm -f "$MARK" "$unit_before"
       echo "update $new waits: someone is in her call or music is playing"; exit 0
     fi
     echo "Switching $old -> $new"
+    echo "$old $new switched" >"$MARK"
     switch_to "$new"
     echo "Watching $new for a minute or two"
     # A join alone can take 20 s after login, and a crash can come after a good
@@ -281,7 +406,7 @@ case "$cmd" in
     if systemctl restart "$SERVICE" && crashes=$(systemctl show -p NRestarts --value "$SERVICE") \
       && wait_healthy 120 "$was" >/dev/null && sleep 60 && wait_healthy 60 "$was" >/dev/null \
       && [ "$(systemctl show -p NRestarts --value "$SERVICE")" = "$crashes" ]; then
-      rm -f "$FAILED"
+      rm -f "$FAILED" "$MARK" "$unit_before"
       echo "Updated to $new."
       # keep the three newest releases
       ls -1t "$OPT/releases" | tail -n +4 | while read -r r; do [ "$r" != "$new" ] && [ "$r" != "$old" ] && rm -rf "${OPT:?}/releases/$r"; done
@@ -298,6 +423,7 @@ case "$cmd" in
       # Forget the failed release: "previous" goes back to what it was before this update.
       if [ -n "$prev_before" ]; then ln -sfn "$prev_before" "$OPT/previous"; else rm -f "$OPT/previous"; fi
       rm -rf "${OPT:?}/releases/$new"
+      rm -f "$MARK" "$unit_before"
       wait_healthy 60 >/dev/null && die "rolled back to $old" || die "rolled back to $old, but it is not healthy either: adrian logs"
     fi ;;
   auto-update)
@@ -326,6 +452,8 @@ case "$cmd" in
     esac ;;
   rollback)
     need_root rollback
+    take_update_lock rollback
+    finish_interrupted
     prev=$(previous_version); [ -n "$prev" ] || die "no previous version to roll back to"
     echo "Switching $(current_version) -> $prev"
     switch_to "$prev"; systemctl restart "$SERVICE"
