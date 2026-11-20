@@ -452,7 +452,7 @@ describe('what an answer costs', () => {
 const CALL_PLAYS_HERE = 'her: Your Discord call plays on this PC, so here I only take push-to-talk.';
 
 describe('a request at the PC', () => {
-  const ask =(r: Awaited<ReturnType<typeof rig>>, pipe: EventEmitter) => r.heard(pipe, OWNER, 'hey adrian open spotify', 'open spotify');
+  const ask = (r: Awaited<ReturnType<typeof rig>>, pipe: EventEmitter) => r.heard(pipe, OWNER, 'hey adrian open spotify', 'open spotify');
   const DEFERRED = 'her: Answering in the Discord call.';
 
   it('goes to her Discord call when the voice link is up and they can be heard there', async () => {
@@ -1697,7 +1697,7 @@ describe('startup', () => {
     const r = await rig(heavy, { prepare: models });
     expect(turn).toHaveBeenCalledTimes(1);
     expect(whisper).not.toHaveBeenCalled(); // about 1.3 GB with the voices it brought
-    r.heard(r.discordPipe, SAM, 'oye adrian quÃƒÂ© hora es', 'Ã‚Â¿quÃƒÂ© hora es?');
+    r.heard(r.discordPipe, SAM, 'oye adrian qué hora es', '¿qué hora es?');
     await sleep(40);
     expect(whisper).not.toHaveBeenCalled(); // Spanish is spotted without it
     r.heard(r.discordPipe, SAM, 'hey adrian ni hao ma xian zai ji dian', 'ni hao ma xian zai ji dian');
@@ -1993,7 +1993,7 @@ describe('what music_control says', () => {
     fakeMusic();
     r.voiceStates.set(SAM, { channelId: CALL, mute: false, deaf: false });
     pause(r);
-    r.heard(r.discordPipe, SAM, 'hey adrian Ã‚Â¿puedes parar la mÃƒÂºsica?', 'Ã‚Â¿puedes parar la mÃƒÂºsica?');
+    r.heard(r.discordPipe, SAM, 'hey adrian ¿puedes parar la música?', '¿puedes parar la música?');
     await until(() => r.llmBodies.length === 2, 'the second call');
     await r.stack.stop();
   });
@@ -2478,7 +2478,7 @@ describe('what forget says', () => {
     const r = await rig();
     await told(r);
     const before = r.llmBodies.length;
-    r.heard(r.discordPipe, SAM, 'hey adrian Ã‚Â¿puedes forget lo del tÃƒÂ©?', 'Ã‚Â¿puedes forget lo del tÃƒÂ©?'); // the router needs its word
+    r.heard(r.discordPipe, SAM, 'hey adrian ¿puedes forget lo del té?', '¿puedes forget lo del té?'); // the router needs its word
     await until(() => r.llmBodies.length === before + 2, 'the second call');
     await r.stack.stop();
   });
