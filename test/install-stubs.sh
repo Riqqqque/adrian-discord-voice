@@ -35,7 +35,7 @@ curl() {
   local a url=
   for a; do case "$a" in http*) url=$a ;; esac; done
   case "$url" in
-    */api/health) [ -f active ] && [ "$(cat serving 2>/dev/null)" = "$(sed -E 's#.*:([0-9]+)/api/health#\1#' <<<"$url")" ] ;;
+    */api/health) if [ -f active ] && [ "$(cat serving 2>/dev/null)" = "$(sed -E 's#.*:([0-9]+)/api/health#\1#' <<<"$url")" ]; then printf "$(cat health-code 2>/dev/null || echo 200)"; else printf 000; return 7; fi ;;
     https://*) local h; h=$(sed -E 's#https://([^/]+)/.*#\1#' <<<"$url"); if grep -qx "$h" offline 2>/dev/null; then printf 000; return 7; fi; printf 200 ;;
     *) return 22 ;;
   esac
