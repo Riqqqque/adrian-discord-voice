@@ -38,8 +38,9 @@ const KEY = { claude: secrets.get('ANTHROPIC_API_KEY'), groq: secrets.get(c.clou
 const ORIGIN = { claude: 'https://api.anthropic.com', groq: 'https://api.groq.com', speechify: 'https://api.speechify.ai', tavily: 'https://api.tavily.com' };
 const OPEN = { claude: '/v1/models', groq: '/openai/v1/models', speechify: '/v1/voices', tavily: '/' };
 const MODEL = process.env.MODEL ?? 'claude-haiku-5-5';
-const PRICE_IN = 1 / 1e6; // $ per token, Haiku: errs high for the spend line
-const PRICE_OUT = 5 / 1e6;
+// $ per token, as bench/prewarm.mjs prices Haiku.
+const PRICE_IN = 0.1 / 1e6;
+const PRICE_OUT = 0.5 / 1e6;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // Which socket each timed request went out on: new, or one already used.
