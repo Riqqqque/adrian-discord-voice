@@ -152,7 +152,12 @@ server refused this PC (bad token). Check the token in settings."
   type in the window (up to 2000 characters; while she's offline the text
   isn't sent and stays in the box).
 - After an answer she keeps listening for 20 seconds without her name, so a
-  follow-up needs no "Hey Adrian".
+  follow-up needs no "Hey Adrian". The mic hears everyone near the PC, so
+  words to someone else, banter and talk about her stay silent (next
+  release); if she stays silent on something meant for her, say her name.
+- "Lock everything" or "turn off the lights and lock it" gets "Lock the PC?"
+  first, and only your yes on the next turn locks it; "lock the front door"
+  never reaches the PC (next release).
 - Talk over her to cut her off; "wait" or "hold on" stops her and keeps
   listening. The stop button or Escape stops her too.
 - Closing the window keeps her running in the tray (click the tray icon to
