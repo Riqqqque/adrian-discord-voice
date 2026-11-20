@@ -9,6 +9,7 @@ import { UsageLedger } from '../src/limits/usage-ledger.js';
 import { AdminAuth } from '../src/web/auth.js';
 import { SecretsFile } from '../src/web/secrets-file.js';
 import { createAdminServer } from '../src/web/server.js';
+import { Metrics } from '../src/web/metrics.js';
 import { applySettings, type SettingsPatch } from '../src/web/settings.js';
 
 // Fake values with the real prefixes, so the redaction patterns are tested.
@@ -33,7 +34,8 @@ const configFile = join(dir, 'config.json');
 writeFileSync(configFile, '{}');
 const secrets = new SecretsFile(join(dir, 'secrets.env'));
 const logLines: string[] = [];
-const log = createLogger('debug', (l) => logLines.push(l));
+const metrics = new Metrics();
+const log = createLogger('debug', (l) => logLines.push(l), metrics.observe);
 const auth = new AdminAuth(stateDir);
 const ledger = new UsageLedger(undefined, { perUserPerHour: 30, dailyUsd: 1, monthlyUsd: 10 }, 'UTC');
 
@@ -86,6 +88,8 @@ const server = createAdminServer({
   stack,
   voicePreview: async () => Buffer.from('RIFF'),
   fetch: fakeFetch,
+  metrics,
+  updatePaths: { failed: join(dir, 'update-failed'), inProgress: join(dir, 'update-in-progress'), timer: join(dir, 'timer') },
   docker: false, // the same answers on a build machine that happens to be a container
 });
 let base = '';
@@ -134,6 +138,7 @@ describe('admin web server', () => {
     expect(h.headers.get('x-frame-options')).toBe('DENY');
     expect((await call('GET', '/api/status')).status).toBe(401);
     expect((await call('GET', '/api/secrets')).status).toBe(401);
+    expect((await call('GET', '/api/dashboard')).status).toBe(401);
   });
 
   it('serves the page but nothing outside web/', async () => {
@@ -290,6 +295,33 @@ describe('admin web server', () => {
     expect(status.latency.note).toContain('about 1 s');
   });
 
+  it('puts cost, speed, links and what went wrong on the dashboard, without IDs or secrets', async () => {
+    // As the voice stack logs them: a user ID and a PC's name and address ride along.
+    const user = '100000000000000099';
+    log.info('answered', { user, room: 'sat:d1', outcome: 'finished', sttLatencyMs: 90, groqMs: 400, turnCheckMs: 120, holdMs: 0, llmFirstChunkMs: 900, ttsFirstMs: 300, speechEndToAudioMs: 1_850, costUsd: 0.002 });
+    log.info('answered', { user, room: 'discord', outcome: 'error', speechEndToAudioMs: null, costUsd: 0 });
+    log.info('satellite connected', { device: 'Desk PC', addr: '192.0.2.7' });
+    log.warn('cloud voice failed; local voice for a minute', { status: 401, error: `speechify HTTP 401: key ${FAKE.GROQ_API_KEY} for ${user}` });
+    writeFileSync(join(dir, 'update-failed'), '9.9.9\n');
+    const r = await call('GET', '/api/dashboard');
+    expect(r.status).toBe(200);
+    const d = r.data as any;
+    expect(d.answers.day).toMatchObject({ answers: 2, errors: 1 });
+    expect(d.speed.day.total.n).toBe(1);
+    expect(d.speed.day.pc.p50).toBeGreaterThan(1_850 * 0.9);
+    expect(d.speed.day.pc.p50).toBeLessThan(1_850 * 1.1);
+    expect(d.costPerAnswerUsd.day).toBe(0.001);
+    expect(d.reliability.pcsOnline).toBe(1);
+    expect(d.providers.llm).toMatchObject({ dailyCapUsd: 1, monthlyCapUsd: 10 });
+    expect(d.errors[0]).toMatchObject({ msg: 'cloud voice failed; local voice for a minute', n: 1 });
+    expect(d.updates.failedVersion).toBe('9.9.9');
+    const said = d.attention.map((a: { text: string }) => a.text).join('\n');
+    expect(said).toContain('1 answer failed or timed out in the last day');
+    expect(said).toContain('The cloud voice failed 1 time in the last day');
+    expect(said).toContain('The update to 9.9.9 failed its checks here');
+    for (const leak of [user, 'Desk PC', '192.0.2.7', FAKE.GROQ_API_KEY]) expect(r.text).not.toContain(leak);
+  });
+
   describe('a saved fallback', () => {
     const withConfig = async (config: unknown, run: () => Promise<void>) => {
       const before = readFileSync(configFile, 'utf8');
@@ -382,7 +414,7 @@ describe('admin web server', () => {
 
   it('never returns or logs a secret value', async () => {
     // Touch every GET endpoint once more.
-    for (const p of ['/api/status', '/api/settings', '/api/secrets', '/api/logs', '/api/session', '/api/health']) {
+    for (const p of ['/api/status', '/api/dashboard', '/api/settings', '/api/secrets', '/api/logs', '/api/session', '/api/health']) {
       expect((await call('GET', p)).status).toBe(200);
     }
     // A careless log call is still redacted.
