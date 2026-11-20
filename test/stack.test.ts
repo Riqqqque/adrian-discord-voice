@@ -1056,6 +1056,16 @@ describe('a pause after "play"', () => {
     await r.stack.stop();
   });
 
+  it('a loose wake is judged as maybe about her, not as said without her name', async () => {
+    const r = await rig();
+    r.steps.push(SILENT);
+    r.heard(r.discordPipe, SAM, 'adrian is so slow today', 'is so slow today', 1, { loose: true });
+    await until(() => r.llmBodies.length === 1, 'the judge');
+    expect(asPrompt(r.llmBodies[0])).toContain('with your name in it, but maybe about you rather than to you');
+    expect(asPrompt(r.llmBodies[0])).not.toContain(JUDGE_LINE);
+    await r.stack.stop();
+  });
+
   it('a question inside the wait stays a question, and still gets judged', async () => {
     const r = await rig(MUSIC);
     const m = fakeMusic();

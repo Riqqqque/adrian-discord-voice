@@ -1145,7 +1145,7 @@ export async function startVoiceStack(
     return true;
   }
 
-  async function respond(rm: Room, userId: UserId, command: string, outer: AbortSignal, followUp = false, onSpeaking?: () => void, onWorking?: (on: boolean) => void): Promise<void | 'silent' | 'done' | 'asked'> {
+  async function respond(rm: Room, userId: UserId, command: string, outer: AbortSignal, followUp = false, onSpeaking?: () => void, onWorking?: (on: boolean) => void, loose = false): Promise<void | 'silent' | 'done' | 'asked'> {
     const waitKey = `${rm.key}:${userId}`;
     const waiting = pendingPlay.get(waitKey);
     pendingPlay.delete(waitKey);
@@ -1203,6 +1203,7 @@ export async function startVoiceStack(
       modelDone = new Promise((r) => (finished = r));
       const gen = orchestrator.ask(userId, nameOf(userId), question, signal, (u) => (usage = u), rm.place(), {
         followUp,
+        ...(followUp && loose ? { loose: true } : {}),
         ...(rm.ui ? { desk: true } : {}),
         ...(followUp && musicish ? { extra: [MUSIC_FOLLOW_UP] } : {}),
         onSilent: () => (silent = true),
@@ -1350,10 +1351,10 @@ export async function startVoiceStack(
   function makeController(rm: Room): ConversationController {
     const c: ConversationController = new ConversationController({
     now: () => performance.now(),
-    respond: async (userId, command, signal, followUp) => {
+    respond: async (userId, command, signal, followUp, loose) => {
       rm.ui?.mode('thinking');
       try {
-        return await respond(rm, userId, command, signal, followUp, () => c.speaking(userId), (on) => c.working(userId, on));
+        return await respond(rm, userId, command, signal, followUp, () => c.speaking(userId), (on) => c.working(userId, on), loose);
       } finally {
         rm.ui?.mode('idle');
       }
