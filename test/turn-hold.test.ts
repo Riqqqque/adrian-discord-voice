@@ -635,3 +635,28 @@ describe('when a clip closed', () => {
     expect(e).not.toHaveProperty('holdMs');
   });
 });
+
+describe('a cut (push-to-talk going down or up at a PC)', () => {
+  it('closes what is open now, held speech too, and nothing said after it joins that', async () => {
+    const t = setup([0.2, 0.2, 0.2], 5_000);
+    t.say(seconds(1)); // sounds unfinished: held
+    await wait(20);
+    expect(t.heardLens).toEqual([]);
+    t.p.vad.queue.push(seconds(0.5)); // still being said
+    t.p.cut('u1');
+    await until(() => t.heardLens.length > 0);
+    expect(t.heardLens).toEqual([16_000 + 4_000 + 8_000]);
+    t.say(seconds(0.5)); // after the cut: on its own
+    await wait(30);
+    expect(t.heardLens).toHaveLength(1);
+    t.p.cut('u1');
+    await until(() => t.heardLens.length > 1);
+    expect(t.heardLens).toEqual([16_000 + 4_000 + 8_000, 8_000]);
+  });
+
+  it('does nothing for someone not heard yet', () => {
+    const t = setup([]);
+    t.p.cut('nobody');
+    expect(t.heardLens).toEqual([]);
+  });
+});

@@ -72,6 +72,7 @@ import { Speaker } from '../voice/speaker.js';
 import { TextWakeDetector } from '../wake/text-wake.js';
 import type { SatelliteConnection } from '../satellite/connection.js';
 import { SatelliteDevices } from '../satellite/devices.js';
+import { PcPushToTalk, type PttHooks } from '../satellite/ptt.js';
 import { PcRecorder } from '../satellite/recorder.js';
 import { startSatelliteServer } from '../satellite/server.js';
 import { PC_RULE, pcTools, PowerDownWindow } from '../satellite/tools.js';
@@ -155,6 +156,8 @@ export async function startVoiceStack(
   const transport = new DiscordVoiceTransport({ client, logger: log, silenceMs: config.silenceMs });
   /** The voice channel the bot is in (or joining); undefined after /leave. */
   let spot: VoiceSpot | undefined = { guildId: config.guildId, channelId: config.channelId };
+  /** Her channel the last time her voice link was up (kept through a kick or /leave): see pcGuarded. */
+  let lastCall: VoiceSpot | undefined = spot;
   /** stop() has run: what was still starting must not carry on. */
   let closing = false;
   /** Who set the bot up (optional): '' when not configured. */
@@ -167,7 +170,10 @@ export async function startVoiceStack(
     mixer.stopAll();
   });
   transport.on('moved', (guildId, channelId) => {
-    if (spot?.guildId === guildId) spot = { guildId, channelId };
+    if (spot?.guildId === guildId) spot = lastCall = { guildId, channelId };
+  });
+  transport.on('ready', () => {
+    if (spot) lastCall = spot;
   });
   transport.on('failed', (r) => log.error('voice failed', { reason: r }));
 
@@ -430,19 +436,27 @@ export async function startVoiceStack(
     log: (event, fields) => log.info(event, fields),
     level: Math.min(1, config.playbackVolume),
   };
-  /** Where an alarm can ring for them: her call if they can hear it there (muted
-   *  there, their PC first: not the whole call's to hear, and its window has Stop
-   *  and Snooze; a spoken stop there needs push-to-talk, see callPlaysAt), else their PC. */
+  /** Where an alarm can ring for them: her call if they can hear it there, else
+   *  their PC. Muted in her call, their PC if a spoken stop counts there (not
+   *  the whole call's to hear, and its window has Stop and Snooze). A PC whose
+   *  speakers play the call takes only push-to-talk (pcGuarded): then her call,
+   *  with the DM buttons, since she can't hear them say stop there either. */
   const alarmPlace = (userId: UserId): string | undefined => {
     const vs = inHerChannel(userId);
     const pc = pcFor({ userId });
-    if (transport.isReady() && vs && !vs.deaf && !(vs.mute && pc)) return 'discord';
+    if (transport.isReady() && vs && !vs.deaf && !(vs.mute && pc && !pcGuarded(pc))) return 'discord';
     return pc ? `sat:${pc.device.id}` : undefined;
   };
   const alarms: AlarmClock = new AlarmClock(stateDir ? join(stateDir, 'alarms.json') : undefined, config.timezone, {
     placeFor: alarmPlace,
-    // Ringing in her call while they're muted there: they hear it, but she can't hear their stop.
-    needsButtons: (userId) => alarmPlace(userId) === 'discord' && !!inHerChannel(userId)?.mute,
+    // Ringing where she can't hear their stop: in her call while they're muted
+    // there, or at a PC that takes only push-to-talk. The DM has the buttons.
+    needsButtons: (userId) => {
+      const place = alarmPlace(userId);
+      if (place === 'discord') return !!inHerChannel(userId)?.mute;
+      const pc = place ? satRooms.get(place)?.ui : undefined;
+      return !!pc && pcGuarded(pc) ? "It's ringing at your PC, which plays your voice call, so a spoken stop there needs push-to-talk." : false;
+    },
     ring: (place, plan) => {
       const rm = place === 'discord' ? discordRoom : satRooms.get(place);
       if (!rm) return undefined;
@@ -1034,7 +1048,7 @@ export async function startVoiceStack(
       return true;
     }
     if (m.kind === 'play') {
-      const allowed = ledger.check(userId, isOwner(userId));
+      const allowed = mayAsk(userId);
       if (!allowed.ok && allowed.reason === 'user-rate') {
         await say("You've asked for a lot in the last hour. Give it a bit.");
         return true;
@@ -1124,7 +1138,7 @@ export async function startVoiceStack(
       await say("I don't see a link in chat from the last half hour. Paste it and ask again.");
       return true;
     }
-    const allowed = ledger.check(userId, isOwner(userId));
+    const allowed = mayAsk(userId);
     if (!allowed.ok && allowed.reason === 'user-rate') {
       await say("You've asked for a lot in the last hour. Give it a bit.");
       return true;
@@ -1187,7 +1201,7 @@ export async function startVoiceStack(
     let source: AsyncIterable<string>;
     /** Resolves when the model has let go: by then its spend and its turn are in. */
     let modelDone: Promise<void> = Promise.resolve();
-    const allowed = orchestrator ? ledger.check(userId, isOwner(userId)) : ({ ok: true } as const);
+    const allowed = orchestrator ? mayAsk(userId) : ({ ok: true } as const);
     if (!orchestrator) {
       source = fixed("I'm not fully set up yet. My language model hasn't been configured.");
     } else if (!allowed.ok) {
@@ -1339,6 +1353,21 @@ export async function startVoiceStack(
   const priorityRoles = new Set(config.priorityRoleIds);
   /** Owners: the configured IDs plus the bot's app owner. */
   const isOwner = (id: UserId) => config.owners.includes(id) || id === voiceCommands.ownerId();
+  /** Has one of the priority roles (config priorityRoleIds) in her server. Read
+   *  from the member cache, or the member a voice state carries: without the
+   *  Members intent someone the bot hasn't seen in voice or chat reads as no. */
+  function hasPriorityRole(id: UserId): boolean {
+    if (!priorityRoles.size) return false;
+    const g = client.guilds.cache.get(spot?.guildId ?? config.guildId);
+    const m = g?.members.cache.get(id) ?? g?.voiceStates.cache.get(id)?.member;
+    return !!m && m.roles.cache.some((r) => priorityRoles.has(r.id));
+  }
+  /** Not a guest for the daily share (limits.guestDailyUsd): owners, the
+   *  creator's own accounts, and priority-role members. Only owners skip the
+   *  hourly limit too. */
+  const household = (id: UserId) => isOwner(id) || config.identity.creatorIds.includes(id) || isCreator(id) || hasPriorityRole(id);
+  /** May they start a paid request now (usage-ledger check)? */
+  const mayAsk = (id: UserId) => ledger.check(id, isOwner(id), household(id));
   /** The creator's own Discord account(s): configured, else the owners. */
   function isCreator(id: UserId): boolean {
     if (!creator) return false;
@@ -1376,17 +1405,14 @@ export async function startVoiceStack(
       pendingPlay.delete(`${rm.key}:${id}`); // "never mind" after "Who do you want to hear?"
       if (isOwner(id) && config.ownerStopReply.trim()) void c.announce(id, config.ownerStopReply.trim());
     },
-    isPriority: (id) => {
-      const m = client.guilds.cache.get(spot?.guildId ?? config.guildId)?.members.cache.get(id);
-      return !!m && m.roles.cache.some((r) => priorityRoles.has(r.id));
-    },
+    isPriority: (id) => hasPriorityRole(id),
     log: (event, fields) => log.info(event, rm.ui ? { ...fields, room: rm.key } : fields),
     // The PC shows "listening" only while she'd really take words without her name.
     ...(rm.ui
       ? {
           listenChanged: (id?: UserId) => {
             const owner = rm.ui!.owner;
-            if (id === undefined || id === owner) rm.ui!.state({ listenMs: c.listenLeftMs(owner) });
+            if (id === undefined || id === owner) rm.ui!.state({ listenMs: pcListenMs(rm.ui!, c) });
           },
           // In a game there: only her name starts a turn.
           quiet: () => quiet.playingAt(rm.ui!),
@@ -1456,18 +1482,47 @@ export async function startVoiceStack(
     const vs = inHerChannel(userId);
     return transport.isReady() && !!vs && !vs.mute && !vs.deaf;
   }
-  /** Their Discord client plays her call: in her voice channel and not deafened.
-   *  Muted covers only their own mic, and her voice link being down doesn't stop
-   *  the others. Their PC's mic then hears the call through the speakers, and
-   *  everything a PC hears counts as its owner. The PC app's echo gate only
-   *  knows her own audio, not Discord's, so it can't tell; push-to-talk and
-   *  typing in the window are the only words surely theirs. (Another voice
-   *  channel or app is out of sight here: roadmap F1.) */
-  function callPlaysAt(userId: UserId): boolean {
-    const vs = inHerChannel(userId);
-    return !!vs && !vs.deaf;
+  /** Their voice state in any voice channel the bot can see, in any of its servers. */
+  function inAnyCall(userId: UserId) {
+    for (const g of client.guilds.cache.values()) {
+      const vs = g.voiceStates.cache.get(userId);
+      if (vs?.channelId) return vs;
+    }
+    return undefined;
   }
+  /** This PC's speakers play a Discord voice call its owner is in: in any voice
+   *  channel the bot can see, not deafened (muted covers only their own mic).
+   *  Its mic then hears everyone in that call, and everything a PC hears counts
+   *  as its owner. The PC app's echo gate only knows her own audio, so it can't
+   *  tell; push-to-talk and typing in the window are the only words surely
+   *  theirs. Not when the PC says it plays through headphones (apps from 0.17.2;
+   *  older ones, and speakers, count as speakers). While her voice link is
+   *  down, only the channel she was last in counts. Calls the bot can't see
+   *  (other servers, DMs, other apps) are out of sight here: roadmap F1. */
+  function pcGuarded(pc: SatelliteConnection): boolean {
+    if (pc.output === 'headphones') return false;
+    if (transport.isReady()) {
+      const vs = inAnyCall(pc.owner);
+      return !!vs && !vs.deaf;
+    }
+    const at = lastCall;
+    const vs = at ? client.guilds.cache.get(at.guildId)?.voiceStates.cache.get(pc.owner) : undefined;
+    return !!vs && vs.channelId === at!.channelId && !vs.deaf;
+  }
+  /** How long she takes words without her name at this PC, for its orb: none while it takes only push-to-talk. */
+  const pcListenMs = (pc: SatelliteConnection, c: ConversationController) => (pcGuarded(pc) ? 0 : c.listenLeftMs(pc.owner));
   const CALL_PLAYS_HERE = 'Your Discord call plays on this PC, so here I only take push-to-talk.';
+  /** When each PC last got the soft "only push-to-talk here" chime. */
+  const noticedAt = new WeakMap<SatelliteConnection, number>();
+  /** Words for her ignored at a PC that takes only push-to-talk: the window
+   *  says why, and the PC plays a soft chime, at most every 20 s (the window is
+   *  usually closed, and a game may be in front). */
+  function callPlaysHere(pc: SatelliteConnection): void {
+    pc.transcript('her', CALL_PLAYS_HERE);
+    if ((noticedAt.get(pc) ?? -Infinity) > performance.now() - 20_000) return;
+    noticedAt.set(pc, performance.now());
+    pc.notice('ptt_only');
+  }
   /** Stops so far, per room and person. They skip the second listens, so one
    *  can overtake the question it's for: that question checks this before it goes on. */
   const stops = new Map<string, number>();
@@ -1476,9 +1531,9 @@ export async function startVoiceStack(
   /** Until when a person's words belong to their PC (push-to-talk). Her call
    *  hears the same words, sometimes first, and has to leave them alone. */
   const pcHasWords = new Map<UserId, number>();
-  /** Listen to one room's audio. `direct()` true: the next thing heard is a question for her (push-to-talk).
-   *  `pttOpen()` says the same without using it up. */
-  function listenTo(source: VoiceTransport, rm: Room, ctl: ConversationController, direct?: () => boolean, pttOpen?: () => boolean): ListeningPipeline {
+  /** Listen to one room's audio. `ptt`: a PC's push-to-talk (see PttHooks). */
+  function listenTo(source: VoiceTransport, rm: Room, ctl: ConversationController, ptt?: PttHooks): ListeningPipeline {
+  const pttOpen = () => !!ptt?.open();
   /** The cloud's listen to held or early speech, by the clip it heard. A join makes a new clip, so it can't land on the wrong audio. */
   const early = new WeakMap<Float32Array, Promise<string | undefined>>();
   /** Start the cloud's listen before the clip is released, if heard() would ask for it.
@@ -1488,9 +1543,9 @@ export async function startVoiceStack(
     const m = wakeDetector.matchLoose(text);
     const said = m.woke ? m.remainder : text;
     const kind = classify(said)?.kind;
-    const forHer = m.woke || ctl.listeningTo(userId, startedAt) || !!pttOpen?.();
-    // heard() drops what a PC hears while its speakers play her call: not worth a listen.
-    if (!forHer || !said.trim() || kind === 'stop' || kind === 'name' || !cloudSttFor(rm, userId) || (!!rm.ui && callPlaysAt(userId) && !pttOpen?.())) return;
+    const forHer = m.woke || ctl.listeningTo(userId, startedAt) || pttOpen();
+    // heard() drops what a PC hears while its speakers play a call: not worth a listen.
+    if (!forHer || !said.trim() || kind === 'stop' || kind === 'name' || !cloudSttFor(rm, userId) || (!!rm.ui && pcGuarded(rm.ui) && !pttOpen())) return;
     if (o.unlessDangling && endsDangling(said)) return;
     early.set(samples, cloudListen(samples, o.dropped));
   }
@@ -1509,7 +1564,9 @@ export async function startVoiceStack(
           // anything else keeps waiting, as all of it used to.
           shouldHold: (userId, text, seconds) => {
             const m = wakeDetector.matchLoose(text);
-            if (!m.woke && !ctl.listeningTo(userId, performance.now() - seconds * 1000) && !pttOpen?.()) return false;
+            // The talk key just went up: they're done, the rest isn't coming.
+            if (ptt?.done()) return false;
+            if (!m.woke && !ctl.listeningTo(userId, performance.now() - seconds * 1000) && !pttOpen()) return false;
             const said = m.woke ? m.remainder : text;
             return !english.looksEnglish(said) || endsDangling(said);
           },
@@ -1522,37 +1579,44 @@ export async function startVoiceStack(
     : new ListeningPipeline(source, stt, wakeDetector, vad);
   pipeline.on('heard', (e) => void heard(e).catch((err: Error) => log.warn('heard failed', { error: err.message })));
   async function heard(e: HeardEvent): Promise<void> {
-    // Asking whether push-to-talk is on also uses it up, whatever was said.
-    const ptt = direct?.() ?? false;
-    if (!e.woke && ptt) e = { ...e, woke: true, command: e.text };
+    // Asking whether push-to-talk covers it also uses up a one-shot press, whatever was said.
+    const p = ptt?.said(e.vadClosedAt ?? e.segmentClosedAt) ?? { ptt: false, first: false };
+    // The first thing said with it needs no name. What follows in the same hold
+    // goes on as more of it (or a follow-up), as it would without the key.
+    if (!e.woke && p.first) e = { ...e, woke: true, command: e.text };
     const first = classify(e.woke ? e.command : e.text);
     const stop = first?.kind === 'stop';
-    // A PC whose speakers play her call hears everyone in it, as its owner (callPlaysAt).
+    // They're heard in her call itself, and it answers. It can still reach this PC through the PC tools.
+    const deferred = !!rm.ui && !p.ptt && inHerCall(e.userId);
+    // A PC whose speakers play a call hears everyone in it, as its owner (pcGuarded).
     // Only a stop gets through: stopping is safe whoever said it. It drops a
     // question of theirs still waiting on a second listen, calls off a restart
-    // counting down, and stops what she's saying at this PC. Not alarms,
-    // follow-ups, questions or orders.
-    const pcHearsCall = !!rm.ui && !ptt && callPlaysAt(e.userId);
-    if (pcHearsCall && stop) {
+    // counting down, and stops what she's saying, music or a sound at this PC.
+    // Not alarms, follow-ups, questions or orders.
+    const pcHearsCall = !!rm.ui && !p.ptt && !deferred && pcGuarded(rm.ui);
+    if ((deferred || pcHearsCall) && stop) {
       noteStop(rm, e.userId);
       if (!first.weak) callOff(e.userId, ctl);
     }
-    if (pcHearsCall && !(stop && ctl.busy)) {
-      if (inHerCall(e.userId)) {
-        // They're heard in the call itself, and it answers. It can still reach this PC through the PC tools.
-        if (e.woke) {
-          log.info('pc deferred to discord', { room: rm.key });
-          rm.ui!.transcript('her', 'Answering in the Discord call.');
-        }
-      } else if (e.woke || (alarms.ringingFor(e.userId).length > 0 && (stop || !!ringWord(e.text)))) {
-        // On her name, or on words for their ringing alarm: otherwise a stop there would just go unheard.
-        log.info('pc hears the call', { room: rm.key });
-        rm.ui!.transcript('her', CALL_PLAYS_HERE);
+    if (deferred && !(stop && ctl.busy)) {
+      if (e.woke) {
+        log.info('pc deferred to discord', { room: rm.key });
+        rm.ui!.transcript('her', 'Answering in the Discord call.');
       }
       return;
     }
+    if (pcHearsCall) {
+      // On her name, or on words for their ringing alarm: otherwise they'd just go
+      // unheard. A stop is taken (below), but not for the alarm.
+      if ((e.woke && !stop) || (alarms.ringingFor(e.userId).length > 0 && (stop || !!ringWord(e.text)))) {
+        log.info('pc hears the call', { room: rm.key });
+        callPlaysHere(rm.ui!);
+      }
+      if (!stop) return;
+    }
+    const held = deferred || pcHearsCall;
     // An alarm of theirs ringing: stop / snooze / "I'm up" are for it, in any room, before anything else.
-    if (!pcHearsCall) {
+    if (!held) {
       if (alarmHeard(rm, e.userId, e.woke ? e.command || e.text : e.text, e.woke)) return;
       if (stop) noteStop(rm, e.userId);
       if (first?.kind === 'stop' && !first.weak) callOff(e.userId, ctl);
@@ -1652,7 +1716,7 @@ export async function startVoiceStack(
   source.on('speechStart', () => void cloud?.warmIfIdle());
   pipeline.on('voiceActivity', (id, ms) => {
     // The call's voices through their speakers would talk over her here: only a stop cuts her off then.
-    if (rm.ui && callPlaysAt(id) && !pttOpen?.()) return;
+    if (rm.ui && pcGuarded(rm.ui) && !pttOpen()) return;
     ctl.voiceActivity(id, ms);
   });
   pipeline.on('error', (id, err) => log.warn('listen error', { user: id, error: err.message }));
@@ -1730,7 +1794,7 @@ export async function startVoiceStack(
       : {}),
     links,
     limited: (userId) => {
-      const a = ledger.check(userId, isOwner(userId));
+      const a = mayAsk(userId);
       return a.ok ? undefined : LIMIT_MESSAGES[a.reason];
     },
     enabled: config.textChat.enabled,
@@ -1758,7 +1822,7 @@ export async function startVoiceStack(
     allowedGuilds: config.allowedGuilds,
     isOwner: (id) => isOwner(id),
     allow: (id) => {
-      const a = ledger.check(id, isOwner(id));
+      const a = mayAsk(id);
       if (!a.ok && a.reason === 'user-rate') return "You've asked for a lot in the last hour. Give it a bit.";
       ledger.noteRequest(id);
       return undefined;
@@ -1875,25 +1939,18 @@ export async function startVoiceStack(
         satRooms.set(key, rm);
         const ctl = makeController(rm);
         rm.ctl = ctl;
-        // Push-to-talk: the next thing heard is for her, no "Hey Adrian" needed.
-        let pttUntil = 0;
-        listenTo(
-          conn,
-          rm,
-          ctl,
-          () => {
-            const on = performance.now() < pttUntil;
-            pttUntil = 0;
-            // The call's copy of these words may still be on its way.
-            if (on) pcHasWords.set(conn.owner, performance.now() + 3_000);
-            return on;
-          },
-          () => performance.now() < pttUntil,
-        );
-        conn.on('ptt', () => {
-          pttUntil = performance.now() + 15_000;
-          pcHasWords.set(conn.owner, pttUntil);
+        // Push-to-talk: what's said with it is for her, no "Hey Adrian" needed.
+        let pipe: ListeningPipeline | undefined;
+        const ptt = new PcPushToTalk({
+          cut: () => pipe?.cut(conn.owner),
+          // The call's copy of these words may still be on its way.
+          wordsHereUntil: (until) => pcHasWords.set(conn.owner, until),
         });
+        pipe = listenTo(conn, rm, ctl, ptt);
+        conn.on('ptt', (p) => ptt.down(!!p?.hold));
+        conn.on('pttUp', () => ptt.up());
+        // Headphones or speakers: whether a call can be heard there changes what the orb shows.
+        conn.on('output', () => conn.state({ listenMs: pcListenMs(conn, ctl) }));
         conn.on('text', (text) => {
           if (classify(text)?.kind === 'stop') callOff(conn.owner, ctl);
           ctl.heard({ userId: conn.owner, text, woke: true, command: text });
@@ -1918,9 +1975,10 @@ export async function startVoiceStack(
         // In a game (PC apps from 0.15.6 say so): her name for every turn here, reminders kept for after.
         quiet.connected(conn);
         conn.on('activity', (a) => {
-          if (quiet.activity(conn, a)) conn.state({ listenMs: ctl.listenLeftMs(conn.owner) });
+          if (quiet.activity(conn, a)) conn.state({ listenMs: pcListenMs(conn, ctl) });
         });
         conn.on('closed', () => {
+          ptt.close();
           quiet.disconnected(conn);
           ctl.cancelAll();
           rm.music?.stop();

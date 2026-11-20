@@ -86,6 +86,16 @@ describe("a guest's share of the day", () => {
     expect(l.check('guest').ok).toBe(true);
   });
 
+  it("spares the household from the share, but not from the hourly limit", () => {
+    const l = new UsageLedger(undefined, { ...caps, perUserPerHour: 1 }, 'UTC', () => Date.UTC(2026, 9, 15, 12));
+    l.addCost(0.06, 'creator');
+    expect(l.check('creator')).toEqual({ ok: false, reason: 'guest-daily' });
+    expect(l.check('creator', false, true).ok).toBe(true);
+    l.noteRequest('creator');
+    expect(l.check('creator', false, true)).toEqual({ ok: false, reason: 'user-rate' });
+    expect(l.check('creator', true).ok).toBe(true); // an owner: neither
+  });
+
   it('is off at 0, and unset in older callers', () => {
     const l = new UsageLedger(undefined, { perUserPerHour: 0, dailyUsd: 1, monthlyUsd: 10 }, 'UTC', () => Date.UTC(2026, 9, 15, 12));
     l.addCost(0.5, 'guest');

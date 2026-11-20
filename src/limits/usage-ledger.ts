@@ -85,12 +85,14 @@ export class UsageLedger {
   }
 
   /** May this user start a paid request now? `exempt` (owners): no hourly
-   *  limit and no guest cap; the household's spend caps still apply. */
-  check(userId: UserId, exempt = false): LimitCheck {
+   *  limit and no guest cap. `household` (by default the same; also creator
+   *  accounts and priority-role members): no guest cap. The household's spend
+   *  caps apply to everyone. */
+  check(userId: UserId, exempt = false, household = exempt): LimitCheck {
     const l = this.limits;
     if (l.monthlyUsd > 0 && this.monthUsd() >= l.monthlyUsd) return { ok: false, reason: 'monthly' };
     if (l.dailyUsd > 0 && this.todayUsd() >= l.dailyUsd) return { ok: false, reason: 'daily' };
-    if (!exempt && (l.guestDailyUsd ?? 0) > 0 && this.userTodayUsd(userId) >= l.guestDailyUsd!) return { ok: false, reason: 'guest-daily' };
+    if (!exempt && !household && (l.guestDailyUsd ?? 0) > 0 && this.userTodayUsd(userId) >= l.guestDailyUsd!) return { ok: false, reason: 'guest-daily' };
     if (l.perUserPerHour > 0 && !exempt) {
       const hourAgo = this.now() - 3_600_000;
       const times = (this.recent.get(userId) ?? []).filter((t) => t > hourAgo);

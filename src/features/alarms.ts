@@ -353,8 +353,9 @@ export interface RingHandle {
 export interface AlarmDeps {
   /** Where it can ring for them now: a room key, or undefined. */
   placeFor(userId: UserId): string | undefined;
-  /** They'll hear it there but can't be heard saying stop (muted in her call): send the buttons too. */
-  needsButtons?(userId: UserId): boolean;
+  /** They'll hear it there but can't be heard saying stop (muted in her call): send the buttons too.
+   *  A string says why in the message (else "you're muted there"). */
+  needsButtons?(userId: UserId): boolean | string;
   /** Start ringing there. */
   ring(place: string, plan: RingPlan): RingHandle | undefined;
   /** A Discord message to them. `buttons`: Stop / Snooze on the message. */
@@ -722,14 +723,15 @@ export class AlarmClock {
         s.retryAt = now + 5_000;
       }
       // Nowhere to ring, or nobody can hear them say stop: a message with buttons, once per round.
-      if (!s.handle || this.deps.needsButtons?.(u)) {
+      const buttons = this.deps.needsButtons?.(u);
+      if (!s.handle || buttons) {
         for (const a of list) {
           const round = (a.unanswered ?? 0) + 1;
           if (a.dmRound === round) continue;
           a.dmRound = round;
           this.save();
           const line = a.kind === 'timer' ? `⏰ Your ${timerName(a)} is done.` : `⏰ ${clockText(a.base, a.tz)} alarm${a.label ? `: ${a.label}` : ''}.`;
-          const why = s.handle ? "It's ringing in the call, and you're muted there." : "I couldn't ring it anywhere you are, so this is it.";
+          const why = s.handle ? (typeof buttons === 'string' ? buttons : "It's ringing in the call, and you're muted there.") : "I couldn't ring it anywhere you are, so this is it.";
           void this.deps.dm(u, `${line} ${why}`, { alarmId: a.id }).catch(() => false);
         }
       }
