@@ -144,6 +144,25 @@ const VERBS: Record<string, Partial<Record<string, Cls>>> = {
   dormir: { '': 'sleep' },
   busca: { '': 'search' },
   buscar: { '': 'search' },
+  // A little French.
+  eteins: { '': 'off' },
+  eteindre: { '': 'off' },
+  eteignez: { '': 'off' },
+  allume: { '': 'on' },
+  allumer: { '': 'on' },
+  allumez: { '': 'on' },
+  ferme: { '': 'close' },
+  fermer: { '': 'close' },
+  fermez: { '': 'close' },
+  ouvre: { '': 'open' },
+  ouvrir: { '': 'open' },
+  ouvrez: { '': 'open' },
+  verrouille: { '': 'lock' },
+  verrouiller: { '': 'lock' },
+  baisse: { '': 'down' },
+  baisser: { '': 'down' },
+  monte: { '': 'up' },
+  monter: { '': 'up' },
 };
 /** Other verbs: they end the words an order acts on, and start an order of their own that no pc_ call stands for. */
 for (const v of 'get hit make have want give grab take keep leave check fetch carry answer call text tell ask see come feed walk clean wash cook order buy pick drop move use try help bring send let finish fix grab pass hand listen wake'.split(' '))
@@ -162,7 +181,7 @@ const verbOf = (w: string) => (VERBS[w] ? w : FORMS.get(w));
 
 const PARTICLES = new Set(['off', 'on', 'up', 'down', 'out', 'back']);
 const DETS = new Set(
-  'the a an my our your his her their every each all both some any whole other another la las el los mi mis tu tus su sus un una unos unas todo toda todos todas nuestro nuestra nuestros nuestras ese esa esos esas este estos estas aquel aquella'.split(' '),
+  'the a an my our your his her their every each all both some any whole other another la las el los mi mis tu tus su sus un una unos unas todo toda todos todas nuestro nuestra nuestros nuestras ese esa esos esas este estos estas aquel aquella le les des du ma mon mes'.split(' '),
 );
 /** Words that are a pronoun alone and a determiner before a noun. */
 const DEMONSTRATIVE = new Set(['this', 'that', 'these', 'those', 'esta', 'esto', 'eso']);
@@ -184,9 +203,9 @@ const NUMBERS = /^(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven
 const HOUSE = new Map<string, string>();
 const kinds: Record<string, string> = {
   av: 'tv tvs television televisions telly tele teles televisor soundbar soundbars stereo roku firestick chromecast projector sonos homepod echo alexa xbox playstation ps4 ps5 nintendo',
-  light: 'light lights lamp lamps bulb bulbs chandelier luz luces lampara lamparas foco focos',
-  climate: 'thermostat thermostats heat heater heaters heating furnace ac aircon fan fans ventilador ventiladores calefaccion termostato aire humidifier dehumidifier purifier fireplace boiler radiator',
-  opening: 'door doors deadbolt deadbolts garage gate gates blinds curtains shades shutters puerta puertas porton garaje cochera persiana persianas cortina cortinas',
+  light: 'light lights lamp lamps bulb bulbs chandelier luz luces lampara lamparas foco focos lumiere lumieres lampe lampes',
+  climate: 'thermostat thermostats heat heater heaters heating furnace ac aircon fan fans ventilador ventiladores calefaccion termostato aire chauffage ventilateur humidifier dehumidifier purifier fireplace boiler radiator',
+  opening: 'door doors deadbolt deadbolts garage gate gates blinds curtains shades shutters puerta puertas porton garaje cochera persiana persianas cortina cortinas porte portes volets',
   place: 'house home car cars truck shed barn mailbox casa carro coche',
   appliance: 'oven ovens stove stovetop dishwasher washer dryer microwave vacuum roomba sprinkler sprinklers kettle coffeemaker toaster fridge freezer iron hottub poolpump horno estufa lavadora secadora lavavajillas microondas aspiradora cafetera nevera refrigerador',
   net: 'router modem wifi extender printer impresora',
@@ -276,6 +295,8 @@ const BREAK = '|';
 /** Their words as plain lower-case tokens, with breaks. */
 function tokens(said: string): string[] {
   let s = strip(said.toLowerCase()).replace(/[’‘`´]/g, "'");
+  // "T.V.", "A.C." are words.
+  s = s.replace(/\b(?:[a-z]\.){1,3}[a-z]\b\.?/g, (m) => m.replace(/\./g, ''));
   for (const [re, to] of REWRITES) s = s.replace(re, to);
   const out: string[] = [];
   for (const m of s.matchAll(/[\p{L}\p{N}]+(?:'[\p{L}\p{N}]+)*'?|[,.;:!?()[\]{}"…—–]|\s-+\s|\n/gu)) {
@@ -315,33 +336,39 @@ interface Order {
   alone?: boolean;
 }
 
+/** What a PC thing is: the machine itself ("my screen"), something on it ("the music", "discord",
+ *  "me" in a call), or both ("the pc volume", "this on my pc"). Each only stands for the calls it fits. */
+type On = 'machine' | 'media' | 'both';
+
 /** The PC, a house thing, both, a pronoun, nothing or something unknown, and the house word. */
-function sortNp(np: Np): { sort: Sort; thing?: string } {
+function sortNp(np: Np): { sort: Sort; thing?: string; on?: On } {
   const words = np.words.filter((w) => !DETS.has(w) && !FILLER.has(w) && !NUMBERS.test(w) && w !== "'s");
   const p = words.findIndex((w) => PREPS.has(w));
   const core = p < 0 ? words : words.slice(0, p);
   const pp = p < 0 ? [] : words.slice(p + 1);
   const houseIn = (ws: string[]) => ws.find((w) => (HOUSE.has(w) && HOUSE.get(w) !== 'room') || ((w === 'speaker' || w === 'speakers') && ROOMY(ws)));
-  if (pp.some((w) => SERVICES.has(w))) return { sort: 'pc' };
-  if (core.length && APPLIKE.has(core.at(-1)!)) return { sort: 'pc' };
+  const onPc = pp.some((w) => PC.has(w));
+  const media = core.some((w) => MEDIA.has(w) || PEOPLE.has(w));
+  if (pp.some((w) => SERVICES.has(w))) return { sort: 'pc', on: 'media' };
+  if (core.length && APPLIKE.has(core.at(-1)!)) return { sort: 'pc', on: 'media' };
   const house = houseIn(core);
   const pc = core.some((w) => PC.has(w));
   // "the computer room lights", "the lamp by my pc": both named, so not clear.
-  if (house && (pc || pp.some((w) => PC.has(w)))) return { sort: 'mixed', thing: house };
+  if (house && (pc || onPc)) return { sort: 'mixed', thing: house };
   if (house) return { sort: 'house', thing: house };
-  if (pc) return { sort: 'pc' };
+  if (pc) return { sort: 'pc', on: media ? 'both' : 'machine' };
   const room = core.find((w) => HOUSE.get(w) === 'room');
   if (room && core.every((w) => HOUSE.has(w))) return { sort: 'house', thing: room };
   // "the one in the kitchen": a room says where, and that's the house; "the music in the kitchen" stays the PC's.
   const ppHouse = houseIn(pp) ?? pp.find((w) => HOUSE.get(w) === 'room');
-  if (core.some((w) => MEDIA.has(w) || PEOPLE.has(w))) return ppHouse ? { sort: 'house', thing: ppHouse } : { sort: 'pc' };
-  if (core.length && core.every((w) => PRONOUNS.has(w))) return ppHouse ? { sort: 'house', thing: ppHouse } : pp.some((w) => PC.has(w)) ? { sort: 'pc' } : { sort: 'pronoun' };
+  if (media) return ppHouse ? { sort: 'house', thing: ppHouse } : { sort: 'pc', on: onPc ? 'both' : 'media' };
+  if (core.length && core.every((w) => PRONOUNS.has(w))) return ppHouse ? { sort: 'house', thing: ppHouse } : onPc ? { sort: 'pc', on: 'both' } : { sort: 'pronoun' };
   // "all of them": the pronoun after "of".
   if (!core.length && pp.length && pp.every((w) => PRONOUNS.has(w))) return { sort: 'pronoun' };
-  if (!core.length) return ppHouse ? { sort: 'house', thing: ppHouse } : pp.some((w) => PC.has(w)) ? { sort: 'pc' } : { sort: 'none' };
+  if (!core.length) return ppHouse ? { sort: 'house', thing: ppHouse } : onPc ? { sort: 'pc', on: 'both' } : { sort: 'none' };
   if (ppHouse) return { sort: 'house', thing: ppHouse };
   if (room) return { sort: 'house', thing: room };
-  return pp.some((w) => PC.has(w)) ? { sort: 'pc' } : { sort: 'unknown' };
+  return onPc ? { sort: 'pc', on: 'both' } : { sort: 'unknown' };
 }
 
 /** Can this order act on this house thing? */
@@ -466,8 +493,14 @@ function parse(said: string): Parse {
         }
         span.push(j);
       }
-      // "turn the lights off", "shut it down": the particle at the end, or before a preposition or filler.
-      const tail = span.findIndex((s, n) => PARTICLES.has(toks[s]!) && verb[toks[s]!] !== undefined && span.slice(n + 1).every((r) => ['filler', 'prep'].includes(kind(r)) || NUMBERS.test(toks[r]!) || (kind(r) === 'det' && toks[r] === 'a')));
+      // "turn the lights off", "shut it down", "turn my music down and the tv up": the particle at the
+      // end of a thing, before a preposition, a filler or "and".
+      const tail = span.findIndex((s, n) => {
+        if (!PARTICLES.has(toks[s]!) || verb[toks[s]!] === undefined) return false;
+        const rest = span.slice(n + 1);
+        const cut = rest.findIndex((r) => kind(r) === 'conj');
+        return (cut < 0 ? rest : rest.slice(0, cut)).every((r) => ['filler', 'prep'].includes(kind(r)) || NUMBERS.test(toks[r]!) || (kind(r) === 'det' && toks[r] === 'a'));
+      });
       if (!particle && tail >= 0) {
         particle = toks[span[tail]!]!;
         span.splice(tail, 1);
@@ -533,10 +566,12 @@ function parse(said: string): Parse {
 }
 
 /** Who an order is for: the PC (or nothing named), a house thing, or not clear. */
-type Target = { to: 'pc' } | { to: 'house'; thing: string } | { to: 'unclear' | 'mixed' | 'unknown'; thing?: string };
+type Target = { to: 'pc'; on?: On } | { to: 'house'; thing: string } | { to: 'unclear' | 'mixed' | 'unknown'; thing?: string };
+const pcOf = (on: On | undefined): Target => (on ? { to: 'pc', on } : { to: 'pc' });
 
-function targetOf(o: Order, p: Parse): Target {
-  if (o.cls === 'search') return { to: 'pc' };
+/** Who each thing an order acts on is for (one entry when it acts on nothing named). */
+function targetsOf(o: Order, p: Parse): Target[] {
+  if (o.cls === 'search') return [{ to: 'pc', on: 'media' }];
   const things = [...p.orders.flatMap((x) => x.objs), ...p.free];
   /** The thing "it" stands for: the nearest one named before. */
   const antecedent = (at: number) =>
@@ -547,25 +582,23 @@ function targetOf(o: Order, p: Parse): Target {
       .sort((a, b) => b.n.at - a.n.at)[0];
   const resolve = (at: number): Target => {
     const a = antecedent(at);
-    if (!a || a.s.sort === 'pc') return { to: 'pc' };
+    if (!a || a.s.sort === 'pc') return pcOf(a?.s.on);
     if (a.s.thing && actsOn(o.cls, a.s.thing)) return { to: 'house', thing: a.s.thing };
     return { to: 'unclear', ...(a.s.thing ? { thing: a.s.thing } : {}) };
   };
-  let t: Target;
+  let ts: Target[];
   // A thing that is nothing ("for the night") isn't what it acts on.
   const objs = o.objs.filter((n) => sortNp(n).sort !== 'none');
   if (objs.length) {
-    const sorts = objs.map((n) => ({ n, s: sortNp(n) }));
-    const ts: Target[] = sorts.map(({ n, s }) =>
-      s.sort === 'pronoun' ? resolve(n.at) : s.sort === 'house' ? { to: 'house', thing: s.thing! } : s.sort === 'mixed' || s.sort === 'unknown' ? { to: s.sort, ...(s.thing ? { thing: s.thing } : {}) } : { to: 'pc' },
-    );
-    t =
-      ts.find((x) => x.to === 'pc') ??
-      ts.find((x) => x.to === 'unclear') ??
-      ts.find((x) => x.to === 'mixed') ??
-      ts.find((x) => x.to === 'unknown') ??
-      ts[0]!;
+    ts = objs.map((n): Target => {
+      const s = sortNp(n);
+      if (s.sort === 'pronoun') return resolve(n.at);
+      if (s.sort === 'house') return { to: 'house', thing: s.thing! };
+      if (s.sort === 'mixed' || s.sort === 'unknown') return { to: s.sort, ...(s.thing ? { thing: s.thing } : {}) };
+      return pcOf(s.on);
+    });
   } else {
+    let t: Target;
     // Nothing after it: the thing right before it in the same stretch, if any ("the lights need to be
     // turned off"); a particle alone at the start of one takes the thing before the break ("the office lights, off").
     const first = p.toks.slice(0, o.at).every((w, n) => w === BREAK || p.stretchOf[n]! < o.stretch);
@@ -576,15 +609,19 @@ function targetOf(o: Order, p: Parse): Target {
     const s = near && !near.inPp ? sortNp(near) : undefined;
     if (s?.sort === 'house' && s.thing && actsOn(o.cls, s.thing)) t = { to: 'house', thing: s.thing };
     else if (s?.sort === 'pronoun') t = resolve(near!.at);
-    else if (s?.sort === 'pc') t = { to: 'pc' };
+    else if (s?.sort === 'pc') t = pcOf(s.on);
     else {
       const house = things.filter((n) => p.stretchOf[n.at] === o.stretch).map(sortNp).find((x) => x.sort === 'house' || x.sort === 'mixed');
       t = house ? { to: 'unclear', ...(house.thing ? { thing: house.thing } : {}) } : { to: 'pc' };
     }
+    ts = [t];
   }
   // "Lock up" is the house unless the PC is named.
-  if (o.cls === 'lockup' && !o.objs.some((n) => n.words.some((w) => PC.has(w)))) return { to: 'house', thing: t.to === 'house' ? t.thing : 'house' };
-  return t;
+  if (o.cls === 'lockup' && !o.objs.some((n) => n.words.some((w) => PC.has(w)))) {
+    const h = ts.find((x) => x.to === 'house');
+    return [{ to: 'house', thing: h?.to === 'house' ? h.thing : 'house' }];
+  }
+  return ts;
 }
 
 /** Only things in this stretch: no verb, no "is", no new clause ("the lights, ..."). */
@@ -623,24 +660,31 @@ export function judge(said: string | undefined, name: string, action: string): J
   if (!said?.trim() || !cands || NEVER.has(`${name}.${action}`)) return { go: true };
   const p = parse(said);
   const system = name === 'pc_system';
+  // The machine stands for pc_system calls, and what's on it for the rest: "turn off the lights
+  // and the music" is no screen_off, and "turn off my screen and the tv" no mute.
+  const fits = (t: Target) => t.to === 'pc' && (!t.on || t.on === 'both' || t.on === (system ? 'machine' : 'media'));
   let ask = false;
   let thing: string | undefined;
   for (const o of p.orders.filter((x) => cands.includes(x.cls) || (!x.objs.length && BARE_TOO[key]?.includes(x.cls)))) {
-    const t = targetOf(o, p);
-    if (t.to === 'pc') return { go: true };
-    if (t.to === 'house') thing ??= t.thing;
-    else if (t.to === 'mixed') {
+    const ts = targetsOf(o, p).filter((t) => t.to !== 'pc' || fits(t));
+    if (ts.some((t) => t.to === 'pc')) return { go: true };
+    if (ts.some((t) => t.to === 'unclear' || t.to === 'unknown')) {
+      if (!system) return { go: true };
+      ask = true;
+    } else if (ts.some((t) => t.to === 'mixed')) {
       if (system) ask = true;
-      else thing ??= t.thing ?? 'house';
-    } else if (system) ask = true; // unclear, unknown
-    else return { go: true };
+      else thing ??= ts.find((t) => t.to === 'mixed')!.thing ?? 'house';
+    } else {
+      const h = ts.find((t) => t.to === 'house');
+      if (h?.to === 'house') thing ??= h.thing;
+    }
   }
   if (ask) return { go: false, ask: true };
   if (thing) return { go: false, ask: false, thing };
   // No order stands for it: refused if any order there is about the house.
   for (const o of p.orders) {
-    const t = targetOf(o, p);
-    if (t.to === 'house') return { go: false, ask: false, thing: t.thing };
+    const h = targetsOf(o, p).find((t) => t.to === 'house');
+    if (h?.to === 'house') return { go: false, ask: false, thing: h.thing };
   }
   // A thing in the house with no verb ("kitchen lights please", "the tv is too loud").
   for (const np of p.free) {
@@ -664,8 +708,8 @@ export function explain(said: string): string[] {
   const p = parse(said);
   return [
     ...p.orders.map((o) => {
-      const t = targetOf(o, p);
-      return `${o.cls}(${o.objs.map((n) => n.words.join(' ')).join(' + ')})=${t.to}${'thing' in t && t.thing ? `:${t.thing}` : ''}`;
+      const ts = targetsOf(o, p).map((t) => `${t.to}${'thing' in t && t.thing ? `:${t.thing}` : ''}${'on' in t && t.on ? `:${t.on}` : ''}`);
+      return `${o.cls}(${o.objs.map((n) => n.words.join(' ')).join(' + ')})=${ts.join(',')}`;
     }),
     ...p.free.map((n) => `[${n.words.join(' ')}]`),
   ];
