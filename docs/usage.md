@@ -17,7 +17,8 @@ The spoken name is "Adrian". Facts here are for version 0.17.1.
 | "Adrian, …" | Treated as a question to it. |
 | "… hey Adrian, …" in the middle of a sentence | Also a question to it. |
 | "Adrian?" (the name alone) | "Yes?", then your next words within 20 seconds are the question. |
-| "Adrian is so slow" | Talk *about* it: the model decides whether to answer, and usually stays quiet. |
+| "What time is it, Adrian?", "Wait, Adrian, what's the score?" | A question with the name at the end, or after a lead-in: the model decides whether it was meant for it. Anything else said this way ("nice shot, Adrian", "stop it, Adrian") is left to whoever is called Adrian. |
+| "Adrian is so slow", "Hey, Adrian is in the other channel" | Talk *about* it: the model decides whether to answer, and usually stays quiet. "Have you seen Adrian?" doesn't wake it at all. |
 | "Adrian's late", "Adrian'll know" | Never a wake: a contraction after the name means you're talking about it. |
 
 - **Follow-ups.** After it answers, you can carry on without the name for about 8 seconds in the Discord call, or 20 seconds at a PC ("and what about tomorrow?"). If the follow-up clearly isn't for it (game callouts, talking to someone else), it stays silent.
