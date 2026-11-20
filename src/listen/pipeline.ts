@@ -287,6 +287,9 @@ export class ListeningPipeline extends EventEmitter {
     const startedAt = performance.now() + (this.vadOptions.minSilence - this.early!.minSilence) * 1000 - (samples.length / ASR_SAMPLE_RATE) * 1000;
     void words
       .then(({ text }) => {
+        // Already talking again (the quick VAD hears them): the full wait will close
+        // more than this, so a second listen on it would only be thrown away.
+        if (!clip.taken && u.early?.isSpeaking()) return;
         if (text && !ctl.signal.aborted) onWords(userId, { text, samples, startedAt, signal: ctl.signal });
       }, () => undefined)
       .catch((e: Error) => this.emit('error', userId, e));

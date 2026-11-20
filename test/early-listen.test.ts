@@ -182,6 +182,15 @@ describe('recognizing during the silence wait', () => {
     expect(t.words).toHaveLength(0);
   });
 
+  it('no early words for a second listen once they are talking again', async () => {
+    const t = setup({ decodeMs: 30 });
+    t.quickClose(speech(1));
+    t.p.quick.speaking = true; // the quick VAD hears them again before the words are in
+    await wait(60);
+    expect(t.decoded).toHaveLength(1);
+    expect(t.words).toHaveLength(0);
+  });
+
   it('only says the words of a clip still in play', async () => {
     const t = setup({ decodeMs: 30 });
     t.quickClose(speech(1));
