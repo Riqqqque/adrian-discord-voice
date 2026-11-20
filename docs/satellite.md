@@ -346,6 +346,7 @@ feature they lack is answered with "needs an update", or isn't used.
 | 0.15.4 | `pc_volume playing`; DNS check for `pc_open`; refuses `action` before `welcome` |
 | 0.15.6 | `pc_windows`, `pc_info health`, `pc_clipboard`, `pc_screen`, `activity` (quiet while gaming) |
 | 0.17.0 | `alarms`, `alarm_action`, `alarm_done`: Stop/Snooze in the window and tray, and the backup ring |
+| 0.17.2 (next) | `ptt` with `hold` and a key-up (`down: false`), `output` (headphones or speakers, with the "These speakers are headphones" switch), `notice` (the soft chime). Older apps count as speakers, so they are push-to-talk only while their owner is in a voice call the bot can see |
 
 Apps before 0.15.6 never send `activity`, so the service treats them as not
 playing. Apps before 0.15.4 ignore `playing` and change the master volume.
