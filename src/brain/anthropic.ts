@@ -4,6 +4,7 @@
 
 import Anthropic from '@anthropic-ai/sdk';
 import type { ChatMessage, LlmEvent, LlmProvider, ToolCall, ToolSpec, WarmUsage } from '../core/interfaces.js';
+import { cloud } from '../core/http.js';
 import { LlmHttpError } from './openai-compatible.js';
 
 export interface AnthropicOptions {
@@ -11,6 +12,8 @@ export interface AnthropicOptions {
   apiKey: string;
   /** low | medium | high | xhigh | max. Lower is faster; voice wants low. */
   effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+  /** Default: the shared provider connections (core/http.ts). */
+  fetch?: typeof fetch;
 }
 
 /** ChatMessage[] → Claude's system + messages. Tool results go back in one
@@ -83,7 +86,8 @@ export class AnthropicLlm implements LlmProvider {
   private readonly client: Anthropic;
 
   constructor(private readonly o: AnthropicOptions) {
-    this.client = new Anthropic({ apiKey: o.apiKey, maxRetries: 0, timeout: 20_000 });
+    this.client = new Anthropic({ apiKey: o.apiKey, maxRetries: 0, timeout: 20_000, fetch: o.fetch ?? cloud.fetch });
+    if (!o.fetch) cloud.register(this.client.baseURL);
   }
 
   get model(): string {

@@ -13,6 +13,7 @@ import { ConversationOrchestrator, type OrchestratorOptions, type Usage } from '
 import { OpenAiCompatibleLlm } from '../brain/openai-compatible.js';
 import { AnthropicLlm } from '../brain/anthropic.js';
 import { CacheWarmer } from '../brain/prewarm.js';
+import { cloud as connections } from '../core/http.js';
 import { SessionMemory } from '../brain/sessions.js';
 import { cachedTool, tavilySearchTool, timeTool, topResultUrl, webYoutubeVideos } from '../brain/tools.js';
 import type { PocConfig } from '../config.js';
@@ -1616,7 +1617,8 @@ export async function startVoiceStack(
     ctl.heard({ userId: e.userId, text: e.text, woke: e.woke, command: e.command, startedAt, ...(e.loose ? { loose: true } : {}) });
   }
   // Before the question reaches it: after a long quiet Speechify stalls on the first sentence.
-  source.on('speechStart', () => void cloud?.warmIfIdle());
+  // Connections to the providers too, after one closed while it was quiet (core/http.ts).
+  source.on('speechStart', () => (connections.wake(), void cloud?.warmIfIdle()));
   pipeline.on('voiceActivity', (id, ms) => ctl.voiceActivity(id, ms));
   pipeline.on('error', (id, err) => log.warn('listen error', { user: id, error: err.message }));
   return pipeline;

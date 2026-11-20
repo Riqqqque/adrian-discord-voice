@@ -12,6 +12,7 @@ import { PocConfigSchema } from '../src/config.js';
 import { MusicPlayer, YoutubeSource } from '../src/features/music.js';
 import { QUIZ_BUSY } from '../src/features/quiz.js';
 import { UsageLedger } from '../src/limits/usage-ledger.js';
+import { cloud } from '../src/core/http.js';
 import type { TurnOptions } from '../src/listen/pipeline.js';
 import { SmartTurn } from '../src/speech/smart-turn.js';
 import { SpeechifyTts } from '../src/speech/speechify.js';
@@ -2491,6 +2492,34 @@ describe('cache warm-up hooks', () => {
       await r.stack.stop();
     } finally {
       prewarm.mockRestore();
+    }
+  });
+
+  it('someone starting to talk opens the provider connections that closed', async () => {
+    const wake = vi.spyOn(cloud, 'wake').mockImplementation(() => undefined);
+    try {
+      const r = await rig();
+      const { conn } = r.connect();
+      r.transport.emit('speechStart', SAM);
+      conn.emit('speechStart', OWNER);
+      expect(wake).toHaveBeenCalledTimes(2);
+      await r.stack.stop();
+    } finally {
+      wake.mockRestore();
+    }
+  });
+
+  it('stopping stops the warm-ups before the spend is saved', async () => {
+    const order: string[] = [];
+    const stop = vi.spyOn(ConversationOrchestrator.prototype, 'stopWarming').mockImplementation(async () => void order.push('warm-ups'));
+    const flush = vi.spyOn(UsageLedger.prototype, 'flush').mockImplementation(() => void order.push('spend'));
+    try {
+      const r = await rig();
+      await r.stack.stop();
+      expect(order).toEqual(['warm-ups', 'spend']);
+    } finally {
+      stop.mockRestore();
+      flush.mockRestore();
     }
   });
 
