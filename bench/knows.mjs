@@ -83,7 +83,8 @@ await ask('private', 'call', 'where does Sean live', { speaker: 'Sam', not: /den
 await ask('private', 'call', "I'm starving, what should I eat", { not: /vegetarian|peanut/i, max: 30 });
 // Used without being asked, where only they hear.
 await ask('used', 'desk', 'what should I make for dinner tonight', { not: /chicken|beef|pork|steak|bacon|sausage|\bham\b|turkey|fish|salmon|shrimp|tuna|meat(?!less)/i, max: 40 });
-await ask('used', 'desk', 'give me a quick snack idea', { not: /peanuts?(?![- ]free)/i });
+// Naming the allergy to steer clear of it is fine; suggesting peanuts is not.
+await ask('used', 'desk', 'give me a quick snack idea', { not: /^(?!.*\b(?:no|skip|without|avoid|allerg\w*|free)\b).*peanut/is });
 await ask('used', 'desk', "what's the weather going to be like tomorrow", { tool: 'web_search', args: (a) => /denver/i.test(a.query ?? '') });
 await ask('used', 'desk', 'how many days until my birthday', { says: new RegExp(`\\b(${untilBday - 1}|${untilBday}|${untilBday + 1})\\b`) });
 await ask('used', 'desk', "what was my dog's name again", { says: /biscuit/i });
