@@ -86,7 +86,7 @@ check "  update.log is 0600" bash -c '[ "$(stat -c %a /opt/adrian/update.log)" =
 # Why a unit of its own: setsid leaves the session's process group, not its scope.
 systemd-run --scope --unit=inst2-login2 --quiet bash -c 'setsid sleep 301 </dev/null >/dev/null 2>&1 & sleep 302' >/dev/null 2>&1 &
 sleep 2; systemctl stop inst2-login2.scope; sleep 1
-check "  (setsid alone would not have survived: stopping the scope kills it)" bash -c '! pgrep -f "sleep 301" >/dev/null'
+check "  (setsid alone would not have survived: stopping the scope kills it)" bash -c '! pgrep -f "[s]leep 301" >/dev/null'
 echo "  releases kept: $(ls /opt/adrian/releases | tr '\n' ' ')"
 
 adrian uninstall --yes >/dev/null 2>&1 && ok "uninstall" || bad "uninstall"
