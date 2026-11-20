@@ -130,6 +130,8 @@ export function toSpeakable(
   t = t.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1'); // [text](link) → text
   // A bare link: just the site's name ("modrinth.com"), not the whole address.
   t = t.replace(/https?:\/\/(?:www\.)?([a-z0-9.-]*[a-z0-9])(?:[/?#]\S*?)?(?=[.,!?;:)\]]*(?:\s|$))/gi, '$1');
+  // Any other link (quoted, in <>, with a port...): still never the whole address.
+  t = t.replace(/https?:\/\/(?:www\.)?([a-z0-9.-]*[a-z0-9])\S*/gi, '$1');
   t = t.replace(/(\*\*|__|\*|_|~~)(.+?)\1/g, '$2');
   // Markers left unmatched because a chunk boundary fell inside them.
   t = t.replace(/\*+|~~|(^|\s)_+|_+(?=\s|$)/g, '$1');
@@ -145,8 +147,9 @@ export function toSpeakable(
 // --- English text the voices misread --------------------------------------
 // Applied by the English voices themselves (Kokoro us/gb, Speechify), so tool
 // lines, fixed lines and model text all get it, and other languages never do.
-// Each rule is here because Kokoro + Parakeet showed the plain text misheard
-// (bench/speech-words.mjs).
+// Each rule is here because Kokoro + Parakeet heard the plain text wrong
+// (bench/speech-words.mjs); things Kokoro already reads well (km, kg, lbs,
+// "November 28", "5:00 PM", "2-3 days") are left alone.
 
 const MONTH_ABBR: Record<string, string> = {
   jan: 'January', feb: 'February', mar: 'March', apr: 'April', jun: 'June', jul: 'July', aug: 'August',
@@ -155,13 +158,8 @@ const MONTH_ABBR: Record<string, string> = {
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 const ROMAN: Record<string, number> = { II: 2, III: 3, IV: 4, VI: 6, VII: 7, VIII: 8, IX: 9, XI: 11, XII: 12, XIII: 13, XIV: 14, XV: 15, XVI: 16 };
 const FRACTIONS: Record<string, string> = { '1/2': 'half', '1/3': 'a third', '2/3': 'two thirds', '1/4': 'a quarter', '3/4': 'three quarters' };
-/** Units said wrong after a number ("35 ms" as "M S"): [singular, plural]. */
-const UNITS: Record<string, [string, string]> = {
-  ms: ['millisecond', 'milliseconds'], ft: ['foot', 'feet'], hz: ['hertz', 'hertz'], khz: ['kilohertz', 'kilohertz'],
-  mhz: ['megahertz', 'megahertz'], ghz: ['gigahertz', 'gigahertz'], 'km/h': ['kilometer per hour', 'kilometers per hour'],
-  km: ['kilometer', 'kilometers'], kg: ['kilogram', 'kilograms'], lb: ['pound', 'pounds'], lbs: ['pound', 'pounds'],
-  min: ['minute', 'minutes'], mins: ['minute', 'minutes'], hr: ['hour', 'hours'], hrs: ['hour', 'hours'], sec: ['second', 'seconds'], secs: ['second', 'seconds'],
-};
+/** Units said wrong after a number ("35 ms" as "M S", "6 ft" as "F T"): [singular, plural]. */
+const UNITS: Record<string, [string, string]> = { ms: ['millisecond', 'milliseconds'], ft: ['foot', 'feet'], hz: ['hertz', 'hertz'] };
 
 export function ordinal(n: number): string {
   const t = n % 100;
@@ -184,21 +182,20 @@ function duration(h: number, m: number, sec: number): string {
  *  harmless. */
 export function forSpeech(text: string): string {
   let t = text;
-  // Dates: "Nov 9" / "November 28" → "November 9th"; "on 11/21" → "on November 21st".
+  // Dates: "Nov 9" → "November 9th"; "on 11/21" → "on November 21st".
   t = t.replace(/\b(Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sept?|Oct|Nov|Dec)\.?\s+(\d{1,2})(?![\d:.,]\d|st|nd|rd|th)\b/g, (m, mon: string, d: string) =>
     +d >= 1 && +d <= 31 ? `${MONTH_ABBR[mon.toLowerCase()]} ${ordinal(+d)}` : m,
   );
-  t = t.replace(new RegExp(`\\b(${MONTHS.join('|')})\\s+(\\d{1,2})(?![\\d:.]\\d|st|nd|rd|th)\\b`, 'g'), (m, mon: string, d: string) => (+d >= 1 && +d <= 31 ? `${mon} ${ordinal(+d)}` : m));
   t = t.replace(/\b(on|by|until|from|since|before|after|due|through|till)\s+(\d{1,2})\/(\d{1,2})(?![/\d])/gi, (m, w: string, a: string, b: string) =>
-    +a >= 1 && +a <= 12 && +b >= 1 && +b <= 31 ? `${w} ${MONTHS[+a - 1]} ${ordinal(+b)}` : m,
+    // "cut it by 1/2" is a fraction, "on 1/2" a date.
+    +a >= 1 && +a <= 12 && +b >= 1 && +b <= 31 && !(FRACTIONS[`${a}/${b}`] && !/^(on|until|since|from|through|till|due)$/i.test(w)) ? `${w} ${MONTHS[+a - 1]} ${ordinal(+b)}` : m,
   );
   // Clock-style durations: "00:04:10" and "1:30 left".
   t = t.replace(/\b(\d{1,2}):(\d\d):(\d\d)\b/g, (_, h: string, m: string, sec: string) => duration(+h, +m, +sec));
   t = t.replace(/\b(\d{1,2}):(\d\d)(?=\s+(?:left|remaining|to go)\b)/g, (_, m: string, sec: string) => duration(0, +m, +sec));
   t = t.replace(/\b0(\d):(\d\d)\b/g, '$1:$2'); // "07:00" → "7:00"
   // On the hour: "7:00" is read "seven zero zero".
-  t = t.replace(/\b(\d{1,2}):00(?=\s?[AaPp]\.?[Mm]\b)\s?/g, '$1 ');
-  t = t.replace(/\b(\d{1,2}):00\b/g, (m, h: string) => (+h >= 1 && +h <= 12 ? `${+h} o'clock` : m));
+  t = t.replace(/\b(\d{1,2}):00\b(?!\s?[AaPp]\.?[Mm]\b)/g, (m, h: string) => (+h >= 1 && +h <= 12 ? `${+h} o'clock` : m));
   t = t.replace(/\bS(\d{1,2})\s?E(\d{1,3})\b/g, (_, a: string, b: string) => `season ${+a} episode ${+b}`);
   // Temperatures: "72°F" is read "seventy two degrees F".
   t = t.replace(/(^|[\s(])[-−](\d+(?:\.\d+)?)\s?°/g, '$1minus $2°');
@@ -210,13 +207,12 @@ export function forSpeech(text: string): string {
   t = t.replace(/£\s?(\d[\d,]*)(?:\.(\d\d))?\b/g, (_, n: string, c?: string) => `${n} ${n === '1' ? 'pound' : 'pounds'}${c && c !== '00' ? ` ${c}` : ''}`);
   t = t.replace(/#(\d)/g, 'number $1');
   // Units after a number.
-  t = t.replace(/\b(\d+(?:\.\d+)?)\s?(ms|ft|[kMG]?Hz|km\/h|km|kg|lbs?|mins?|hrs?|secs?)(?![\w/])/g, (m, n: string, u: string) => {
+  t = t.replace(/\b(\d+(?:\.\d+)?)\s?(ms|ft|Hz)(?![\w/])/g, (m, n: string, u: string) => {
     const w = UNITS[u.toLowerCase()];
     return w ? `${n} ${plural(n, w)}` : m;
   });
   // Slashes: "50/50", "1/2 a cup", "AC/DC" (read "slash").
   t = t.replace(/\b(\d+)\/(\d+)\b(?!\/)/g, (m, a: string, b: string) => (a === b ? `${a} ${b}` : (FRACTIONS[m] ?? m)));
-  t = t.replace(/\bw\/\s?/g, 'with ');
   t = t.replace(/\b([A-Za-z]+)\/([A-Za-z]+)\b/g, '$1 $2');
   // Abbreviations read as letters or words: "St." Mary's, "approx.", "Pt. 2".
   // "St." before a name is Saint, but after one ("Main St.") it's Street.

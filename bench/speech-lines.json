@@ -21,7 +21,7 @@
   {"id": "time-midnight", "kind": "tool", "text": "It's 12:05 AM.", "say": ["It's twelve oh five AM."]},
   {"id": "time-oclock", "kind": "tool", "text": "It's 5:00 PM.", "say": ["It's five PM.", "It's five o'clock PM."]},
   {"id": "timer-left", "kind": "tool", "text": "Your timer has 1:30 left.", "say": ["Your timer has one minute thirty seconds left.", "Your timer has a minute thirty left.", "Your timer has one thirty left."]},
-  {"id": "temp-f", "kind": "model", "text": "It's 72°F and sunny in Chicago right now.", "say": ["It's seventy two degrees and sunny in Chicago right now.", "It's seventy two degrees Fahrenheit and sunny in Chicago right now."]},
+  {"id": "temp-f", "kind": "model", "text": "It's 72°F and sunny outside right now.", "say": ["It's seventy two degrees and sunny outside right now.", "It's seventy two degrees Fahrenheit and sunny outside right now."]},
   {"id": "wind", "kind": "model", "text": "The high today is 61°F, with winds around 15 mph.", "say": ["The high today is sixty one degrees, with winds around fifteen miles per hour.", "The high today is sixty one degrees Fahrenheit, with winds around fifteen miles per hour."]},
   {"id": "temp-c", "kind": "model", "text": "Your GPU is sitting at 62°C, which is totally fine.", "say": ["Your GPU is sitting at sixty two degrees, which is totally fine.", "Your GPU is sitting at sixty two degrees Celsius, which is totally fine."]},
   {"id": "temp-neg", "kind": "model", "text": "It was -5°C this morning.", "say": ["It was minus five degrees this morning.", "It was minus five degrees Celsius this morning.", "It was negative five degrees Celsius this morning."]},
