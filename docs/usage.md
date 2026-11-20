@@ -23,6 +23,7 @@ The spoken name is "Adrian". Facts here are for version 0.17.1.
 | "Adrian's late", "Adrian'll know" | Never a wake: a contraction after the name means you're talking about it. |
 
 - **Follow-ups.** After it answers, you can carry on without the name for about 8 seconds in the Discord call, or 20 seconds at a PC ("and what about tomorrow?"). If the follow-up clearly isn't for it (game callouts, talking to someone else), it stays silent.
+- **Silence after a follow-up** (next release): a PC's mic hears everyone near it, so words to someone in the room, on the phone or in another call, banter, passing her answer on ("she said ...") and talk about her stay silent; in a call, words that answer someone else do too. When she isn't sure, she answers only a question or an order. The trade-off: a statement meant for her ("I've already heard all of those", "thanks, that's what I figured") or a remark that could go either way ("huh, I always thought it was Sydney") may get silence. Say her name again and she answers. A silence closes the follow-up window.
 - **No follow-up after an order.** When it has *done* something ("play Drake", "set a timer"), it stops listening right away, so talking to someone else afterwards isn't taken as more for it. After a normal answer, or a question from it, you can carry on.
 - **Keep talking.** If you pause mid-request and carry on before it starts answering (within 12 seconds), the two parts are joined into one request.
 - **Misspellings.** Speech recognition spells unusual names oddly, so it accepts misspellings like "Adrien" and "Adrean".
@@ -309,10 +310,14 @@ With the PC app connected (setup: [pc-app.md](pc-app.md)), you can talk to it at
 Orders about the house ("lock the front door", "shut the garage", "turn the TV down", "kill the lights", "turn the heat up") are kept off your PC, even said at the PC. With home control set up they go there; otherwise she says she can't. Name the PC when you mean it ("turn off my monitors", "lock my PC, I'm heading out the front door"), and "pause the music, someone's at the door" still pauses the music. A TV show, Apple TV or "the TV app" isn't the TV.
 
 From the next release:
-- A PC order said next to a house errand goes through: "pause, gotta open the door", "skip and turn the lights on", "lock it and turn off the lights". With one turn for both, only the PC part gets an answer.
-- "Cancel the shutdown" is never refused, whatever else is said with it.
+- The check reads each order and what it acts on, whatever words come between ("turn the big lamp in the corner off", "the office lights, off", "apágalas"), in English, Spanish and a little French. An order about a house thing is refused, never asked about, so no yes can make it act on the PC.
+- **"Lock the PC?"** When it's unclear whether a lock or "screens off" means the PC ("lock everything", "turn off the lights and lock it", "lock the one by my PC"), she asks "Lock the PC?" or "Turn off the PC's screens?" first, and only your own yes on your next turn does it. Sleep, restart and shut down always ask.
+- A PC order said next to a house errand goes through: "pause, gotta open the door", "pause I gotta open the door", "skip and turn the lights on", "lock it and turn off the lights". With one turn for both, only the PC part gets an answer.
+- The PC itself (the PC, the monitor, the screens) counts only for lock, screens, sleep, restart and shut down, and what's on it (music, a video, Spotify, a game) only for media, volume and opening things: "turn off the lights and the music" stops the music but leaves the screens on.
+- "Cancel the shutdown", "what's playing?" and "how loud is it?" are never refused, whatever else is said with them, and neither are window moves, PC status, the clipboard or the screen. "Look up how to fix a garage door" is a search.
 - "Lock up" is about the house, not the PC.
-- How the check works: a word check on your own words, backed by the model's instructions. It counts an order when its verb comes right before the house thing ("turn off the living room lights"). An unusual word in between ("turn off the ceiling fan", "lock the office door") isn't caught by the word check, so only the model's instructions keep that off the PC. In a bench of 48 house orders a run, the model tried a PC tool on none.
+- Limits: it knows the house things it lists. An unlisted one is asked about for lock, screens and power, but goes through for volume, media and opening (an unknown name there is usually an app). "Turn off the TV" is refused even if your TV is the PC's screen. Both checks apply at a PC that plays your call: push-to-talk gets your words in, and this check still reads them.
+- In benches on the real model: 0 wrong PC actions in 7 runs of 72 house orders, PC orders still done, and an unclear lock asked, then done on "yes", 14 of 14.
 
 | Area | Say | Notes |
 |---|---|---|

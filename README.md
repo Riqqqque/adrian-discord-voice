@@ -67,7 +67,8 @@ Everything below is in the current release (0.17.1), except what is marked *(nex
 - Between the PC and Discord: "send that link to my PC", "move the music to my PC", "tell the call I'll be on in 5".
 - When the PC's owner is also in its Discord call, the call answers instead, so music plays for everyone.
 - While its owner is in any voice call the bot can see, a PC on speakers takes only push-to-talk and typing, since its mic hears the call; her name said there gets a soft chime. On headphones hands-free keeps working (Windows says so for most headsets; a USB DAC or dock that calls itself speakers gets a "These speakers are headphones" switch). Push-to-talk covers what you say while you hold the key *(next release, with PC app 0.17.2)*.
-- Orders about the house ("lock the front door", "turn the TV down", "kill the lights") never reach the PC; "lock my PC" still does *(next release)*.
+- Orders about the house ("lock the front door", "turn the TV down", "kill the lights") never reach the PC, whatever words come between; "lock my PC" still does, and an unclear "lock everything" asks "Lock the PC?" first *(next release)*.
+- Follow-ups at a PC: words to someone nearby, banter and talk about it stay silent; a statement it isn't sure about may too, so say the name again *(next release)*.
 - Answers at the PC start sooner: it starts recognizing what you said during the pause at the end of it (about 0.5 s sooner in a test harness with stand-in models) *(next release)*.
 - Connections to Claude, Groq, Speechify and Tavily stay open between requests and are reopened when someone starts talking, and Claude's cached prompt is written while a question is still being heard, so the first answer after a quiet spell starts sooner (tens of milliseconds per provider, measured on the real APIs) *(next release)*.
 

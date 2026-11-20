@@ -164,7 +164,7 @@ Rerun the bench that matches a change before shipping it:
 
 | Changed | Rerun |
 |---|---|
-| prompt rules, PC tools, PC confirmations | `pc-orders.mjs`, `desk-followup.mjs`, `answer-length.mjs --real`, `everyday.mjs` (and `--holdout`, `--long`, `--keep`), `home-pc.mjs` |
+| prompt rules, PC tools, PC confirmations | `pc-orders.mjs`, `desk-followup.mjs`, `followup-judge.mjs`, `answer-length.mjs --real`, `everyday.mjs` (and `--holdout`, `--long`, `--keep`), `home-pc.mjs` |
 | tool confirmation lines, notes, search wording | `alarm-orders.mjs`, `taste-orders.mjs`, `knows.mjs` |
 | prompt size | `prompt-size.mjs` (free) |
 | listening, thread counts, side talk | `node dist/bench/sidetalk-bench.js` and `bench/sidetalk-score.mjs`; the latency harness (`LATENCY_HARNESS=1`) |
@@ -203,10 +203,11 @@ All bench files:
 | `cloud-voice.mjs` | Speechify latency and level | `node bench/cloud-voice.mjs <secrets.env> [voice] [out.wav]` | Speechify key (spends characters) |
 | `creator-check.mjs` | the model knows the creator's account and refuses impostors | `node bench/creator-check.mjs <bot.json>` | Anthropic key |
 | `desk-followup.mjs` | follow-ups at a PC without her name get answered; show and game audio stays `SILENT` | `node bench/desk-followup.mjs <bot.json>` | Anthropic key |
+| `followup-judge.mjs` | follow-ups without her name at a PC and in a call: real ones answered (or done with the right tool), side talk `SILENT` with no tool; 100 labelled trials, a third held out, plus 20 statement-shaped ones | `node bench/followup-judge.mjs <bot.json> [--split tune\|holdout\|stmt\|all] [--room pc\|call]` | Anthropic key |
 | `english-check.mjs` | which utterances trigger the Whisper second pass | `node bench/english-check.mjs <models dir>` | Linux |
 | `everyday.mjs` | household voice questions on the production prompt: right tool or none, content, length, no "Sure!" openers; `--holdout` (19 kept apart from tuning), `--long` (where short is wrong), `--keep` (safety warnings, lists asked for) | `node bench/everyday.mjs <bot.json> [--holdout \| --long \| --keep]` | Anthropic key |
 | `first-audio.mjs` | time to first audio, whole first sentence vs first clause | `node bench/first-audio.mjs <bot.json>` | Anthropic and Speechify keys |
-| `home-pc.mjs` | house orders never reach the PC, at the desk and in the call; PC orders with house words still do | `node bench/home-pc.mjs <bot.json>` | Anthropic key; stub PC |
+| `home-pc.mjs` | house orders never reach the PC, at the desk and in the call; PC orders with house words still do; an unclear lock asks, and a yes locks | `node bench/home-pc.mjs <bot.json>` | Anthropic key; stub PC |
 | `knows.mjs` | notes asked about in a call, remember, search answers | `node bench/knows.mjs <bot.json>` | Anthropic key |
 | `live-facts.mjs` | today's facts (sunset, sunrise, weather, scores, prices, store hours) come from a tool, stable facts don't; length counted apart | `node bench/live-facts.mjs <bot.json> [--holdout]` | Anthropic key |
 | `lang-e2e.mjs` | per-language path: Parakeet, English check, Whisper, reply, that language's voice | `node bench/lang-e2e.mjs <bot.json> <models dir> <out dir>` | Linux, configured OpenAI-compatible model key |
