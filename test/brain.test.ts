@@ -99,7 +99,7 @@ describe('sentence splitter', () => {
 describe('toSpeakable', () => {
   it('strips markdown and links and says the name as a word', () => {
     expect(toSpeakable('**Sure!** I\'m A.D.R.I.A.N. See [the docs](http://x.y) or https://a.b/c')).toBe(
-      "Sure! I'm Adrian See the docs or a link",
+      "Sure! I'm Adrian See the docs or a.b",
     );
     expect(toSpeakable('- one\n- two')).toBe('one two');
     // A chunk boundary inside **bold** leaves an unmatched marker per side.

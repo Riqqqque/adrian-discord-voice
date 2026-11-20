@@ -3,7 +3,7 @@
 // speed, then gain + limiter per chunk.
 
 import sherpa from 'sherpa-onnx-node';
-import type { TextToSpeech } from '../core/interfaces.js';
+import type { SpeechPiece, TextToSpeech } from '../core/interfaces.js';
 import { integratedLoudness } from '../audio/loudness.js';
 import { levelChunk, TARGET_LUFS } from './kokoro.js';
 
@@ -77,5 +77,16 @@ export class VoiceRouter implements TextToSpeech {
 
   synthesize(text: string, opts: { voice: string; speed: number }, signal?: AbortSignal) {
     return (this.piper[opts.voice] ?? this.kokoro).synthesize(text, opts, signal);
+  }
+
+  /** Streamed when that voice's engine streams, else the whole sentence. */
+  async *stream(text: string, opts: { voice: string; speed: number }, signal?: AbortSignal): AsyncGenerator<SpeechPiece> {
+    const e = this.piper[opts.voice] ?? this.kokoro;
+    if (e.stream) {
+      yield* e.stream(text, opts, signal);
+      return;
+    }
+    const a = await e.synthesize(text, opts, signal);
+    yield { samples: a.samples, sampleRate: a.sampleRate };
   }
 }
