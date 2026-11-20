@@ -524,6 +524,36 @@ export const CASES: Case[] = [
     ['my screen, turn it off', SO, 'go'],
     ['the lights are off, unmute', UNMUTE, 'go'],
   ]),
+  // Added after review: what's on the PC stands only for media calls, and the machine only for pc_system.
+  ...rows("the machine, or what's on it", undefined, [
+    ['turn off the lights and the music', SO, 'no'],
+    ['turn off the lights and turn off the music', SO, 'no'],
+    ['turn off the music and the lights', SO, 'no'],
+    ['turn off the tv and spotify', SHUTDOWN, 'no'],
+    ['lock the door and discord', LOCK, 'no'],
+    ['turn off the fan and the game', SLEEP, 'no'],
+    ['turn off my screen and the tv', MUTE, 'no'],
+    ['turn off the monitor and the tv', PAUSE, 'no'],
+    ['turn off the music', PAUSE, 'go'],
+    ['turn off the music', SO, 'go'],
+    ['turn off the lights and the monitor', SO, 'go'],
+    ['turn off the lights and the music', PAUSE, 'go'],
+    ['turn the whole pc volume down and the tv off', DOWN, 'go'],
+    ['play this on my pc and turn off the tv', PLAY, 'go'],
+    ['turn down the T.V.', DOWN, 'no'],
+    ['turn the A.C. down', DOWN, 'no'],
+    ['turn off the T.V.', SO, 'no'],
+  ]),
+  // Review 6 probe rows not elsewhere, and a little French.
+  ...rows('probe rows and French', undefined, [
+    ['turn on the porch light and wake the pc', LOCK, 'no'],
+    ['open the door app', openApp('door'), 'go'],
+    ['éteins la lumière', SO, 'no'],
+    ['ferme la porte du garage', LOCK, 'no'],
+    ['verrouille la porte', LOCK, 'no'],
+    ['baisse la télé', DOWN, 'no'],
+    ['éteins les lumières et le ventilateur', SO, 'no'],
+  ]),
   // Possessives and "'s" for "is".
   ...rows("possessives and 's", undefined, [
     ["turn off mom's lamp", SO, 'no'],
