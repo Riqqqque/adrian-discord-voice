@@ -20,7 +20,7 @@ const calls = [];
 const SEARCH = [
   [/sunrise|sun ?rise|sun come up/i, '- Sunrise and sunset (published 2026-11-20): tomorrow sunrise 6:58 AM, sunset 4:37 PM.'],
   [/sunset|sun ?set|sun go(es)? down|dark/i, '- Sunrise and sunset today (published 2026-11-20): sunrise 6:57 AM, sunset 4:38 PM, civil twilight ends 5:06 PM.'],
-  [/moon/i, '- Moon phases (published 2026-11-20): next full moon Tuesday, November 24, 2026.'],
+  [/post office|usps|mail/i, '- Post office hours (published 2026-11-12): Monday to Friday 8:30 AM to 5:30 PM, Saturday 9 AM to 1 PM.'],
   [/avalanche|hockey|nhl/i, '- Avalanche beat Stars 5-2 (published 2026-11-20): Colorado won last night at Ball Arena; MacKinnon had two goals.'],
   [/broncos|nfl|football/i, '- Broncos vs. Chiefs (published 2026-11-19): Denver hosts Kansas City this Sunday, kickoff 2:25 PM.'],
   [/egg/i, '- Egg prices (published 2026-11-18): a dozen large eggs average $3.17 at metro grocery stores this week.'],
@@ -46,6 +46,7 @@ const LIVE = ['web_search', 'weather', 'headlines', 'briefing'];
 
 let ok = 0;
 let total = 0;
+let long = 0;
 const fails = [];
 const groups = {};
 /** `tool`: 'live' (any of the lookup tools must run), null (no tool), or a tool name. */
@@ -58,7 +59,9 @@ async function ask(group, text, { tool = 'live', says, max = 25 } = {}) {
   let out = '';
   for await (const ch of o.ask(`u${total}`, 'Sam', text, AbortSignal.timeout(30_000), undefined, { channelId: 'call', guildId: 'g' })) out += (out ? ' ' : '') + ch;
   const toolOk = tool === 'live' ? calls.some((k) => LIVE.includes(k.name)) : tool === null ? calls.length === 0 : calls.some((k) => k.name === tool);
-  const why = [!toolOk && 'tool', says && !says.test(out) && 'content', words(out) > max && 'long'].filter(Boolean);
+  // Length is counted, not graded: the brevity benches grade it.
+  const why = [!toolOk && 'tool', says && !says.test(out) && 'content'].filter(Boolean);
+  if (words(out) > max) long++;
   total++;
   const g = (groups[group] ??= { ok: 0, n: 0 });
   g.n++;
@@ -66,12 +69,13 @@ async function ask(group, text, { tool = 'live', says, max = 25 } = {}) {
     ok++;
     g.ok++;
   } else fails.push(text);
-  console.log(`${why.length ? 'BAD' : 'ok '} [${group}] "${text}"${why.length ? `  [${why.join(',')}]` : ''}\n    tools: ${calls.map((k) => `${k.name}${JSON.stringify(k.args)}`).join(' ') || '-'}\n    says (${words(out)} words): ${out.slice(0, 220)}`);
+  console.log(`${why.length ? 'BAD' : 'ok '} [${group}] "${text}"${why.length ? `  [${why.join(',')}]` : ''}${words(out) > max ? ' (long)' : ''}\n    tools: ${calls.map((k) => `${k.name}${JSON.stringify(k.args)}`).join(' ') || '-'}\n    says (${words(out)} words): ${out.slice(0, 220)}`);
 }
 
 if (process.argv.includes('--holdout')) await holdout();
 else await main();
-console.log(`\n${ok}/${total} right (${Object.entries(groups).map(([k, g]) => `${k} ${g.ok}/${g.n}`).join(', ')})${fails.length ? `; failed: ${fails.map((f) => JSON.stringify(f)).join(', ')}` : ''}`);
+console.log(`\n${long}/${total} over their word limit`);
+console.log(`${ok}/${total} right (${Object.entries(groups).map(([k, g]) => `${k} ${g.ok}/${g.n}`).join(', ')})${fails.length ? `; failed: ${fails.map((f) => JSON.stringify(f)).join(', ')}` : ''}`);
 
 async function main() {
   // Today, now, here: a tool, and the tool's number.
@@ -84,7 +88,7 @@ async function main() {
   await ask('live', "what's tesla stock at", { says: /412|four hundred (and )?twelve|four twelve/i });
   await ask('live', 'what time does costco close tonight', { says: /8:30|eight thirty/i, max: 20 });
   await ask('live', "what's the euro to dollar rate today", { says: /1\.13|one (point )?one three|a dollar thirteen|one dollar (and )?thirteen/i });
-  await ask('live', 'when is the next full moon', { says: /24|twenty.?fourth|tuesday/i, max: 20 });
+  await ask('live', 'is the post office open today', { says: /5:30|five thirty|yes|yeah|open/i });
   // Stable facts: answered straight, no lookup.
   await ask('stable', 'how tall is the eiffel tower', { tool: null, says: /33\d|three hundred (and )?thirty|1,?0[68]\d|thousand/i, max: 20 });
   await ask('stable', 'when did world war two end', { tool: null, says: /1945|nineteen forty.?five/i, max: 20 });
