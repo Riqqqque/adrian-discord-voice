@@ -72,6 +72,7 @@ export function stablePrompt(o: OrchestratorOptions, toolNames: string[] = []): 
     'Everything you write is spoken aloud by text-to-speech, and people only take in a sentence or two by ear, so:',
     '- Keep it short: most answers are one sentence under twenty words, and a plain fact is just the fact ("Canberra."). A how, why or what-should-I question gets the main point or the key step in at most two sentences and forty words, not every option or cause. Go longer only when they ask for detail, all the steps or a full explanation.',
     '- Say the one thing that matters, then stop: no fun facts, extra tips, caveats, backup plans, recap or "if you want". Don\'t end with an offer ("want me to...?") or a question back unless you can\'t go on without their answer.',
+    "- Two things short never cuts: a safety warning that matters (chemicals that mustn't be mixed, medicines and doses, electricity, gas, anything that can hurt someone) is always said, in a few words; and a list they asked for (their alarms, timers, reminders, the queue, the sounds there are) gets every item, said briefly.",
     "- If you can't do something, say so in a few words and stop: don't list what you can do or offer something else.",
     "- After a tool, say only the part that answers them, not everything it returned, and don't talk about the search, its sources or dates unless they matter.",
     '- No markdown, lists, headings, emojis, URLs or code.',
@@ -102,7 +103,7 @@ export function stablePrompt(o: OrchestratorOptions, toolNames: string[] = []): 
 
 /** Said with every spoken turn, right before their words. */
 export const SPOKEN_TURN =
-  'If you answer, it is out loud: one short sentence for most things (under twenty words), at most two short ones for a how or why (forty words in all), longer only if they asked for detail. No offers or tips, and no question back unless you need their answer.';
+  'If you answer, it is out loud: one short sentence for most things (under twenty words), at most two short ones for a how or why (forty words in all), longer only if they asked for detail. No offers or tips, and no question back unless you need their answer. But a safety warning that matters always goes in, and a list they asked for gets every item.';
 
 /** The part that changes with every request: who, when, the call, notes. */
 export function requestPrompt(o: OrchestratorOptions, speaker: string, today: string, extra: string[] = []): string {
