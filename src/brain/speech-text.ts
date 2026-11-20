@@ -205,6 +205,29 @@ function fraction(a: number, b: number): string | undefined {
   return a === 1 ? `one ${d[0]}` : `${a} ${d[1]}`;
 }
 
+/** A weekday just before: "Fri, 11/21" and "Monday 2/6" are dates. */
+const WEEKDAY_BEFORE = /\b(?:mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun)(?:day|sday|nesday|rsday|urday)?\.?,?\s+$/i;
+/** A score or odds just before: "won 3/1" is "3 to 1". */
+const SCORE_BEFORE = /\b(?:won|lost|beat|beats|lead|leads|led|trail|trails|trailed|odds(?:\s+(?:of|are|at))?)\s+$/i;
+/** What says "a/b" is a rating: "3/4 stars", "8/10 overall". */
+const RATING_NEXT = /^\s*(?:stars?|rating|points?|overall)\b/i;
+
+/** "a/b" as it is said. Only clear fractions are read as fractions ("3/4 of a
+ *  cup", "1/2"); ratings ("4/5 stars", "7.8/10") are "out of", a score after
+ *  "won" is "to", and a month/day pair is a date. */
+function slash(m: string, a: string, b: string, before: string, after: string): string {
+  const date = !a.includes('.') && !b.includes('.') && +a >= 1 && +a <= 12 && +b >= 1 && +b <= 31 ? `${MONTHS[+a - 1]} ${ordinal(+b)}` : undefined;
+  if (a.includes('.') || b.includes('.')) return `${a} out of ${b}`;
+  if (date && WEEKDAY_BEFORE.test(before)) return date;
+  if (+a < +b && FRACTION_NEXT.test(after)) return FRACTIONS[m] ?? fraction(+a, +b) ?? m;
+  if (SCORE_BEFORE.test(before)) return `${a} to ${b}`;
+  if ((+b === 5 || +b === 10 || +b === 100 || RATING_NEXT.test(after)) && +a <= +b) return `${a} out of ${b}`;
+  if (FRACTIONS[m]) return FRACTIONS[m];
+  // "50/50"; "3/3" in a stat line is "3 for 3".
+  if (a === b) return +a >= 13 ? `${a} ${b}` : `${a} for ${b}`;
+  return date ?? fraction(+a, +b) ?? m;
+}
+
 export function ordinal(n: number): string {
   const t = n % 100;
   return `${n}${t >= 11 && t <= 13 ? 'th' : (['th', 'st', 'nd', 'rd'][n % 10] ?? 'th')}`;
@@ -272,15 +295,18 @@ export function forSpeech(text: string): string {
     const w = UNITS[u.toLowerCase()];
     return w ? `${n} ${plural(n, w)}` : m;
   });
-  // Slashes: "50/50", "1/2 a cup", "AC/DC" (read "slash").
-  t = t.replace(/\b(\d+)\/(\d+)\b(?!\/)/g, (m, a: string, b: string) => (a === b ? `${a} ${b}` : (FRACTIONS[m] ?? fraction(+a, +b) ?? m)));
+  // Slashes: "50/50", "1/2 a cup", "4/5 stars", "Fri 11/21", "AC/DC" (read "slash").
+  // Not inside a longer run ("11/21/2026", "1.2.3/4").
+  t = t.replace(/(?<![\w.,/])(\d+(?:\.\d+)?)\/(\d+(?:\.\d+)?)(?![\w/]|[.,]\d)/g, (m, a: string, b: string, at: number, all: string) => slash(m, a, b, all.slice(0, at), all.slice(at + m.length)));
+  // "60km/h" has no word boundary before the unit.
+  t = t.replace(/(?<=\d)(km|m|ft|mi)\/(h|s)\b/g, (m) => (PER_UNITS[m] ? ` ${PER_UNITS[m]}` : m));
   t = t.replace(/\b(km|m|ft|mi)\/(h|s)\b/g, (m) => PER_UNITS[m] ?? m);
   // Only names in capitals ("AC/DC", "TCP/IP") and "and/or"; "w/o" is left to the voice.
   t = t.replace(/\b([A-Z]{2,})\/([A-Z]{2,})\b/g, '$1 $2');
   t = t.replace(/\band\/or\b/g, 'and or');
   // Abbreviations read as letters or words: "St." Mary's, "approx.", "Pt. 2".
-  // "St." before a name is Saint, but after one ("Main St.") it's Street.
-  t = t.replace(/(?<!\b[A-Z][a-z]*\s)\bSt\.\s(?=[A-Z][a-z])/g, 'Saint ');
+  // "St." before a name is Saint, but after one ("Main St.") or a number ("5th St.") it's Street.
+  t = t.replace(/(?<!\b[A-Z][a-z]*\s|\d(?:st|nd|rd|th)?\s)\bSt\.\s(?=[A-Z][a-z])/g, 'Saint ');
   t = t.replace(/\bapprox\.?(?=\s)/gi, 'approximately');
   t = t.replace(/\bPt\.?\s?(\d)/g, 'Part $1');
   t = t.replace(/\bvs\.?(?=\s)/g, 'versus'); // read "V S"
