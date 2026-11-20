@@ -62,6 +62,9 @@ await ask('add five minutes to the pizza timer', call('edit_alarm', (x) => Numbe
 await ask('what alarms do i have', call('list_timers'), 50);
 await ask('skip tomorrow morning\'s alarm', call('edit_alarm', (x) => x.skip_next === true || !!x.skip_date || x.on === false));
 await ask('change my 6:30 alarm to 6:45', call('edit_alarm', (x) => /6:45/.test(x.time ?? '')));
+// Taking a label off and the default sound back (review S6).
+await ask('take the label off my pizza timer', call('edit_alarm', (x) => /^(none|no label|nothing|clear|remove it)$/i.test(x.label ?? '')));
+await ask('put my 6:45 alarm back on the default sound', (cs) => call('edit_alarm', (x) => /^default$/i.test(x.sound ?? ''))(cs) || call('alarm_options', (x) => /^default$/i.test(x.default_sound ?? ''))(cs));
 await ask('what alarm sounds do you have', (cs, out) => call('alarm_options', (x) => x.action === 'sounds')(cs) && /chime|marimba|birds|bells|classic/i.test(out), 60);
 await ask('let me hear the marimba one', call('alarm_options', (x) => x.action === 'preview' && /marimba/i.test(x.sound ?? '')), 30, { followUp: true });
 await ask('use birds for my alarms', (cs) => call('alarm_options', (x) => x.action === 'set' && /birds/i.test(x.default_sound ?? ''))(cs) || call('edit_alarm', (x) => /birds/i.test(x.sound ?? ''))(cs));
