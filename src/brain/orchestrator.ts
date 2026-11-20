@@ -7,6 +7,7 @@ import { LlmHttpError } from './openai-compatible.js';
 import { SentenceSplitter, type SplitterOptions, toSpeakable } from './speech-text.js';
 import { countable, stripImages } from './images.js';
 import { asUntrustedData } from './tools.js';
+import { callFollowUp, deskFollowUp } from './followup.js';
 
 export interface OrchestratorOptions {
   /** Name the assistant answers to when spoken. */
@@ -192,13 +193,9 @@ export class ConversationOrchestrator {
                 `${speaker} wrote this in the channel without @mentioning you. People here also talk to each other. If it is not meant for you, reply with exactly SILENT and nothing else. Not meant for you: talking to someone else (including answering a question another person asked them in the messages above), reactions ("lol", "fr"), side remarks about you rather than to you. If it continues your conversation with them, answers something you asked, asks you something, or talks to you by name, just answer it, exactly as if they had @mentioned you.`,
               ]
             : opts.followUp && opts.desk
-            ? [
-                `${speaker} said this at their PC without using your name, soon after your last answer. They're usually talking to you: treat it as continuing your conversation and answer it. Reply with exactly SILENT and nothing else only if it clearly isn't for you: dialogue from a show, video or game playing on the PC, song lyrics, or them obviously talking to someone else in the room or on a call.`,
-              ]
+            ? [deskFollowUp(speaker)]
             : opts.followUp
-            ? [
-                `${speaker} just said this without using your name, a few seconds after your last answer. People in the call also talk to each other and about their games. If it is not meant for you, reply with exactly SILENT and nothing else. Not meant for you: talking to someone else, callouts and instructions for the game ("grab the diamonds", "run", "watch out", "go left"), reactions ("lol", "nice one"), thinking out loud. Things you could not do anyway are usually meant for someone else. If it continues your conversation or asks you something, answer normally.`,
-              ]
+            ? [callFollowUp(speaker)]
             : []),
         ]);
     const history = this.memory.history(userId) as ChatMessage[];
