@@ -17,6 +17,7 @@ import {
   pickBrowse,
   pickSong,
   runProgram,
+  soundOf,
   type Runner,
   type TopTracks,
   versionsAsked,
@@ -132,6 +133,19 @@ describe('the words of a title', () => {
     expect(matchScore('gods plan by drake', "God's Plan Drake")).toBe(1);
     expect(matchScore('dont stop me now', 'Don’t Stop Me Now Queen')).toBe(1);
   });
+
+  it('hears a soft g inside a word as j', () => {
+    expect(soundOf('bougie')).toBe(soundOf('boujee'));
+    expect(soundOf('get')).not.toBe(soundOf('jet')); // not at the start
+  });
+
+  it('joins two words heard for one name', () => {
+    expect(matchScore('bad and bougie by me goes', 'Bad and Boujee Migos, Lil Uzi Vert • Culture')).toBe(1);
+    // "me goes" alone doesn't make "YFG Fatso - Bougie Hoes" Migos.
+    expect(matchScore('bad and bougie by me goes', 'YFG Fatso - Bougie Hoes (Official Music Video) YFG Fatso')).toBe(0.5);
+    // Too few sounds to be sure: "so easy" isn't SZA.
+    expect(matchScore('so easy', 'Kill Bill SZA')).toBe(0);
+  });
 });
 
 describe('versions asked for by name', () => {
@@ -207,7 +221,8 @@ describe("YouTube's video search, asked directly", () => {
     );
     expect(lines).toBe(`${id('a')}\t1222\tNA\tTems: Tiny Desk Concert\tNPR Music\n${id('live')}\tNA\tis_live\tLofi radio\tLofi Girl\n${id('soon')}\tNA\tis_upcoming\tPremiere\tSomeone\n`);
     expect(webSearchLines({ contents: {} } as never, 5)).toBeUndefined();
-    expect(webSearchLines(web(), 5)).toBe('');
+    expect(webSearchLines(web(), 5)).toBeUndefined(); // yt-dlp asks again: none, or a shape it doesn't know
+    expect(webSearchLines(web({ lockupViewModel: {} }), 5)).toBeUndefined();
   });
 
   it('replaces the ytsearch run, with the same filter yt-dlp sends', async () => {

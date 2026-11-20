@@ -1841,7 +1841,8 @@ describe('how well a result matches the words', () => {
     ['blinding lights the weekend', 'Blinding Lights The Weeknd After Hours', 1],
     ['Emmy blues on the radar performance, Loba', 'Emi Blue LOBA Performance On The Radar Radio', 1],
     ['Emmy blues on the radar performance, Loba', 'Champion Lovah (LIVE "On The Radar" Performance) On The Radar, Imani Ray', 0.4],
-    ['goona fuku mean', 'fukumean Gunna a Gift & a Curse', 2 / 3],
+    // "fuku mean" together is the title's one word.
+    ['goona fuku mean', 'fukumean Gunna a Gift & a Curse', 1],
     ['dojo cat paint the town red', 'Paint The Town Red Doja Cat Scarlet', 1],
     ['Beyoncé halo', 'Halo Beyonce I Am... Sasha Fierce', 1],
     ['Get Lucky official audio', 'Get Lucky Daft Punk', 1],
