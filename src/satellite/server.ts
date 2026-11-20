@@ -6,7 +6,7 @@ import type { IncomingMessage } from 'node:http';
 import { WebSocketServer } from 'ws';
 import type { Logger } from '../core/interfaces.js';
 import { capFrames, frameBytes, MAX_FRAME, SatelliteConnection, SMALL_FRAME } from './connection.js';
-import type { SatelliteDevices } from './devices.js';
+import { SatelliteDevices } from './devices.js';
 
 export interface SatelliteServerOptions {
   bind: string;
@@ -123,10 +123,21 @@ export function startSatelliteServer(o: SatelliteServerOptions): { close(): Prom
 
   // `adrian satellite remove` runs in another process: a PC unpaired while
   // connected would keep its owner's rights (alarms, reminders, PC tools,
-  // its mic) until a restart. Checked here instead.
+  // its mic) until a restart. Checked here instead. A file that can't be read
+  // says nothing about any one PC: the pairings stand as they were (new
+  // hellos are still refused while it lasts), and the log says so loudly.
+  let unreadable = 0;
   const recheck = setInterval(() => {
+    if (!live.size) return;
+    const now = o.devices.read();
+    if (!now) {
+      if (unreadable++ % 20 === 0) o.log.error("satellites.json can't be read; keeping connected PCs as they were, refusing new ones", { pcs: live.size, rounds: unreadable });
+      return;
+    }
+    if (unreadable) o.log.info('satellites.json readable again', { rounds: unreadable });
+    unreadable = 0;
     for (const c of live) {
-      if (o.devices.stillPaired(c.device)) continue;
+      if (SatelliteDevices.stillPaired(c.device, now)) continue;
       o.log.warn('satellite unpaired; dropping it', { device: c.device.name });
       c.send({ type: 'denied', reason: 'unpaired' });
       c.refuse('unpaired');

@@ -2,6 +2,7 @@
 // that is shown once at pairing; only its SHA-256 is kept.
 
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { readJsonFile, writeJsonFile } from '../web/secrets-file.js';
 
@@ -28,6 +29,19 @@ export class SatelliteDevices {
     return Array.isArray(d?.devices) ? d.devices : [];
   }
 
+  /** The pairings as the file holds them now, or undefined when it can't be
+   *  read or isn't the file `save` writes: missing (a state folder restored or
+   *  moved), unreadable, or cut short by a hand edit. Not the same as no PCs:
+   *  unpairing the last one leaves an empty list. */
+  read(): Device[] | undefined {
+    try {
+      const d = JSON.parse(readFileSync(this.file, 'utf8')) as { devices?: unknown } | null;
+      return Array.isArray(d?.devices) ? (d.devices as Device[]) : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
   private save(devices: Device[]): void {
     writeJsonFile(this.file, { devices });
   }
@@ -51,10 +65,11 @@ export class SatelliteDevices {
     return true;
   }
 
-  /** Still paired as it was when it connected: same token and owner. `satellite
-   *  remove` runs in another process, so a live connection learns of it here. */
-  stillPaired(d: Device): boolean {
-    return this.list().some((x) => x.id === d.id && x.tokenHash === d.tokenHash && x.owner === d.owner);
+  /** Still paired as it was when it connected: same token and owner, in `list`
+   *  (from read()). `satellite remove` runs in another process, so a live
+   *  connection learns of it here. */
+  static stillPaired(d: Device, list: Device[]): boolean {
+    return list.some((x) => x.id === d.id && x.tokenHash === d.tokenHash && x.owner === d.owner);
   }
 
   /** The device a token belongs to, compared in constant time. */
