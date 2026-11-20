@@ -225,7 +225,9 @@ const MEDIA = new Set(
 /** A thing whose name ends in one of these is an app or a page ("the doorbell app"). */
 const APPLIKE = new Set(['app', 'apps', 'website', 'site', 'page', 'tab']);
 /** Services: "the doors on youtube" is something to play. */
-const SERVICES = new Set(['youtube', 'spotify', 'netflix', 'twitch', 'hulu', 'soundcloud', 'pc', 'computer', 'computadora']);
+const SERVICES = new Set(['youtube', 'spotify', 'netflix', 'twitch', 'hulu', 'soundcloud']);
+/** "x'll", "x're": the word they stand for. */
+const CONTRACTED: Record<string, string> = { "'ll": 'will', "'re": 'are', "'ve": 'have', "'d": 'would', "'m": 'am' };
 const PRONOUNS = new Set(['it', 'this', 'that', 'these', 'those', 'them', 'esto', 'eso', 'lo']);
 const PEOPLE = new Set(['me', 'us', 'him', 'her', 'everyone', 'everybody', 'myself']);
 /** Speakers are the PC's unless a room or a smart speaker is named with them. */
@@ -288,7 +290,7 @@ function tokens(said: string): string[] {
       if (tail === "n't") out.push(x === 'wo' ? 'will' : x === 'ca' ? 'can' : x, 'not');
       else if (tail === "'s") out.push(...(/^(?:it|that|there|here|what|who|he|she|someone|somebody|everyone|nobody|where|how|let)$/.test(x) ? [x, 'is'] : [x, "'s"]));
       else if (tail === "'") out.push(x);
-      else out.push(x, { "'ll": 'will', "'re": 'are', "'ve": 'have', "'d": 'would', "'m": 'am' }[tail]!);
+      else out.push(x, CONTRACTED[tail]!);
       continue;
     }
     if (t === 'im') out.push('i', 'am');
@@ -324,7 +326,8 @@ function sortNp(np: Np): { sort: Sort; thing?: string } {
   if (core.length && APPLIKE.has(core.at(-1)!)) return { sort: 'pc' };
   const house = houseIn(core);
   const pc = core.some((w) => PC.has(w));
-  if (house && pc) return { sort: 'mixed', thing: house };
+  // "the computer room lights", "the lamp by my pc": both named, so not clear.
+  if (house && (pc || pp.some((w) => PC.has(w)))) return { sort: 'mixed', thing: house };
   if (house) return { sort: 'house', thing: house };
   if (pc) return { sort: 'pc' };
   const room = core.find((w) => HOUSE.get(w) === 'room');
@@ -332,13 +335,13 @@ function sortNp(np: Np): { sort: Sort; thing?: string } {
   // "the one in the kitchen": a room says where, and that's the house; "the music in the kitchen" stays the PC's.
   const ppHouse = houseIn(pp) ?? pp.find((w) => HOUSE.get(w) === 'room');
   if (core.some((w) => MEDIA.has(w) || PEOPLE.has(w))) return ppHouse ? { sort: 'house', thing: ppHouse } : { sort: 'pc' };
-  if (core.length && core.every((w) => PRONOUNS.has(w))) return ppHouse ? { sort: 'house', thing: ppHouse } : { sort: 'pronoun' };
+  if (core.length && core.every((w) => PRONOUNS.has(w))) return ppHouse ? { sort: 'house', thing: ppHouse } : pp.some((w) => PC.has(w)) ? { sort: 'pc' } : { sort: 'pronoun' };
   // "all of them": the pronoun after "of".
   if (!core.length && pp.length && pp.every((w) => PRONOUNS.has(w))) return { sort: 'pronoun' };
   if (!core.length) return ppHouse ? { sort: 'house', thing: ppHouse } : pp.some((w) => PC.has(w)) ? { sort: 'pc' } : { sort: 'none' };
   if (ppHouse) return { sort: 'house', thing: ppHouse };
   if (room) return { sort: 'house', thing: room };
-  return { sort: 'unknown' };
+  return pp.some((w) => PC.has(w)) ? { sort: 'pc' } : { sort: 'unknown' };
 }
 
 /** Can this order act on this house thing? */
@@ -554,7 +557,7 @@ function targetOf(o: Order, p: Parse): Target {
   if (objs.length) {
     const sorts = objs.map((n) => ({ n, s: sortNp(n) }));
     const ts: Target[] = sorts.map(({ n, s }) =>
-      s.sort === 'pc' ? { to: 'pc' } : s.sort === 'pronoun' ? resolve(n.at) : s.sort === 'house' ? { to: 'house', thing: s.thing! } : { to: s.sort, ...(s.thing ? { thing: s.thing } : {}) },
+      s.sort === 'pronoun' ? resolve(n.at) : s.sort === 'house' ? { to: 'house', thing: s.thing! } : s.sort === 'mixed' || s.sort === 'unknown' ? { to: s.sort, ...(s.thing ? { thing: s.thing } : {}) } : { to: 'pc' },
     );
     t =
       ts.find((x) => x.to === 'pc') ??
@@ -566,7 +569,9 @@ function targetOf(o: Order, p: Parse): Target {
     // Nothing after it: the thing right before it in the same stretch, if any ("the lights need to be
     // turned off"); a particle alone at the start of one takes the thing before the break ("the office lights, off").
     const first = p.toks.slice(0, o.at).every((w, n) => w === BREAK || p.stretchOf[n]! < o.stretch);
-    const reach = (n: Np) => p.stretchOf[n.at] === o.stretch || (first && isPostfix(o, p) && p.stretchOf[n.at] === o.stretch - 1);
+    // Or a stretch of things alone before the break takes it ("the lights, turn off", "front door. lock.").
+    const back = first && (isPostfix(o, p) || thingsOnly(p, o.stretch - 1));
+    const reach = (n: Np) => p.stretchOf[n.at] === o.stretch || (back && p.stretchOf[n.at] === o.stretch - 1);
     const near = o.alone ? undefined : things.filter((n) => n.at < o.at && reach(n)).sort((a, b) => b.at - a.at)[0];
     const s = near && !near.inPp ? sortNp(near) : undefined;
     if (s?.sort === 'house' && s.thing && actsOn(o.cls, s.thing)) t = { to: 'house', thing: s.thing };
@@ -580,6 +585,12 @@ function targetOf(o: Order, p: Parse): Target {
   // "Lock up" is the house unless the PC is named.
   if (o.cls === 'lockup' && !o.objs.some((n) => n.words.some((w) => PC.has(w)))) return { to: 'house', thing: t.to === 'house' ? t.thing : 'house' };
   return t;
+}
+
+/** Only things in this stretch: no verb, no "is", no new clause ("the lights, ..."). */
+function thingsOnly(p: Parse, stretch: number): boolean {
+  const ws = p.toks.filter((w, n) => p.stretchOf[n] === stretch && w !== BREAK);
+  return ws.length > 0 && !p.orders.some((o) => o.stretch === stretch) && !ws.some((w) => AUX.has(w) || SUBJECTS.has(w) || w === "'s");
 }
 
 /** An order made of its particle alone ("the office lights, off"). */
