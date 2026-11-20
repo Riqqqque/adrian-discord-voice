@@ -164,7 +164,7 @@ With neither `date` nor `repeat`, it rings at the next time that comes. The read
 | Argument | Notes |
 |---|---|
 | `which` | Its time ("7:00"), label, id, "next", or a timer length ("10 minute"). |
-| `time`, `date`, `repeat`, `label`, `sound`, `play` | Only what changes. A one-off keeps its day when its time changes, unless `date` is given. |
+| `time`, `date`, `repeat`, `label`, `sound`, `play` | Only what changes. A one-off keeps its day when its time changes, unless `date` is given. `label: "none"` (also "no label", "clear") takes the label off ("It has no label now."), and `sound: "default"` puts their default back (next release). An empty string is not a change. |
 | `on` | `false` turns it off without deleting it; `true` turns it back on. |
 | `skip_next`, `skip_date` | Repeating alarms only, and only on days it rings. |
 | `snooze_minutes` | Its own snooze length. |
@@ -197,7 +197,7 @@ Deletes alarms, timers and reminders. Deleting a repeating alarm, or several at 
 | `save_sound` | Finds `query` on YouTube and keeps it as a sound called `name`. Up to 10 per person, 30 seconds each, stored on the server. |
 | `delete_sound` | Removes a saved sound. Alarms and defaults that used it go back to the defaults. |
 | `settings` | Shows their settings. |
-| `set` | Changes any of `default_sound`, `timer_sound`, `snooze_minutes`, `ring_minutes`, `fade_in_seconds`, `volume` (10-100), `dismiss` (`stop`, `firm`, `math`), `voice` (say the time while ringing), `timezone` (IANA). Defaults and ranges (`DEFAULTS` and `LIMITS` in `src/features/alarms.ts`): snooze 9 minutes (1-60), ring 10 minutes (1-30; timers ring 5), fade-in 30 s (0-300), volume 100, voice on, dismiss `stop`. |
+| `set` | Changes any of `default_sound`, `timer_sound` (`"default"` goes back to the standard one), `snooze_minutes`, `ring_minutes`, `fade_in_seconds`, `volume` (10-100), `dismiss` (`stop`, `firm`, `math`), `voice` (say the time while ringing), `timezone` (IANA). Defaults and ranges (`DEFAULTS` and `LIMITS` in `src/features/alarms.ts`): snooze 9 minutes (1-60), ring 10 minutes (1-30; timers ring 5), fade-in 30 s (0-300), volume 100, voice on, dismiss `stop`. |
 
 `slow`, 40 s (saving a clip runs yt-dlp and ffmpeg). Built-in tones: `classic` (alarm default), `chime` (timer default), `bells`, `marimba`, `gentle`, `birds`, `pulse`, `digital`, `buzzer`, plus `voice`. Clip names are lowercase letters, digits, spaces and hyphens, up to 30 characters, and can't be a tone name, `voice` or `default`.
 
@@ -221,13 +221,13 @@ File: `src/features/notes.ts`.
 
 ### `remember`
 
-`note` (string, required): a short third-person note ("birthday is March 3"), up to 200 characters. A saved note says "Got it." itself, unless the person's words also ask something (`asksMore`), which goes to the model. Up to 30 notes per person. When the list is full, the oldest note she picked up by herself goes; notes they asked her to keep are never pushed out.
+`note` (string, required): a short third-person note ("birthday is March 3"), up to 200 characters. A saved note says "Got it." itself, unless the person's words also ask something or give another order (`asksMore`: "remember I'm off sugar and give me a breakfast idea"), which goes to the model. Up to 30 notes per person. When the list is full, the oldest note she picked up by herself goes; notes they asked her to keep are never pushed out.
 
 ### `forget`
 
 `what` (string, required): words to match, or "all" / "everything". She only says how many went ("Forgot 2 notes."), never which. "Forget everything" also clears that person's conversation history.
 
-**Privacy.** Notes only reach the asker's own prompt, as JSON data. In a server (the call or a text channel), only notes told in that server, or notes the asker's own words ask about (matched on a rough word stem plus a few synonyms: "live" finds "lives", "job" finds "works"), are shown, with an instruction not to bring them up. In a DM or at their own PC, all of them are. Automatic memory (`autoMemory`) is not a tool: it is a background model call every 4 voice turns that adds, rewrites or drops learned notes.
+**Privacy.** Notes only reach the asker's own prompt, as JSON data. In a server (the call or a text channel), only notes told in that server, or notes the asker's own words ask about (matched on the word, its plural or third-person form, plus a few synonyms: "live" finds "lives" and "living in", "job" finds "works"; everyday verbs such as "work", "play" or "like" count only in a first-person question, so "how does this work" finds nothing), are shown, with an instruction not to bring them up. In a DM or at their own PC, all of them are. Automatic memory (`autoMemory`) is not a tool: it is a background model call every 4 voice turns that adds, rewrites or drops learned notes.
 
 ---
 
@@ -287,7 +287,7 @@ Files: `src/features/music.ts`, `taste.ts`, `quiz.ts`, `sounds.ts`. Each room (t
 
 Files: `src/satellite/tools.ts`, `src/satellite/senses.ts`. The bot sends each call as an `action` to the asker's own PC, and the PC app checks it against its own local settings before doing anything (main repo, `crates/pc-control`). A setting that is off answers "That's turned off in this PC's settings." A PC app too old for an action answers "Your PC app needs an update for that." With no PC connected: "No PC is connected for `<name>`. Their A.D.R.I.A.N. satellite app has to be running on it."
 
-**House orders never reach the PC.** `houseOrder` (`src/satellite/tools.ts`) reads only the person's own words. When an order word is paired with a house thing (a door, the garage, the lights, a TV, the heat, a fan, the thermostat ...) and the PC isn't named, `pc_system` refuses; `pc_volume` and `pc_media` refuse unless something playing is named ("turn down my music and turn off the lights" still turns the music down); `pc_apps` refuses to open, close, focus or minimize an app called after a house thing. The refusal comes before the PC is looked up and before any yes is held, and tells the model to use a home-control tool if there is one. "TV show", "Apple TV" and "the doors on youtube" are not house things. `PC_RULE` and the `pc_system` description say the same in words (lock is the PC's sign-in screen, `screen_off` its monitors).
+**House orders never reach the PC.** `houseOrder` (`src/satellite/tools.ts`) reads only the person's own words, clause by clause. A clause is a house order when an order verb comes right before a house thing, past only small words ("turn off the living room lights", "cierra la puerta"), or the thing's state follows it ("lights off", "the house is locked up"); "lock up" counts too. "Pause" never counts on a door, the lights or the doorbell, and "mute" only on things that make a sound (a TV, a soundbar, the doorbell). When a clause is a house order and the PC isn't named, `pc_system` refuses unless another clause names that action ("lock it and turn off the lights"); `pc_volume` and `pc_media` refuse unless something playing is named ("turn down my music and turn off the lights" still turns the music down) or another clause holds a media word ("pause, gotta open the door"); `pc_apps` refuses to open, close, focus or minimize an app called after a house thing, except "the TV app". `cancel_shutdown` is never refused. A house order with an unlisted word between verb and thing ("turn off the ceiling fan") isn't recognised; then only the prompt keeps it off the PC, and that same miss lets a PC action through as "a PC order in its own clause" ("turn off the lights and lock the office door" can lock the PC). The refusal comes before the PC is looked up and before any yes is held, and tells the model to use a home-control tool if there is one. "TV show", "Apple TV" and "the doors on youtube" are not house things. `PC_RULE` and the `pc_system` description say the same in words (lock is the PC's sign-in screen, `screen_off` its monitors).
 
 Hard rules on the PC, whatever its settings say: it never types or clicks into other programs, never hooks or messages a running game (kernel anti-cheat), never kills processes, and starts nothing except installed apps and games and the PC's own shortcuts.
 
@@ -306,6 +306,8 @@ Successful orders are confirmed by `confirmation()` without a second model call:
 | `pc_screen` | `action` (`window`, `monitor`), `name` | 20 s | A picture of a window, or the whole monitor it is on. Never of games or full-screen apps. |
 
 **`pc_open`, server side.**
+
+- `url` is the site's own address: its description tells the model that "go to twitch" is https://www.twitch.tv, never a search engine's results page (next release; "go to reddit" had opened a Google search after an unrelated prompt edit).
 
 - `search` finds the best web result with the bot's Tavily key and opens it; without a key, a Google results page opens.
 - `youtube` with `play: true` looks up the top video and sends its id.

@@ -195,6 +195,7 @@ What doesn't work, or works with a catch, as of 0.17.1. Many of these have entri
 - **Weak stops in group calls**: hold phrases and weak stops ("wait", "hold on", everyday words) are unreliable there.
 - **Side talk at a PC**: it isn't always judged silent; a 2026-11-01 bench kept it silent about half the time. Side talk is also most of the server's CPU time.
 - **Groq's free tier**: after a 429 the cloud listen pauses 60 s for everyone. Groq gets no language hint, and for non-English speech the Whisper second pass can override its text.
+- **A friend called Adrian** (next release): questions to them ending in the name wake her loosely (a model call and a short music duck each), a question-shaped stop ("can you stop, Adrian?") stops the music, and a greeting with the name alone gets "Yes?". See [usage.md](usage.md#waking-it).
 - **"Louder" without her name**: said as a follow-up while nothing plays, it usually gets no answer. `next` is missing from `MUSICISH`, though the model still routes it to music.
 
 ### Answers and cost
@@ -236,6 +237,7 @@ What doesn't work, or works with a catch, as of 0.17.1. Many of these have entri
 - **The server trusts the PC's speech gate**: audio is accepted at any time after the welcome.
 - **No echo cancellation** ([decisions.md](decisions.md#no-acoustic-echo-canceller-at-the-pc-a-full-duplex-gate-instead)).
 - **`pc_open` limits**: raw IP addresses are always refused, public ones too. The DNS check resolves once, and the browser resolves again later. Addresses longer than 300 bytes, and names ending in .localhost, .local, .lan, .home, .internal, .intranet, .corp or .arpa, are refused (`MAX_URL`, `PRIVATE_SUFFIXES` in `src/satellite/tools.ts`, mirrored in `crates/pc-control/src/win/open.rs`).
+- **The house guard is a word list**: from the next release an order has to sit right before the house thing, so "turn off the ceiling fan" or "lock the office door" isn't recognised and only the prompt keeps it off the PC; the same miss lets a PC action in the same sentence through. `pc_open`, `pc_windows` and `pc_screen` aren't guarded.
 - **`pc_apps running` sends window titles to the model**: the first 60 characters of each, which can name documents or chats.
 - **No CPU temperature**; GPU stats are NVIDIA only.
 - **The exe isn't code-signed**: SmartScreen warns on first run.

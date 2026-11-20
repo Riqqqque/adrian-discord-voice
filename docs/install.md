@@ -263,11 +263,11 @@ The admin page's Status tab shows, without reading logs:
 
 - **Needs attention:** spending caps at 80% or reached, the cloud voice's monthly characters, Tavily searches near the free plan's 1,000, the voice connection down, PC links dropping, the main model falling back, answers failing, the cloud voice or Groq failing or rate limited, an unclean shutdown, low disk or memory, a failed or cut-off update, and a newer release.
 - **Spending:** the language model against the daily and monthly caps, cost per answer, and what the dollar caps don't count: Speechify characters this month, Groq second listens and Tavily searches.
-- **Answer speed:** median and 90th percentile from the end of speech to her first audio, over the last day and 7 days, in the call and at a PC, with the time each stage takes.
-- **Reliability:** voice and PC link drops and how long each took to come back, restarts and why (a stop, an update, a crash, or no clean shutdown), and the latest errors with how often each happened.
+- **Answer speed:** median and 90th percentile from the end of speech to her first audio, over the last day and 7 days, in the call and at a PC, with the time each stage takes. "Second listen (Groq)" is only the part of the Groq wait left after her own words were ready, not the request itself, and "Voice first sentence" is the time to that sentence's first audio. Percentiles come from bands and are within about 6%.
+- **Reliability:** voice and PC link drops and how long each took to come back, restarts and why (a stop, an update, a crash, or no clean shutdown), and the latest errors with how often each happened. A first start put off for memory shows as a failed start with that reason, once per retry.
 - **This server:** free disk, available memory, her own memory, and whether an update is available.
 
-The numbers come from her own log lines as they are written, are kept in `dashboard.json` in the state folder (so a restart or update keeps the week), and never leave the server. They hold no user IDs, PC names, addresses or words. The one outside request is the newest-release lookup on GitHub that `adrian update` also makes, done only while the page is open and at most every 6 hours.
+The numbers come from her own log lines as they are written, are kept in `dashboard.json` in the state folder (so a restart or update keeps the week), and never leave the server. They hold no user IDs or PC names, and secrets and long IDs are masked; the latest-errors list keeps each error's text as logged (cut to 160 characters), which can include an address or path from the error message. Counting starts with the first start of this version. The one outside request is the newest-release lookup on GitHub that `adrian update` also makes, done only while the page is open and at most every 6 hours.
 
 ## The `adrian` command
 

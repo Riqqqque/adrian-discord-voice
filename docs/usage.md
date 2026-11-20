@@ -13,7 +13,7 @@ The spoken name is "Adrian". Facts here are for version 0.17.1.
 
 | You say | It does |
 |---|---|
-| "Hey Adrian, …" | Answers the question. Greetings like "hi", "yo", "okay", "hello", "hola", "oye" and "chào" work too. |
+| "Hey Adrian, …" | Answers the question. Greetings like "hi", "yo", "okay", "hello", "hola", "oye" and "chào" work too, and from the next release "hey there", "good morning", "good evening", "morning" and "excuse me". |
 | "Adrian, …" | Treated as a question to it. |
 | "… hey Adrian, …" in the middle of a sentence | Also a question to it. |
 | "Adrian?" (the name alone) | "Yes?", then your next words within 20 seconds are the question. |
@@ -25,6 +25,12 @@ The spoken name is "Adrian". Facts here are for version 0.17.1.
 - **No follow-up after an order.** When it has *done* something ("play Drake", "set a timer"), it stops listening right away, so talking to someone else afterwards isn't taken as more for it. After a normal answer, or a question from it, you can carry on.
 - **Keep talking.** If you pause mid-request and carry on before it starts answering (within 12 seconds), the two parts are joined into one request.
 - **Misspellings.** Speech recognition spells unusual names oddly, so it accepts misspellings like "Adrien" and "Adrean".
+- **A friend called Adrian** (next release). The wake check reads words, not who is being spoken to, so in a call with someone of that name:
+  - Questions to them that end in the name ("are you coming, Adrian?", "can you heal Adrian?", "what a shot, Adrian!") wake it loosely. The model is asked whether it was meant for it and usually stays quiet, but each one costs a model call and ducks the music for a few seconds.
+  - A stop phrased as a question ("can you stop, Adrian?") stops the music without asking the model.
+  - A greeting with the name alone ("good morning, Adrian", "morning Adrian") gets "Yes?", and "excuse me, Adrian, ..." is answered as a question to it. "Good morning, Adrian" therefore says "Yes?" rather than starting the briefing; "Hey Adrian, good morning" still starts it.
+  - "Adrian, pass me the controller" has always been taken as an order to it.
+  - These rules are English only: "¿Qué hora es, Adrián?" doesn't wake it.
 
 ## Busy calls
 
@@ -68,7 +74,7 @@ Ask anything: "what's the capital of Australia?", "how do I get rid of hiccups?"
 - Answers are short by design: most are one sentence under twenty words, and how-to or why answers two short sentences with the main step, not every option. No offers or questions back unless it needs your answer, and when it can't do something it says so in a few words. Ask for detail ("in detail", "tell me more") if you want more.
 - Short never cuts a safety warning that matters (chemicals that mustn't be mixed, medicine doses, electricity, gas), and a list you asked for (your alarms, timers, reminders, the queue) gets every item.
 - Search answers are said as plain facts, going by the newest result. An answer from an older result says its day.
-- For anything recent (news, scores, prices, release dates) it searches the web first (`web_search`, needs a Tavily key). Without search it says its information may be out of date.
+- For anything recent (news, scores, prices, release dates), and anything that changes day to day or depends on where you are (sunrise and sunset, the weather, store hours, what's open), it searches the web first (`web_search`, needs a Tavily key). Facts that don't change (the height of the Eiffel Tower) are answered without a search. Without search it says its information may be out of date.
 - It treats web pages and anything else a tool returns as data, never as instructions.
 - It only does what its tools can do. It can't act on Discord, on the server or on anyone's accounts beyond the features on this page.
 
@@ -84,6 +90,7 @@ Ask anything: "what's the capital of Australia?", "how do I get rid of hiccups?"
 | "Play the whole Graduation album" | The album in order. |
 | "Put on something chill for a late night drive" | Finds a matching public playlist and shuffles it. |
 | "Play some jazz", "play 90s r&b", "old school hip hop" | A bare genre or era plays a playlist, not a song with that name. For a song called "Jazz", say its artist too. |
+| "Play Some Nights", "play A Little Respect" | A song whose name starts with "some" or "a little" is searched as said (next release). |
 | "Play Tems Free Mind tiny desk", "Someone Like You live at the Royal Albert Hall", "Blinding Lights sped up" | A version said by name (tiny desk, live, acoustic, unplugged, remix, sped up, slowed, session, cover) plays that performance, not the studio song. Whole sets like a Tiny Desk concert play in full. |
 | "Play a playlist like that last song" / "more like this" | YouTube Music radio based on what was playing. |
 | "Play the newest Joe Rogan episode" | The newest playable episode of that podcast. |
@@ -242,6 +249,7 @@ Alarms and timers ring with a sound until you stop them, the way an alarm clock 
   - One that came due while it was offline rings when it's back if still within its ring time; otherwise you get a DM.
 - **Changing them:**
   - "Change my 6:30 alarm to 6:45", "skip tomorrow's alarm", "skip Friday's alarm", "turn off my gym alarm" (it stays saved until you turn it back on), "add 5 minutes to the pizza timer", "what alarms do I have", "delete my 7am alarm".
+  - From the next release: "take the label off my 7am alarm" ("It has no label now.") and "use the default sound for my gym alarm". "Use the default timer sound" works in the settings too.
   - If more than one alarm fits what you said, it asks which.
   - Deleting a repeating alarm, or several at once, asks first; only your own yes, as your next words, does it.
 - **Sounds:**
@@ -273,7 +281,7 @@ Alarms and timers ring with a sound until you stop them, the way an alarm clock 
   - "Remember that I'm allergic to peanuts", "forget my birthday", "forget everything". Up to 30 notes per person. A plain "remember ..." just gets "Got it."
   - It also notes useful facts on its own every few answers in voice (`autoMemory`), and keeps them true: "I quit Valorant" rewrites "plays Valorant" instead of keeping both, and a plan that was called off goes. Notes you asked it to remember are only reworded, never dropped by themselves.
   - Your notes are only ever used when **you** talk to it. It never tells anyone else what's in them.
-  - In a server, where others can hear or read the answer, it only uses notes you told it in that server, or the ones your own words ask about ("where do I live?" finds "lives in ...", "what's my job?" finds "works at ..."). In a DM or at your PC it uses them all. What it picked up by itself, and notes saved before this rule, count as private.
+  - In a server, where others can hear or read the answer, it only uses notes you told it in that server, or the ones your own words ask about ("where do I live?" finds "lives in ..." and "living in ...", "what's my job?" finds "works at ..."). From the next release a word matches only as itself, its plural or "-s" form ("caring" no longer finds a note about a car), and everyday verbs like "work", "play" or "like" count only when you ask about yourself ("what game should we play tonight?" doesn't pull in a note about the games you play). In a DM or at your PC it uses them all. What it picked up by itself, and notes saved before this rule, count as private.
   - "Forget" says how many notes went, not which ones. "Forget everything" also clears what it remembers of your recent conversation.
   - What people say out loud in the call is shared context: it can refer to it.
 - **Short-term memory:** it remembers your last 4 to 8 exchanges (up to 16 messages, cut back to the newest 8 when full) for an hour of quiet, shared between the call, your PC and server text chat. DMs have their own. A restart clears it.
@@ -291,7 +299,13 @@ With the PC app connected (setup: [pc-app.md](pc-app.md)), you can talk to it at
 
 **What it can do there**
 
-Orders about the house ("lock the front door", "shut the garage", "turn the TV down", "kill the lights", "turn the heat up") never reach your PC, even said at the PC. With home control set up they go there; otherwise she says she can't. Name the PC when you mean it ("turn off my monitors", "lock my PC, I'm heading out the front door"), and "pause the music, someone's at the door" still pauses the music. A TV show or Apple TV isn't the TV.
+Orders about the house ("lock the front door", "shut the garage", "turn the TV down", "kill the lights", "turn the heat up") are kept off your PC, even said at the PC. With home control set up they go there; otherwise she says she can't. Name the PC when you mean it ("turn off my monitors", "lock my PC, I'm heading out the front door"), and "pause the music, someone's at the door" still pauses the music. A TV show, Apple TV or "the TV app" isn't the TV.
+
+From the next release:
+- A PC order said next to a house errand goes through: "pause, gotta open the door", "skip and turn the lights on", "lock it and turn off the lights". With one turn for both, only the PC part gets an answer.
+- "Cancel the shutdown" is never refused, whatever else is said with it.
+- "Lock up" is about the house, not the PC.
+- How the check works: a word check on your own words, backed by the model's instructions. It counts an order when its verb comes right before the house thing ("turn off the living room lights"). An unusual word in between ("turn off the ceiling fan", "lock the office door") isn't caught by the word check, so only the model's instructions keep that off the PC. In a bench of 48 house orders a run, the model tried a PC tool on none.
 
 | Area | Say | Notes |
 |---|---|---|

@@ -284,7 +284,7 @@ Not counted, or counted inexactly:
 
 ### 5.4 Where to see spending
 
-- Admin UI dashboard: today vs the daily cap, this month vs the monthly cap, the last 14 days (questions and cost), and the cost of the last 10 answers.
+- Admin UI dashboard: today vs the daily cap, this month vs the monthly cap, the last 14 days (questions and cost), and the cost of the last 10 answers. From the next release also cost per answer (day, 7 days), Speechify characters this month, Groq second listens (with an estimate at $0.04 an hour, 10 s minimum per request; every answered request counts, early listens included) and Tavily searches against the free plan's 1,000. These counts start at zero with that version.
 - Every answer logs an `answered` line with `tokensIn`, `tokensCached`, `tokensCacheWrite`, `tokensOut`, `toolCalls`, `costUsd` and `spentTodayUsd` (`sudo adrian logs`).
 - Speechify: `<state>/voice-usage.json` only.
 
