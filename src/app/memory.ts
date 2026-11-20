@@ -39,8 +39,9 @@ export function readMemInfo(file = '/proc/meminfo'): MemInfo | undefined {
   }
 }
 
-/** For log lines: this process and, on Linux, the machine. */
-export function memoryFields(info: MemInfo | undefined = readMemInfo()): Record<string, number> {
+/** For log lines: this process, and the machine when its memory is known
+ *  (callers pass what they read, so undefined means unknown on any host). */
+export function memoryFields(info: MemInfo | undefined): Record<string, number> {
   return { rssMb: rssMb(), ...(info ? { availMb: info.availableMb, swapFreeMb: info.swapFreeMb } : {}) };
 }
 
