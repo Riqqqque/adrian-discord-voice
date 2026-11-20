@@ -659,6 +659,22 @@ describe('changes that say themselves (no second model call)', () => {
     expect(a.sound).toBe('birds');
   });
 
+  it('takes the label off with "none" and puts the default sound back with "default" (review S6)', async () => {
+    const r = rig();
+    await r.call('set_alarm', { time: '07:00', label: 'gym', sound: 'birds' });
+    expect((await r.call('edit_alarm', { which: 'gym', label: 'none' })).said).toBe('It has no label now.');
+    expect(r.clock.all()[0]!.label).toBe('');
+    expect((await r.call('edit_alarm', { which: '7:00', sound: 'default' })).said).toMatch(/^It'll ring with /);
+    expect(r.clock.all()[0]!.sound).toBeUndefined();
+    await r.call('alarm_options', { action: 'set', default_sound: 'birds' });
+    expect(r.clock.prefs('u1').sound).toBe('birds');
+    expect((await r.call('alarm_options', { action: 'set', default_sound: 'default' })).said).toBeDefined();
+    expect(r.clock.prefs('u1').sound).toBeUndefined();
+    const about = (n: string, k: string) => (r.tool(n).spec.parameters as { properties: Record<string, { description?: string }> }).properties[k]?.description;
+    expect(about('edit_alarm', 'label')).toMatch(/"none" takes it off/);
+    expect(about('alarm_options', 'default_sound')).toMatch(/"default" goes back/);
+  });
+
   it('reads back settings as stored, and leaves lists and mistakes to the model', async () => {
     const r = rig();
     expect((await r.call('alarm_options', { action: 'set', snooze_minutes: 15 })).said).toBe('Snooze is 15 minutes.');

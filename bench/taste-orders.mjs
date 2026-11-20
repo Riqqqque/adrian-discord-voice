@@ -29,6 +29,8 @@ const CASES = [
   ['play something chill for late night', 'play_music', { request_type: 'vibe' }],
   ['I love Radiohead by the way', 'music_taste', { who: 'them', what: 'like' }],
   ['I can\'t stand country music, don\'t ever play that', 'music_taste', { who: 'them', what: 'dislike' }],
+  // A taste with another order (review S4): the order still happens.
+  ['I love Frank Ocean, play something of his', 'play_music', {}],
 ];
 
 let good = 0;
