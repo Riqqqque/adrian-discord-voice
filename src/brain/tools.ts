@@ -83,7 +83,7 @@ export function tavilySearchTool(apiKey: string, maxResults = 4): Tool {
     spec: {
       name: 'web_search',
       description:
-        'Search the web for current facts (news, scores, weather, prices, recent events). Use only when the answer depends on information newer than your training or that you are unsure of. Results are snippets from web pages with their publish dates; they may be predictions, odds or rumors rather than facts. Answer from them in a sentence: what is true now, the newest result winning when they disagree. Never mention the search, the results, reports or sources.',
+        'Search the web for current facts (news, scores, weather, prices, recent events). Use only when the answer depends on information newer than your training or that you are unsure of. Results are snippets from web pages with their publish dates; they may be predictions, odds or rumors rather than facts. Answer from them in one sentence, said as a plain fact ("It got pushed to spring 2027."), going by the latest dated one when they disagree. Never say where it came from: no "the latest report says", "I found" or "results".',
       parameters: {
         type: 'object',
         properties: {

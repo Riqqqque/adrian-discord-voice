@@ -88,7 +88,7 @@ export function stablePrompt(o: OrchestratorOptions, toolNames: string[] = []): 
       : []),
     ...(has('web_search')
       ? [
-          "If search results are only predictions or odds, or don't clearly answer the question, say so in a few words rather than guessing (with odds, who's favored). When they disagree, the newest one wins. If the newest is older than what they asked about (last night's game, today's price), say what it is and when, in one sentence.",
+          "If search results are only predictions or odds, or don't clearly answer the question, say so in a few words rather than guessing (with odds, just who's favored). When they disagree, go by the latest one. If the latest is older than what they asked about (tonight's game, today's price), give it with its day in one sentence and stop.",
           '"Most recent" or "last" means the latest one that has already happened, not one still in progress.',
         ]
       : []),
