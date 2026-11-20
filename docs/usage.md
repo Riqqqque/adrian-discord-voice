@@ -311,7 +311,7 @@ Orders about the house ("lock the front door", "shut the garage", "turn the TV d
 
 From the next release:
 - The check reads each order and what it acts on, whatever words come between ("turn the big lamp in the corner off", "the office lights, off", "apágalas"), in English, Spanish and a little French. An order about a house thing is refused, never asked about, so no yes can make it act on the PC.
-- **"Lock the PC?"** When it's unclear whether a lock or "screens off" means the PC ("lock everything", "turn off the lights and lock it", "lock the one by my PC"), she asks "Lock the PC?" or "Turn off the PC's screens?" first, and only your own yes on your next turn does it. Sleep, restart and shut down always ask.
+- **"Lock the PC?"** When it's unclear whether a lock or "screens off" means the PC ("lock everything", "turn off the lights and lock it"), she asks "Lock the PC?" or "Turn off the PC's screens?" first, and only your own yes on your next turn does it. Sleep, restart and shut down always ask.
 - A PC order said next to a house errand goes through: "pause, gotta open the door", "pause I gotta open the door", "skip and turn the lights on", "lock it and turn off the lights". With one turn for both, only the PC part gets an answer.
 - The PC itself (the PC, the monitor, the screens) counts only for lock, screens, sleep, restart and shut down, and what's on it (music, a video, Spotify, a game) only for media, volume and opening things: "turn off the lights and the music" stops the music but leaves the screens on.
 - "Cancel the shutdown", "what's playing?" and "how loud is it?" are never refused, whatever else is said with them, and neither are window moves, PC status, the clipboard or the screen. "Look up how to fix a garage door" is a search.
