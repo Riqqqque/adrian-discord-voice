@@ -22,6 +22,17 @@ describe('config', () => {
     expect(c.silenceMs).toBe(800);
   });
 
+  it('listens with 2 recognizer threads, and Whisper keeps 4', () => {
+    const p = write('listen.json', JSON.stringify({
+      guildId: '123456789012345678', channelId: '223456789012345678',
+      testClip: 'assets/test-clip.ogg', secretsFile: '/tmp/s.env',
+      listen: { vadModel: 'v.onnx', asrModelDir: '/m' },
+    }));
+    const c = loadConfig(p);
+    expect(c.listen?.asrThreads).toBe(2);
+    expect(c.listen?.whisperThreads).toBe(4);
+  });
+
   it('fails fast with readable messages', () => {
     const p = write('bad.json', JSON.stringify({ guildId: 'abc', channelId: '1', testClip: '', playbackVolume: 3 }));
     expect(() => loadConfig(p)).toThrowError(/guildId: must be a Discord ID[\s\S]*playbackVolume/);
