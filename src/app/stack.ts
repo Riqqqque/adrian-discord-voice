@@ -1487,7 +1487,11 @@ export async function startVoiceStack(
             const said = m.woke ? m.remainder : text;
             const kind = classify(said)?.kind;
             const forHer = m.woke || ctl.listeningTo(userId, performance.now() - (samples.length / 16_000) * 1000);
-            if (forHer && said.trim() && kind !== 'stop' && kind !== 'name' && cloudSttFor(rm, userId) && !inHerCall(userId)) early.set(samples, cloudListen(samples));
+            if (forHer && said.trim() && kind !== 'stop' && kind !== 'name' && cloudSttFor(rm, userId) && !inHerCall(userId)) {
+              early.set(samples, cloudListen(samples));
+              // Released as is, the answer won't wait for the listen: warm the model's cached prompt now.
+              if (!kind && !classifyMusic(said) && !isTimeQuestion(said)) orchestrator?.prewarm('held');
+            }
           },
         },
       )
@@ -1532,7 +1536,7 @@ export async function startVoiceStack(
     let groqMs: number | undefined;
     if (forBot && e.samples && first?.kind !== 'stop' && first?.kind !== 'name' && (!e.woke || e.command.trim()) && cloudSttFor(rm, e.userId)) {
       // Likely the model's to answer: its cached prompt is written meanwhile.
-      if (!first && !classifyMusic(e.woke ? e.command : e.text) && !isTimeQuestion(e.woke ? e.command : e.text)) orchestrator?.prewarm('heard');
+      if (!first && !early.has(e.samples) && !classifyMusic(e.woke ? e.command : e.text) && !isTimeQuestion(e.woke ? e.command : e.text)) orchestrator?.prewarm('heard');
       const t0 = performance.now();
       const text = (cloud = await (early.get(e.samples) ?? cloudListen(e.samples)));
       groqMs = Math.round(performance.now() - t0);
