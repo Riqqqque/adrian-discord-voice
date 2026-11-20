@@ -75,12 +75,19 @@ export interface WakeDetector {
   matchLoose?(transcript: string): { woke: boolean; remainder: string; loose: boolean };
 }
 
+export interface DecodeOptions {
+  /** Asked each time the next decode is picked: true lets every other waiting
+   *  decode go first (an early decode nobody waits on yet). */
+  background?: () => boolean;
+}
+
 export interface SpeechToText {
   /** Mono float samples. Resolves with the text and the decode time. */
   transcribe(
     samples: Float32Array,
     sampleRate: number,
     signal?: AbortSignal,
+    options?: DecodeOptions,
   ): Promise<{ text: string; decodeMs: number }>;
 }
 
