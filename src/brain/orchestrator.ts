@@ -196,11 +196,11 @@ export class ConversationOrchestrator {
               ]
             : opts.followUp && opts.loose && opts.desk
             ? [
-                `${speaker} said this at their PC with your name in it, but maybe about you rather than to you. They're usually talking to you: answer it. Reply with exactly SILENT and nothing else only if it clearly isn't for you: dialogue from a show, video or game playing on the PC, song lyrics, or them obviously talking to someone else in the room or on a call.`,
+                `${speaker} said this at their PC with your name in it, but maybe about you rather than to you. They're usually talking to you: answer it. The words come from speech recognition, which sometimes writes an order to you in the past tense ("skipped this song" for "skip this song"): that is still an order for you. Reply with exactly SILENT and nothing else only if it clearly isn't for you: dialogue from a show, video or game playing on the PC, song lyrics, or them obviously talking to someone else in the room or on a call.`,
               ]
             : opts.followUp && opts.loose
             ? [
-                `${speaker} just said this with your name in it, but maybe about you rather than to you. People in the call also talk to each other and about their games. If it is not meant for you, reply with exactly SILENT and nothing else. Not meant for you: talking about you rather than to you, talking to someone else, callouts and instructions for the game ("grab the diamonds", "run", "watch out", "go left"), reactions ("lol", "nice one"), thinking out loud. Things you could not do anyway are usually meant for someone else. If it continues your conversation or asks you something, answer normally.`,
+                `${speaker} just said this with your name in it, but maybe about you rather than to you. The words come from speech recognition, which sometimes writes an order to you in the past tense ("skipped this song" for "skip this song"): that is still an order for you. People in the call also talk to each other and about their games. If it is not meant for you, reply with exactly SILENT and nothing else. Not meant for you: talking about you rather than to you, talking to someone else, callouts and instructions for the game ("grab the diamonds", "run", "watch out", "go left"), reactions ("lol", "nice one"), thinking out loud. Things you could not do anyway are usually meant for someone else. If it continues your conversation or asks you something, answer normally.`,
               ]
             : opts.followUp && opts.desk
             ? [
