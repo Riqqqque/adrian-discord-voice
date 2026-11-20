@@ -83,6 +83,15 @@ describe('house orders are not the PC', () => {
     }
   });
 
+  it("finds every house order of the home-pc bench (the model hardly tries a pc_ tool there, so the bench doesn't test the guard)", () => {
+    for (const s of [
+      'lock the front door', 'lock the back door', 'can you lock the doors', 'make sure the house is locked up', 'turn off the lights',
+      'turn the living room lights off', 'kill the lights', 'shut the garage', 'close the garage door', 'open the garage', 'turn off the TV',
+      'turn the tv down', 'mute the tv', 'shut off the tv in the living room', 'turn off the fan', 'turn the heat down',
+    ])
+      expect(houseOrder(s), s).toMatchObject({ pc: false });
+  });
+
   it('ties the order to the thing it is about, so a PC verb next to a house word stays a PC order', () => {
     for (const s of [
       "pause someone's at the door",

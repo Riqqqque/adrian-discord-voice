@@ -5,6 +5,7 @@
 import { readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import type { Tool, ToolContext, UserId } from '../core/interfaces.js';
+import { asksMore } from '../brain/tools.js';
 import { dateFormat } from '../core/time.js';
 import { writeJsonFile } from '../web/secrets-file.js';
 
@@ -244,7 +245,7 @@ export class Reminders {
           const r = this.add(ctx, 'timer', label, this.now() + ms);
           return typeof r === 'string' ? r : `Timer set: ${this.describe(r)}.`;
         },
-        speak: (_a, raw, ctx) => (english(ctx.userId) ? setLine(raw) : undefined),
+        speak: (_a, raw, ctx) => (english(ctx.userId) && !asksMore(ctx.said) ? setLine(raw) : undefined),
       },
       {
         spec: {
@@ -273,7 +274,7 @@ export class Reminders {
           const r = this.add(ctx, 'reminder', text, due);
           return typeof r === 'string' ? r : `Reminder set: ${this.describe(r)}.`;
         },
-        speak: (_a, raw, ctx) => (english(ctx.userId) ? setLine(raw) : undefined),
+        speak: (_a, raw, ctx) => (english(ctx.userId) && !asksMore(ctx.said) ? setLine(raw) : undefined),
       },
       {
         spec: {
