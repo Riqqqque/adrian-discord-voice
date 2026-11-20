@@ -1410,9 +1410,9 @@ export async function startVoiceStack(
   const hasPc = (userId: UserId) => (satServer?.connections() ?? []).some((c) => c.owner === userId);
   const cloudSttFor = (rm: Room, userId: UserId) => !!csKey && (cs.rooms === 'all' || !!rm.ui || hasPc(userId)) && csBudget.usable();
   /** The cloud's words for a segment, or undefined (slow, failed, rate-limited: use the local ones). */
-  async function cloudListen(samples: Float32Array, dropped?: AbortSignal, userId?: UserId): Promise<string | undefined> {
+  async function cloudListen(samples: Float32Array, dropped?: AbortSignal): Promise<string | undefined> {
     const limit = AbortSignal.timeout(cs.timeoutMs);
-    csBudget.sent(userId, dropped);
+    csBudget.sent(dropped);
     try {
       return (await groqTranscribe(csKey!, samples, 16_000, { model: cs.model, prompt: csPrompt, signal: dropped ? AbortSignal.any([limit, dropped]) : limit })) || undefined;
     } catch (err) {
@@ -1477,8 +1477,8 @@ export async function startVoiceStack(
     const forHer = m.woke || ctl.listeningTo(userId, startedAt) || !!pttOpen?.();
     if (!forHer || !said.trim() || kind === 'stop' || kind === 'name' || !cloudSttFor(rm, userId) || inHerCall(userId)) return;
     if (o.unlessDangling && endsDangling(said)) return;
-    if (!csBudget.earlyOk(userId)) return;
-    early.set(samples, cloudListen(samples, o.dropped, userId));
+    if (!csBudget.earlyOk()) return;
+    early.set(samples, cloudListen(samples, o.dropped));
   }
   // Discord keeps the snappier default.
   const pipeline = rm.ui

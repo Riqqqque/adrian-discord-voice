@@ -4,8 +4,6 @@
 // calls (started before the clip closed, on a guess that it will be used) only go
 // out while there's room for the calls someone is waiting on.
 
-import type { UserId } from '../core/interfaces.js';
-
 export interface CloudBudgetOptions {
   /** The provider's limit, calls a minute. */
   perMinute?: number;
@@ -15,11 +13,9 @@ export interface CloudBudgetOptions {
   pauseMs?: number;
   /** After a rate limit: no early calls, ms. */
   earlyOffMs?: number;
-  /** After one of this person's early calls was dropped (they went on talking): none for them, ms. 0 = off. */
-  afterDropMs?: number;
 }
 
-const DEFAULTS: Required<CloudBudgetOptions> = { perMinute: 20, reserve: 6, pauseMs: 60_000, earlyOffMs: 10 * 60_000, afterDropMs: 0 };
+const DEFAULTS: Required<CloudBudgetOptions> = { perMinute: 20, reserve: 6, pauseMs: 60_000, earlyOffMs: 10 * 60_000 };
 
 export interface CloudBudgetStats {
   /** Calls in the last minute. */
@@ -38,7 +34,6 @@ export class CloudBudget {
   private readonly times: number[] = [];
   private pausedUntil = 0;
   private earlyOffUntil = 0;
-  private readonly droppedAt = new Map<UserId, number>();
   private readonly counts = { sent: 0, early: 0, earlyDropped: 0, earlySkipped: 0, limited: 0 };
 
   constructor(o: CloudBudgetOptions = {}, private readonly now: () => number = () => performance.now()) {
@@ -50,33 +45,24 @@ export class CloudBudget {
     return this.now() >= this.pausedUntil;
   }
 
-  /** May an early call go out for this person now? Counts it as skipped if not. */
-  earlyOk(userId: UserId): boolean {
+  /** May an early call go out now? Counts it as skipped if not. (Skipping someone
+   *  whose last early call was dropped a moment ago was tried on AMI conversation:
+   *  their next one was dropped no more often, so it only cost used calls.) */
+  earlyOk(): boolean {
     const t = this.now();
-    const ok =
-      t >= this.pausedUntil &&
-      t >= this.earlyOffUntil &&
-      this.lastMinute(t) < this.o.perMinute - this.o.reserve &&
-      !(this.o.afterDropMs > 0 && t - (this.droppedAt.get(userId) ?? -Infinity) < this.o.afterDropMs);
+    const ok = t >= this.pausedUntil && t >= this.earlyOffUntil && this.lastMinute(t) < this.o.perMinute - this.o.reserve;
     if (!ok) this.counts.earlySkipped++;
     return ok;
   }
 
   /** A call is going out. `dropped` (early calls): aborts if its clip is dropped. */
-  sent(userId?: UserId, dropped?: AbortSignal): void {
+  sent(dropped?: AbortSignal): void {
     const t = this.now();
     this.times.push(t);
     this.counts.sent++;
     if (!dropped) return;
     this.counts.early++;
-    dropped.addEventListener(
-      'abort',
-      () => {
-        this.counts.earlyDropped++;
-        if (userId !== undefined) this.droppedAt.set(userId, this.now());
-      },
-      { once: true },
-    );
+    dropped.addEventListener('abort', () => void this.counts.earlyDropped++, { once: true });
   }
 
   /** A call failed with this message. A rate limit or outage pauses calls; true if it did. */
