@@ -27,6 +27,9 @@ export interface CloseInfo {
   linkS: number;
   quietS: number;
 }
+/** What plays sound at the PC (apps from 0.17.2 say; older ones never do).
+ *  Headphones: its mic can't hear a call playing there. */
+export type OutputKind = 'headphones' | 'speakers' | 'unknown';
 
 /** Largest frame before a satellite is welcomed, and after it for anything
  *  but an action_result: audio frames and JSON are small. */
@@ -53,8 +56,13 @@ export function capFrames(ws: WebSocket, bytes: number): void {
 export const SAT_RATE = 48_000;
 
 export interface SatelliteEvents extends VoiceTransportEvents {
-  /** Push-to-talk pressed: the next thing said is for her. */
-  ptt: () => void;
+  /** Push-to-talk pressed. `hold`: a key-up follows (apps from 0.17.2), and
+   *  what's said until then is for her. Without it, the next thing said is. */
+  ptt: (p: { hold: boolean }) => void;
+  /** Push-to-talk let go (only apps that send `hold`). */
+  pttUp: () => void;
+  /** The PC's output changed between headphones and speakers. */
+  output: (kind: OutputKind) => void;
   /** A typed question from the window. */
   text: (text: string) => void;
   /** The stop button. */
@@ -82,6 +90,8 @@ export class SatelliteConnection extends EventEmitter implements VoiceTransport 
   private readonly since = Date.now();
   /** Set by whoever ends the link from this side; unset, the PC ended it. */
   private endedBy: CloseInfo['by'] | undefined;
+  /** What plays sound there, as the PC last said. Unknown until it does. */
+  output: OutputKind = 'unknown';
 
   constructor(
     private readonly ws: WebSocket,
@@ -150,8 +160,16 @@ export class SatelliteConnection extends EventEmitter implements VoiceTransport 
         this.emit('speechEnd', this.owner);
         break;
       case 'ptt':
-        if (m.down !== false) this.emit('ptt');
+        if (m.down === false) this.emit('pttUp');
+        else this.emit('ptt', { hold: m.hold === true });
         break;
+      case 'output': {
+        const kind: OutputKind = m.kind === 'headphones' || m.kind === 'speakers' ? m.kind : 'unknown';
+        if (kind === this.output) break;
+        this.output = kind;
+        this.emit('output', kind);
+        break;
+      }
       case 'text':
         if (typeof m.text === 'string' && m.text.trim()) this.emit('text', m.text.trim().slice(0, 2000));
         break;
@@ -210,6 +228,12 @@ export class SatelliteConnection extends EventEmitter implements VoiceTransport 
     this.send({ type: 'transcript', who, text, final });
   }
 
+  /** Something heard there was left alone on purpose: the PC plays a soft chime
+   *  (apps from 0.17.2; older ones ignore it and show only the transcript). */
+  notice(kind: 'ptt_only'): void {
+    this.send({ type: 'notice', kind });
+  }
+
   /** Ask the PC to do something; resolves with its answer or a timeout. */
   action(name: string, args: Record<string, unknown>, timeoutMs = 15_000): Promise<ActionResult> {
     if (!this.open) return Promise.resolve({ ok: false, result: 'The PC disconnected.' });
@@ -232,6 +256,13 @@ export class SatelliteConnection extends EventEmitter implements VoiceTransport 
     this.ending(by);
     this.ws.close(1000, 'bye');
     this.close(1000, 'bye');
+  }
+
+  /** Closed as no longer allowed (1008, policy): its room and pending actions end now. */
+  refuse(reason: string): void {
+    this.ending('server');
+    this.ws.close(1008, reason);
+    this.close(1008, reason);
   }
 
   isReady(): boolean {

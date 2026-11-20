@@ -285,8 +285,9 @@ describe('memory that stays true', () => {
       },
     };
     const used: string[] = [];
-    await new AutoMemory(off, notes, sessions, log, (_i, _o, model) => used.push(model), 4, fakeLlm('{"add": ["has a dog named Biscuit"]}')).learn('a', 'Sean');
+    await new AutoMemory(off, notes, sessions, log, (_i, _o, model, user) => used.push(`${model} for ${user}`), 4, fakeLlm('{"add": ["has a dog named Biscuit"]}')).learn('a', 'Sean');
     expect(notes.of('a')).toEqual(['has a dog named Biscuit']);
-    expect(used).toEqual(['fake']);
+    // Charged to the person it learned about (their share of the day, for a guest).
+    expect(used).toEqual(['fake for a']);
   });
 });

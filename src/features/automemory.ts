@@ -66,8 +66,8 @@ export class AutoMemory {
     private readonly notes: UserNotes,
     private readonly sessions: SessionMemory,
     private readonly log: Logger,
-    /** Called with the tokens each run used and the model that used them, for spend tracking. */
-    private readonly onUsage: (inputTokens: number, outputTokens: number, model: string) => void,
+    /** Called with the tokens each run used, the model that used them and whose memory it was, for spend tracking. */
+    private readonly onUsage: (inputTokens: number, outputTokens: number, model: string, userId: UserId) => void,
     private readonly everyTurns = 4,
     /** Used when `llm` fails before it answers (a local model that's off). */
     private readonly backup?: LlmProvider,
@@ -114,7 +114,7 @@ export class AutoMemory {
       },
       { role: 'user', content: `Already remembered:\n${known.map((k, i) => `${i + 1}. ${k}`).join('\n') || '(nothing yet)'}\n\nConversation:\n${transcript}` },
     ];
-    const text = await this.ask(messages);
+    const text = await this.ask(messages, userId);
     // They said to forget something while the model was reading: this may be it.
     if (this.notes.forgets(userId) !== forgets) return [];
     const c = parseChanges(text, known.length);
@@ -129,7 +129,7 @@ export class AutoMemory {
   }
 
   /** One model reply; the backup answers if the first fails before saying anything. */
-  private async ask(messages: ChatMessage[]): Promise<string> {
+  private async ask(messages: ChatMessage[], userId: UserId): Promise<string> {
     const run = async (llm: LlmProvider) => {
       let text = '';
       let inTok = 0;
@@ -143,7 +143,7 @@ export class AutoMemory {
           }
         }
       } finally {
-        if (inTok || outTok) this.onUsage(inTok, outTok, llm.model);
+        if (inTok || outTok) this.onUsage(inTok, outTok, llm.model, userId);
       }
       return text;
     };

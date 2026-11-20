@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { connect } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -149,6 +149,42 @@ describe('satellite connection', () => {
     await r.server.close();
   });
 
+  it('reads push-to-talk, its key-up and the output kind, and sends the chime notice', async () => {
+    const r = await rig();
+    const c = await r.client({ type: 'hello', token: r.token });
+    const conn = r.conns[0]!;
+    const events: unknown[] = [];
+    conn.on('ptt', (p) => events.push(['ptt', p]));
+    conn.on('pttUp', () => events.push(['up']));
+    conn.on('output', (k) => events.push(['output', k]));
+    expect(conn.output).toBe('unknown'); // until the PC says: older apps never do
+    for (const m of [
+      { type: 'ptt', down: true }, // an older app
+      { type: 'ptt', down: true, hold: true },
+      { type: 'ptt', down: false },
+      { type: 'output', kind: 'headphones' },
+      { type: 'output', kind: 'headphones' }, // the same again: no event
+      { type: 'output', kind: 'a toaster' },
+      { type: 'output', kind: 'speakers' },
+    ])
+      c.ws.send(JSON.stringify(m));
+    await new Promise((res) => setTimeout(res, 80));
+    expect(events).toEqual([
+      ['ptt', { hold: false }],
+      ['ptt', { hold: true }],
+      ['up'],
+      ['output', 'headphones'],
+      ['output', 'unknown'],
+      ['output', 'speakers'],
+    ]);
+    expect(conn.output).toBe('speakers');
+    conn.notice('ptt_only');
+    await new Promise((res) => setTimeout(res, 80));
+    expect(c.got).toContainEqual({ type: 'notice', kind: 'ptt_only' });
+    c.ws.close();
+    await r.server.close();
+  });
+
   it('round-trips PC actions, and answers when the PC goes away', async () => {
     const r = await rig();
     const c = await r.client({ type: 'hello', token: r.token });
@@ -207,6 +243,94 @@ describe('how a satellite link ended', () => {
     expect(r.ends().map((e) => e.by)).toEqual(['replaced']);
     await r.server.close();
     expect(r.ends().map((e) => e.by)).toEqual(['replaced', 'shutdown']);
+  });
+});
+
+describe('a PC unpaired while connected', () => {
+  it('is dropped by the next check, told why, and its token stays refused', async () => {
+    const d = devices();
+    const desk = d.add('Desk PC', OWNER);
+    const laptop = d.add('Laptop', OWNER);
+    const port = 20_000 + Math.floor(Math.random() * 20_000);
+    const conns: SatelliteConnection[] = [];
+    const server = startSatelliteServer({ bind: '127.0.0.1', port, devices: d, log: quiet as never, welcome: () => ({}), onConnect: (c) => conns.push(c), recheckMs: 40 });
+    await new Promise((r) => setTimeout(r, 50));
+    const open = (token: string) =>
+      new Promise<{ ws: WebSocket; got: unknown[]; closed: Promise<number> }>((resolve) => {
+        const ws = new WebSocket(`ws://127.0.0.1:${port}/satellite`);
+        const got: unknown[] = [];
+        const closed = new Promise<number>((r) => ws.on('close', (code) => r(code)));
+        ws.on('message', (data, bin) => void (bin || got.push(JSON.parse(String(data)))));
+        ws.on('open', () => (ws.send(JSON.stringify({ type: 'hello', token })), setTimeout(() => resolve({ ws, got, closed }), 80)));
+      });
+    const a = await open(desk.token);
+    const b = await open(laptop.token);
+    const gone: string[] = [];
+    for (const c of conns) c.on('closed', () => gone.push(c.device.name));
+    d.remove('Desk PC');
+    expect(await a.closed).toBe(1008);
+    expect(a.got).toContainEqual({ type: 'denied', reason: 'unpaired' });
+    expect(gone).toEqual(['Desk PC']);
+    expect(server.connections().map((c) => c.device.name)).toEqual(['Laptop']);
+    const again = await open(desk.token);
+    expect(await again.closed).toBe(1008);
+    b.ws.close();
+    await server.close();
+  });
+});
+
+describe('a pairings file that cannot be read', () => {
+  async function two() {
+    const dir = mkdtempSync(join(tmpdir(), 'sat-'));
+    const d = new SatelliteDevices(dir);
+    const desk = d.add('Desk PC', OWNER);
+    const laptop = d.add('Laptop', OWNER);
+    const port = 20_000 + Math.floor(Math.random() * 20_000);
+    const conns: SatelliteConnection[] = [];
+    const errors: string[] = [];
+    const log = { ...quiet, error: (m: string) => void errors.push(m) };
+    const server = startSatelliteServer({ bind: '127.0.0.1', port, devices: d, log: log as never, welcome: () => ({}), onConnect: (c) => conns.push(c), recheckMs: 40 });
+    await new Promise((r) => setTimeout(r, 50));
+    const open = (token: string) =>
+      new Promise<{ ws: WebSocket; got: unknown[] }>((resolve) => {
+        const ws = new WebSocket(`ws://127.0.0.1:${port}/satellite`);
+        const got: unknown[] = [];
+        ws.on('message', (data, bin) => void (bin || got.push(JSON.parse(String(data)))));
+        ws.on('open', () => (ws.send(JSON.stringify({ type: 'hello', token })), setTimeout(() => resolve({ ws, got }), 80)));
+      });
+    const a = await open(desk.token);
+    const b = await open(laptop.token);
+    return { dir, d, server, a, b, errors, open, desk, file: join(dir, 'satellites.json') };
+  }
+
+  it.each([
+    ['cut short', (f: string) => writeFileSync(f, '{"devices":[{"id":')],
+    ['gone', (f: string) => rmSync(f)],
+    ['replaced by a folder move', (f: string) => renameSync(f, `${f}.moved`)],
+  ])('%s: keeps every connected PC, says so loudly, and still refuses new ones', async (_how, spoil) => {
+    const t = await two();
+    spoil(t.file);
+    await new Promise((res) => setTimeout(res, 200));
+    expect(t.server.connections()).toHaveLength(2);
+    expect([...t.a.got, ...t.b.got]).not.toContainEqual(expect.objectContaining({ type: 'denied' }));
+    expect(t.errors).toEqual([expect.stringContaining("can't be read")]); // once, not every round
+    const again = await t.open(t.desk.token);
+    expect(again.got).toContainEqual({ type: 'denied', reason: 'bad token' });
+    t.a.ws.close();
+    t.b.ws.close();
+    await t.server.close();
+  });
+
+  it('read again, a PC it no longer lists is dropped, and unpairing the last one still counts', async () => {
+    const t = await two();
+    writeFileSync(t.file, 'not json');
+    await new Promise((res) => setTimeout(res, 120));
+    expect(t.server.connections()).toHaveLength(2);
+    writeFileSync(t.file, JSON.stringify({ devices: [] })); // what removing the last PC leaves
+    await new Promise((res) => setTimeout(res, 150));
+    expect(t.server.connections()).toHaveLength(0);
+    expect(t.a.got).toContainEqual({ type: 'denied', reason: 'unpaired' });
+    await t.server.close();
   });
 });
 
