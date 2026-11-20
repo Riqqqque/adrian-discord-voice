@@ -51,6 +51,15 @@ describe('provider connections', () => {
     expect(pool({}).idleFor(origin)).toBe(4_000); // unknown origins: Node's default
   });
 
+  it("an origin without a limit is left as Node has it, Keep-Alive hint included", async () => {
+    const { origin, seen } = await server(); // hints timeout=60
+    const p = pool({ idleMs: {} });
+    await (await p.fetch(`${origin}/a`)).text();
+    await sleep(4_300); // past Node's 4 s default
+    await (await p.fetch(`${origin}/b`)).text();
+    expect(seen[1]!.port).toBe(seen[0]!.port);
+  }, 10_000);
+
   it('idle limits stay under what each provider measured (400 s Cloudflare, 245 s Tavily, 610 s Speechify)', () => {
     expect(IDLE_MS['https://api.anthropic.com']).toBeLessThan(400_000);
     expect(IDLE_MS['https://api.groq.com']).toBeLessThan(400_000);
