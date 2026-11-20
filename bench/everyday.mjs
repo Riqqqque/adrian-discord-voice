@@ -153,7 +153,7 @@ async function keep() {
   const status = (a) => (a.action === 'status' ? `Playing: "Nights" by Frank Ocean. Up next: ${queue.map((t) => `"${t.title}" by ${t.artist}`).join('; ')}. Autoplay on.` : 'Nothing found.');
   const qkit = prodKit(c, { record: (name, args) => calls.push({ name, args }), answers: { ...answers, music_control: status }, pc: 'absent', player });
   const qo = new ConversationOrchestrator(llm, new SessionMemory(16, 3_600_000), qkit.tools, { ...qkit.options, context: (x) => [...qkit.options.context(x), `In the voice call with ${x.speaker}: Kim, Alex.`] });
-  await ask("what's in the queue", { via: qo, says: all(/ivy/i, /redbone/i, /kill bill/i, /electric feel/i), max: 45 });
+  await ask("what's in the queue", { via: qo, tool: 'any', says: all(/ivy/i, /redbone/i, /kill bill/i, /electric feel/i), max: 45 });
   // A warning that is a caveat on a how-to, not the question itself.
   await ask('how do I change a light fixture', { ...warn, says: /breaker|power (is )?off|turn off the (power|electricity)|switch off the (power|circuit)|cut the power|kill the power/i });
   await ask('how do I get mold off the grout with bleach', { ...warn, says: /ventilat|window|fan|gloves|mask|don'?t mix|never mix|ammonia|fumes/i });
