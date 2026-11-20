@@ -1627,7 +1627,8 @@ export async function startVoiceStack(
   async function heard(e: HeardEvent, p: { ptt: boolean; first: boolean }, stopsBefore: number): Promise<void> {
     // Pressed: for her, not a maybe. Her name at the end ("what's the weather,
     // Adrian") needs no judge, and the cloud's words count without it.
-    if (p.ptt && e.loose) e = { ...e, loose: false };
+    const pressedLoose = p.ptt && !!e.loose;
+    if (pressedLoose) e = { ...e, loose: false };
     // The first thing said with it needs no name. What follows in the same hold
     // while she's still on it is more of the same request (the controller joins
     // it, or queues it behind an order she's carrying out); once she's done,
@@ -1768,6 +1769,9 @@ export async function startVoiceStack(
     if (!e.woke && quizzes.heard(rm.key, e.userId, e.text)) return;
     if (e.woke) rm.mixer.duckFor(8_000);
     if (e.woke) log.info('wake', { user: e.userId, sttLatencyMs: e.sttLatencyMs, audioSeconds: e.audioSeconds, ...(e.loose ? { loose: true } : {}) });
+    // What was a loose wake goes to the model whole ("Adrian is so slow today"
+    // keeps its subject); only the quick local answers take the words without her name.
+    if (pressedLoose && e.woke && e.command.trim() && !classify(e.command) && !classifyMusic(e.command) && !isTimeQuestion(e.command)) e = { ...e, command: e.text };
     ctl.heard({ userId: e.userId, text: e.text, woke: e.woke, command: e.command, startedAt, ...(e.loose ? { loose: true } : {}), ...(more ? { more: true } : {}) });
   }
   // Before the question reaches it: after a long quiet Speechify stalls on the first sentence.

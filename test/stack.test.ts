@@ -894,6 +894,19 @@ describe('push-to-talk held down (apps from 0.17.2)', () => {
     await r.stack.stop();
   });
 
+  it('with the key held, a loose wake goes to the model whole, her name and all', async () => {
+    const r = await rig();
+    r.voiceStates.set(OWNER, MUTED);
+    const { conn, pipe } = r.connect();
+    conn.emit('ptt', { hold: true });
+    r.heard(pipe, OWNER, 'adrian is so slow today', 'is so slow today', 1, { loose: true });
+    await until(() => r.llmBodies.length === 1, 'the model');
+    expect(JSON.stringify(r.llmBodies[0].messages.at(-1).content)).toContain('adrian is so slow today');
+    expect(asPrompt(r.llmBodies[0])).not.toContain('maybe about you rather than to you');
+    conn.emit('pttUp');
+    await r.stack.stop();
+  });
+
   it('with the key held, "what time is it, adrian" is the quick local answer', async () => {
     const r = await rig();
     r.voiceStates.set(OWNER, MUTED);

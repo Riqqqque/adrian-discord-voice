@@ -391,13 +391,10 @@ export class ConversationController {
   }
 
   private async run(req: Request): Promise<void> {
-    if (!req.announce && this.d.now() - req.at > this.o.maxWaitMs) {
+    // A maybe (loose wake) never expires: it waits behind an answer instead of
+    // cutting it off, and the judge still decides it, however late.
+    if (!req.announce && !req.loose && this.d.now() - req.at > this.o.maxWaitMs) {
       this.d.log?.('expired in queue', { user: req.userId });
-      // A maybe that waited this long: nobody is waiting on an apology for it.
-      if (req.loose) {
-        this.next();
-        return;
-      }
       const ctl = new AbortController();
       this.active = { ...req, ctl, started: this.d.now() };
       try {

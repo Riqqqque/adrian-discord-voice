@@ -8,5 +8,10 @@
   {"id": "date-bare", "kind": "model", "text": "The release is 11/21.", "say": ["The release is November twenty first."]},
   {"id": "score", "kind": "model", "text": "They won 3/1 last night.", "say": ["They won three to one last night."]},
   {"id": "recipe", "kind": "model", "text": "Add 3/4 of a cup of milk.", "say": ["Add three quarters of a cup of milk."]},
-  {"id": "speed", "kind": "model", "text": "Top speed is 60km/h.", "say": ["Top speed is sixty kilometers per hour."]}
+  {"id": "speed", "kind": "model", "text": "Top speed is 60km/h.", "say": ["Top speed is sixty kilometers per hour."]},
+  {"id": "stat-line", "kind": "model", "text": "He went 3/3 at the plate.", "say": ["He went three for three at the plate."]},
+  {"id": "rating-four", "kind": "model", "text": "Reviewers say 3/4 stars.", "say": ["Reviewers say three out of four stars."]},
+  {"id": "date-mon", "kind": "model", "text": "The match is Mon 2/6 at 7:00.", "say": ["The match is Monday February sixth at seven o'clock.", "The match is Mon February sixth at seven o'clock."]},
+  {"id": "step", "kind": "model", "text": "Step 2/6 is the hardest.", "say": ["Step two of six is the hardest."]},
+  {"id": "count", "kind": "model", "text": "There are 3/20 players online.", "say": ["There are three out of twenty players online.", "There are three of twenty players online."]}
 ]
