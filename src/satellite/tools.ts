@@ -34,6 +34,52 @@ const NEEDS_YES = new Map([
 ]);
 const QUESTIONS = new Set([...NEEDS_YES.values()].map((n) => n.ask));
 
+/** Things in a house that no pc_ tool reaches. */
+const HOUSE_THING =
+  /\b(doors?|deadbolts?|garage|gates?|car|house|lights?|lamps?|bulbs?|thermostat|heat(?:er|ing)?|furnace|a\/c|ac|air(?: conditioning| conditioner)?|fans?|oven|stove|dishwasher|washer|dryer|microwave|vacuum|roomba|sprinklers?|blinds|curtains|shades|doorbell|tv|television|telly|soundbar|stereo|roku|fire ?stick|chromecast)\b/;
+/** Words that make it an order. */
+const ORDER_WORD = /\b(turn(?:ed)?|switch|shut|lock(?:ed)?|unlock(?:ed)?|open|close[d]?|power|dim|brighten|mute|unmute|pause|stop|raise|lower|kill|cut|start|set|put|crank|bump)\b/;
+/** "Lights off", "TV on": the thing, then off, or on to end it ("the doors on youtube" is a band). */
+const ON_OFF = /^\s+(?:off\b|on\s*$)/;
+/** They named the PC itself ("lock my pc, I'm heading out the front door"). */
+const PC_WORD = /\b(pcs?|computers?|laptops?|desktops?|monitors?|screens?|displays?|keyboard|mouse|webcam|rig)\b/;
+/** Words about what plays on the PC: "turn the music down and the lights off" still means the music. */
+const MEDIA_WORD = /\b(music|songs?|tracks?|videos?|movies?|shows?|streams?|spotify|youtube|netflix|twitch|playlist|podcasts?|volume|sound|audio|it|this|that)\b/;
+
+/** The house thing their own words give an order about, if any, and whether
+ *  they named the PC or something playing on it too. Only their words count:
+ *  the model can't write these. */
+export function houseOrder(said: string | undefined): { thing: string; pc: boolean; media: boolean } | undefined {
+  if (!said) return undefined;
+  // A TV show is something to watch, and Apple TV is an app.
+  const s = said.toLowerCase().replace(/\b(?:tv|television) (?:shows?|series|episodes?)\b/g, 'show').replace(/\bapple ?tv\b/g, 'appletv');
+  let thing: string | undefined;
+  for (const clause of s.split(/[,.;!?]|\b(?:and|then|but|also|so)\b/)) {
+    const m = HOUSE_THING.exec(clause);
+    if (m && (ORDER_WORD.test(clause.replace(m[0], ' ')) || ON_OFF.test(clause.slice(m.index + m[0].length)))) {
+      thing = m[1]!;
+      break;
+    }
+  }
+  return thing ? { thing, pc: PC_WORD.test(s), media: MEDIA_WORD.test(s) } : undefined;
+}
+
+/** An app name that is a house thing ("garage", "the lights"). */
+const HOUSE_NAME = new RegExp(`^(?:the |my |our )?(?:(?:front|back|side|garage|living room|kitchen|bedroom) )?${HOUSE_THING.source.replace(/^\\b|\\b$/g, '')}$`);
+
+/** A refusal when an order is about the house, not the PC; undefined to go ahead. */
+function notThePc(name: string, a: Record<string, unknown>, ctx: ToolContext): string | undefined {
+  const action = String(a.action ?? '');
+  const appName = typeof a.name === 'string' ? a.name.trim().toLowerCase() : '';
+  const order = houseOrder(ctx.said);
+  let thing: string | undefined;
+  if (name === 'pc_apps' && ['open', 'close', 'focus', 'minimize'].includes(action) && HOUSE_NAME.test(appName)) thing = appName.replace(/^(?:the|my|our) /, '');
+  else if (order && !order.pc && name === 'pc_system') thing = order.thing;
+  else if (order && !order.pc && !order.media && ((name === 'pc_volume' && action !== 'get') || (name === 'pc_media' && action !== 'status'))) thing = order.thing;
+  if (!thing) return undefined;
+  return `${NOT_DONE}${ctx.speaker} asked about the ${thing}, which is in the house, not their PC: the pc_ tools only reach their computer. If another tool controls home devices, use that; otherwise say in a few words that you can't control the ${thing}.`;
+}
+
 /** How long a restart or shutdown waits on the PC (system.rs). */
 const POWER_DOWN_MS = 30_000;
 
@@ -70,7 +116,7 @@ export class PowerDownWindow {
 
 /** Prompt line: when to use them. */
 export const PC_RULE =
-  "If the person has their PC connected (the PC satellite), you can control it with the pc_ tools: open, close or switch to apps and games, arrange their windows (snap to a side or corner, maximize, move to another monitor), open websites, YouTube and folders, control what's playing, set volume (also per app), lock it, turn the screens off, sleep, restart or shut it down, and check CPU, memory and disk. When someone talks to you through their PC, short orders are about that PC: \"pause\", \"skip\", \"what's playing\", \"turn it down\" mean pc_media and pc_volume, unless your own music is the thing playing (see Music now). \"Turn my music down\" or \"turn it down\" is pc_volume with playing true: it lowers just what they're listening to and leaves their game and Discord alone. Change the master volume only when they ask for the PC's own or overall volume. Act right away, then confirm in a few words (\"Done.\", \"Spotify's open.\", \"Down to 30.\"); don't describe how you did it and don't offer more help. Do every part of a combined order. For sleep, restart and shutdown, just call pc_system: it asks them itself, so don't ask first. If they answer yes, call it again with the same action. \"Put it back\" right after you moved a window is pc_windows back. If a tool says no PC is connected, tell them. " +
+  "If the person has their PC connected (the PC satellite), you can control it with the pc_ tools: open, close or switch to apps and games, arrange their windows (snap to a side or corner, maximize, move to another monitor), open websites, YouTube and folders, control what's playing, set volume (also per app), lock it, turn the screens off, sleep, restart or shut it down, and check CPU, memory and disk. When someone talks to you through their PC, short orders are about that PC: \"pause\", \"skip\", \"what's playing\", \"turn it down\" mean pc_media and pc_volume, unless your own music is the thing playing (see Music now). \"Turn my music down\" or \"turn it down\" is pc_volume with playing true: it lowers just what they're listening to and leaves their game and Discord alone. Change the master volume only when they ask for the PC's own or overall volume. Act right away, then confirm in a few words (\"Done.\", \"Spotify's open.\", \"Down to 30.\"); don't describe how you did it and don't offer more help. Do every part of a combined order. For sleep, restart and shutdown, just call pc_system: it asks them itself, so don't ask first. If they answer yes, call it again with the same action. \"Put it back\" right after you moved a window is pc_windows back. If a tool says no PC is connected, tell them. The pc_ tools only reach their computer: a door, the lights, a TV, the heat, the garage or anything else in the house is never the PC. Only bring up their PC when they asked about it or are talking to you through it. " +
   SENSES_RULE;
 
 export function pcTools(d: PcToolDeps): Tool[] {
@@ -131,7 +177,7 @@ export function pcTools(d: PcToolDeps): Tool[] {
     },
     pc_system: {
       description:
-        'lock, screen_off, sleep, restart, shutdown, cancel_shutdown. sleep, restart and shutdown ask the person first by themselves: call again with the same action once they say yes. Restart and shutdown wait 30 seconds and can be cancelled.',
+        'lock, screen_off, sleep, restart, shutdown, cancel_shutdown. sleep, restart and shutdown ask the person first by themselves: call again with the same action once they say yes. Restart and shutdown wait 30 seconds and can be cancelled. Only the PC itself: lock is the PC\'s sign-in screen, never a door or a car, and screen_off is the PC\'s monitors, never a TV or the lights.',
       properties: {
         action: { type: 'string', enum: ['lock', 'screen_off', 'sleep', 'restart', 'shutdown', 'cancel_shutdown'] },
       },
@@ -154,6 +200,12 @@ export function pcTools(d: PcToolDeps): Tool[] {
     },
     timeoutMs: name === 'pc_open' || name === 'pc_screen' ? 20_000 : 15_000,
     run: async (a, signal, ctx) => {
+      // A door, the lights or the TV: never the PC, connected or not.
+      const house = notThePc(name, a, ctx);
+      if (house) {
+        d.onCall?.(name, a, house, ctx);
+        return house;
+      }
       const pc = d.pcFor(ctx);
       if (!pc) return `No PC is connected for ${ctx.speaker}. Their A.D.R.I.A.N. satellite app has to be running on it.`;
       const args: Record<string, unknown> = { ...a };

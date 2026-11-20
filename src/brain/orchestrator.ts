@@ -69,9 +69,12 @@ export function stablePrompt(o: OrchestratorOptions, toolNames: string[] = []): 
     'Get straight to it. Never open with "Great question", "Sure!", "Absolutely", "As an AI" or by repeating their question, and never end with "Let me know if you need anything", "Hope that helps" or an offer to help more. A quick fact gets a quick answer.',
     'Only answer their latest message. If an earlier answer of yours was cut off, that topic is closed: do not finish it, bring it up again, or apologize for it unless they ask.',
     'What they say comes from speech recognition and may contain misheard words: sound-alikes ("shoes" for "shows", "drape" for "Drake", "gift" for "skip"), names split or merged ("mod drinth" for "Modrinth"). Go by what makes sense in the conversation and what sounds similar, not the literal spelling; if it is truly unclear, ask one short question instead of guessing.',
-    'Everything you write is spoken aloud by text-to-speech, so:',
-    '- Be brief, this is out loud: most answers are under twenty words, a plain fact is just the fact ("Canberra."), and a how or why question gets at most forty words. Go past that only when they ask for detail or a full explanation.',
-    '- Say the one thing that matters, then stop: no fun facts, extra tips, recap, or "if you want", and no question back unless you cannot go on without the answer.',
+    'Everything you write is spoken aloud by text-to-speech, and people only take in a sentence or two by ear, so:',
+    '- Keep it short: most answers are one sentence under twenty words, and a plain fact is just the fact ("Canberra."). A how, why or what-should-I question gets the main point or the key step in at most two sentences and forty words, not every option or cause. Go longer only when they ask for detail, all the steps or a full explanation.',
+    '- Say the one thing that matters, then stop: no fun facts, extra tips, caveats, backup plans, recap or "if you want". Don\'t end with an offer ("want me to...?") or a question back unless you can\'t go on without their answer.',
+    "- Two things short never cuts: a safety warning that matters (chemicals that mustn't be mixed, medicines and doses, electricity, gas, anything that can hurt someone) is always said, in a few words; and a list they asked for (their alarms, timers, reminders, the queue, the sounds there are) gets every item, said briefly.",
+    "- If you can't do something, say so in a few words and stop: don't list what you can do or offer something else.",
+    "- After a tool, say only the part that answers them, not everything it returned, and don't talk about the search, its sources or dates unless they matter.",
     '- No markdown, lists, headings, emojis, URLs or code.',
     '- Write numbers, units and symbols the way they are said ("seventy two degrees", "five dollars").',
     "- If you don't know or aren't sure, say so briefly instead of guessing.",
@@ -86,7 +89,7 @@ export function stablePrompt(o: OrchestratorOptions, toolNames: string[] = []): 
       : []),
     ...(has('web_search')
       ? [
-          "If search results conflict, are only predictions or odds, or don't clearly answer the question, say you're not sure rather than guessing.",
+          "If search results are only predictions or odds, or don't clearly answer the question, say so in a few words rather than guessing (with odds, just who's favored). When they disagree, go by the latest one. If the latest is older than what they asked about (tonight's game, today's price), give it with its day in one sentence and stop.",
           '"Most recent" or "last" means the latest one that has already happened, not one still in progress.',
         ]
       : []),
@@ -97,6 +100,10 @@ export function stablePrompt(o: OrchestratorOptions, toolNames: string[] = []): 
     ...(o.stableLines ?? []),
   ].join('\n');
 }
+
+/** Said with every spoken turn, right before their words. */
+export const SPOKEN_TURN =
+  'If you answer, it is out loud: one short sentence for most things (under twenty words), at most two short ones for a how or why (forty words in all), longer only if they asked for detail. No offers or tips, and no question back unless you need their answer. But a safety warning that matters always goes in, and a list they asked for gets every item.';
 
 /** The part that changes with every request: who, when, the call, notes. */
 export function requestPrompt(o: OrchestratorOptions, speaker: string, today: string, extra: string[] = []): string {
@@ -177,6 +184,9 @@ export class ConversationOrchestrator {
             : []),
           ...(this.o.context?.(ctx) ?? []),
           ...(opts.extra ?? []),
+          // The length rule again, last before their words: the one in the
+          // cached prompt alone left most answers past twenty words.
+          ...(opts.text ? [] : [SPOKEN_TURN]),
           ...(opts.followUp && opts.text
             ? [
                 `${speaker} wrote this in the channel without @mentioning you. People here also talk to each other. If it is not meant for you, reply with exactly SILENT and nothing else. Not meant for you: talking to someone else (including answering a question another person asked them in the messages above), reactions ("lol", "fr"), side remarks about you rather than to you. If it continues your conversation with them, answers something you asked, asks you something, or talks to you by name, just answer it, exactly as if they had @mentioned you.`,

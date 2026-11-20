@@ -4,6 +4,7 @@
 // goes into everyone's, since it's part of who she is.
 
 import { readFileSync } from 'node:fs';
+import { asksMore } from '../brain/tools.js';
 import type { Tool, UserId } from '../core/interfaces.js';
 import { writeJsonFile } from '../web/secrets-file.js';
 
@@ -145,7 +146,9 @@ export class MusicTaste {
     if (this.file) writeJsonFile(this.file, this.data);
   }
 
-  tools(): Tool[] {
+  /** `english`: does this person speak English to her? Her short line is in
+   *  English, so for anyone else the model says it. */
+  tools(english: (userId: UserId) => boolean = () => true): Tool[] {
     return [
       {
         spec: {
@@ -168,6 +171,14 @@ export class MusicTaste {
           const name = typeof a.name === 'string' ? a.name : '';
           if (a.who === 'you' && !this.isOwner(ctx.userId)) return "That's up to me.";
           return this.set(a.who === 'you' ? this.data.her : this.person(ctx.userId), what, name);
+        },
+        // Their own like or dislike, said as news, needs only a word back. Her own
+        // taste comes up while she's answering, and a question wants its answer.
+        speak: (a, raw, ctx) => {
+          if (a.who !== 'them' || !english(ctx.userId) || asksMore(ctx.said)) return undefined;
+          const m = /^Remembered: (like|dislike)s (.+)\.$/.exec(raw);
+          if (m) return m[1] === 'like' ? `Got it, you like ${m[2]}.` : `Got it, no ${m[2]}.`;
+          return raw.startsWith('Forgot ') ? raw : undefined;
         },
       },
     ];

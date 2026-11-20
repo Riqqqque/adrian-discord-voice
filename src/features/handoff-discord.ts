@@ -77,6 +77,8 @@ export interface PcDiscordOptions {
   announce(id: UserId, text: string): Promise<boolean>;
   speakable?(text: string): string;
   findVideo?(q: string, signal: AbortSignal): Promise<string | undefined>;
+  /** Does this person speak English to her (her own short lines are English)? Default: yes. */
+  english?(id: UserId): boolean;
 }
 
 /** The tools and their prompt lines. */
@@ -161,6 +163,7 @@ export function pcDiscordTools(o: PcDiscordOptions): { tools: Tool[]; rules: str
         cooldownMs: gn.cooldownMinutes * 60_000,
         maxMentions: gn.maxMentions,
         perUserPerHour: gn.perUserPerHour,
+        ...(o.english ? { english: o.english } : {}),
       }),
     );
     rules.push(GAME_NIGHT_RULE);
