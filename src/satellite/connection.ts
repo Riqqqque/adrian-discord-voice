@@ -214,6 +214,12 @@ export class SatelliteConnection extends EventEmitter implements VoiceTransport 
     this.close();
   }
 
+  /** Closed as no longer allowed (1008, policy): its room and pending actions end now. */
+  refuse(reason: string): void {
+    this.ws.close(1008, reason);
+    this.close();
+  }
+
   isReady(): boolean {
     return this.open;
   }

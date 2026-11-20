@@ -162,6 +162,39 @@ describe('satellite connection', () => {
   });
 });
 
+describe('a PC unpaired while connected', () => {
+  it('is dropped by the next check, told why, and its token stays refused', async () => {
+    const d = devices();
+    const desk = d.add('Desk PC', OWNER);
+    const laptop = d.add('Laptop', OWNER);
+    const port = 20_000 + Math.floor(Math.random() * 20_000);
+    const conns: SatelliteConnection[] = [];
+    const server = startSatelliteServer({ bind: '127.0.0.1', port, devices: d, log: quiet as never, welcome: () => ({}), onConnect: (c) => conns.push(c), recheckMs: 40 });
+    await new Promise((r) => setTimeout(r, 50));
+    const open = (token: string) =>
+      new Promise<{ ws: WebSocket; got: unknown[]; closed: Promise<number> }>((resolve) => {
+        const ws = new WebSocket(`ws://127.0.0.1:${port}/satellite`);
+        const got: unknown[] = [];
+        const closed = new Promise<number>((r) => ws.on('close', (code) => r(code)));
+        ws.on('message', (data, bin) => void (bin || got.push(JSON.parse(String(data)))));
+        ws.on('open', () => (ws.send(JSON.stringify({ type: 'hello', token })), setTimeout(() => resolve({ ws, got, closed }), 80)));
+      });
+    const a = await open(desk.token);
+    const b = await open(laptop.token);
+    const gone: string[] = [];
+    for (const c of conns) c.on('closed', () => gone.push(c.device.name));
+    d.remove('Desk PC');
+    expect(await a.closed).toBe(1008);
+    expect(a.got).toContainEqual({ type: 'denied', reason: 'unpaired' });
+    expect(gone).toEqual(['Desk PC']);
+    expect(server.connections().map((c) => c.device.name)).toEqual(['Laptop']);
+    const again = await open(desk.token);
+    expect(await again.closed).toBe(1008);
+    b.ws.close();
+    await server.close();
+  });
+});
+
 describe('satellite frame sizes', () => {
   const big = 300 * 1024; // past the 256 KB a satellite gets before its welcome
 

@@ -70,7 +70,7 @@ Text frames are JSON objects with a `type`. Binary frames are audio.
 | type | fields | meaning |
 |---|---|---|
 | `welcome` | `owner`, `name` | Accepted. `owner` is the owner's display name. |
-| `denied` | `reason` | Rejected; the connection closes. |
+| `denied` | `reason` | Rejected; the connection closes. `bad token` and `no hello` answer a hello; `unpaired` comes to a connected PC within 30 seconds of `adrian satellite remove`. |
 | `mode` | `mode` | `thinking` while she works on an answer, `idle` after. |
 | `state` | `speaking`, `listenMs` (either or both) | `speaking`: her voice is audible, as opposed to music only (the PC gets both as one stream, and only turns her voice down when you talk over it). `listenMs`: how much longer she takes words without her name, 0 when she doesn't. |
 | `transcript` | `who` (`you`/`her`), `text`, `final` | What was heard, and what she's saying so far (`final: false` while it grows). |

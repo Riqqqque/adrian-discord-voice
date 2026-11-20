@@ -51,6 +51,12 @@ export class SatelliteDevices {
     return true;
   }
 
+  /** Still paired as it was when it connected: same token and owner. `satellite
+   *  remove` runs in another process, so a live connection learns of it here. */
+  stillPaired(d: Device): boolean {
+    return this.list().some((x) => x.id === d.id && x.tokenHash === d.tokenHash && x.owner === d.owner);
+  }
+
   /** The device a token belongs to, compared in constant time. */
   verify(token: unknown): Device | undefined {
     if (typeof token !== 'string' || !token.startsWith('sat_') || token.length > 100) return undefined;
