@@ -1,7 +1,7 @@
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { ConversationOrchestrator, systemPrompt } from '../src/brain/orchestrator.js';
+import { ConversationOrchestrator, SPOKEN_TURN, systemPrompt } from '../src/brain/orchestrator.js';
 import { OpenAiCompatibleLlm } from '../src/brain/openai-compatible.js';
 import { SessionMemory } from '../src/brain/sessions.js';
 import { SentenceSplitter, toSpeakable } from '../src/brain/speech-text.js';
@@ -164,6 +164,17 @@ describe('orchestrator', () => {
     expect(u).toMatchObject({ inputTokens: 100, cachedTokens: 40, outputTokens: 20, toolCalls: 0 });
     expect(requests[0].stream).toBe(true);
     expect(requests[0].messages.filter((m: { role: string }) => m.role === 'system').map((m: { content: string }) => m.content).join(' ')).toContain('Sean');
+  });
+
+  it('repeats the spoken length rule in every voice turn, not in text chat', async () => {
+    requests.length = 0;
+    script = () => ({ chunks: [text('Ottawa.'), usage] });
+    const o = make();
+    await collect(o.ask('u1', 'Sean', 'capital of canada', new AbortController().signal));
+    await collect(o.ask('u2', 'Sean', 'capital of canada', new AbortController().signal, undefined, undefined, { text: true }));
+    const turn = (r: any) => r.messages.filter((m: { role: string }) => m.role === 'system').map((m: { content: string }) => m.content).join('\n');
+    expect(turn(requests[0])).toContain(SPOKEN_TURN);
+    expect(turn(requests[1])).not.toContain(SPOKEN_TURN);
   });
 
   it('runs a tool call round and feeds the result back as untrusted data', async () => {
