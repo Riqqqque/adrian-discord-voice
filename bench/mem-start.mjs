@@ -36,7 +36,7 @@ if (!modelsDir) {
   process.exit(2);
 }
 const cloud = args.includes('--cloud');
-const jsonOut = args[args.indexOf('--json') + 1];
+const jsonOut = args.includes('--json') ? args[args.indexOf('--json') + 1] : undefined;
 const root = new URL('..', import.meta.url);
 /** Built code to measure: dist/ by default, or --dist DIR (another build, for an A/B). */
 const distDir = args.includes('--dist') ? args[args.indexOf('--dist') + 1].replace(/[\\/]*$/, '/') : 'dist/';
