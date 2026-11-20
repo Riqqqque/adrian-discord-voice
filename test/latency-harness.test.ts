@@ -9,22 +9,24 @@
 // Off in the normal suite. Run it with:
 //   LATENCY_HARNESS=1 npx vitest run test/latency-harness.test.ts
 // Options (env): LATENCY_RUNS (5), LATENCY_STT_MS (300, comma list for several),
-// LATENCY_OUT (raw runs as JSON), LATENCY_TABLE (the table as text), ADRIAN_MODELS (D:/Tools/adrian-models).
+// LATENCY_OUT (raw runs as JSON), LATENCY_TABLE (the table as text). ADRIAN_MODELS must name
+// the model folder (Silero, and Kokoro to render the clips once); without it the harness is skipped.
 import { EventEmitter } from 'node:events';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { setPriority, constants, tmpdir } from 'node:os';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { constants, getPriority, setPriority, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Client } from 'discord.js';
-import sherpa from 'sherpa-onnx-node';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { startVoiceStack } from '../src/app/stack.js';
 import { PocConfigSchema } from '../src/config.js';
 import { UsageLedger } from '../src/limits/usage-ledger.js';
+import { DecodeQueue } from '../src/speech/decode-queue.js';
 import { SmartTurn } from '../src/speech/smart-turn.js';
 import { MODEL_LAYOUT } from '../src/web/checks.js';
+import { clips, MODELS, NO_MODELS, quiet } from './speech-clips.js';
 
-const ON = process.env.LATENCY_HARNESS === '1';
-const MODELS = process.env.ADRIAN_MODELS ?? 'D:/Tools/adrian-models';
+const ON = process.env.LATENCY_HARNESS === '1' && !!MODELS;
+if (process.env.LATENCY_HARNESS === '1' && !MODELS) process.stderr.write(`latency harness: skipped, ${NO_MODELS}\n`);
 const RUNS = Number(process.env.LATENCY_RUNS ?? 5);
 const STT_LIST = (process.env.LATENCY_STT_MS ?? '300').split(',').map(Number);
 
@@ -76,51 +78,7 @@ const median = (xs: number[]) => {
   return s.length % 2 ? s[m]! : Math.round((s[m - 1]! + s[m]!) / 2);
 };
 
-// --- speech ---------------------------------------------------------------
-const LINES: Record<string, [string, number]> = {
-  wake: ['Hey Adrian, open Spotify.', 0],
-  wake2: ['Hey Adrian, what is the capital of Australia?', 11],
-  name: ['Hey Adrian.', 0],
-  cmd: ['Open Spotify.', 0],
-  follow: ['And turn it up a little.', 0],
-  play: ['Hey Adrian, play', 0],
-  drake: ['Drake.', 0],
-  side: ['So then we went to the store and they were out of everything.', 3],
-};
-
-/** 48 kHz s16 mono renders of LINES, cached between runs. Nothing is played. */
-async function clips(): Promise<Record<string, Int16Array>> {
-  const dir = join(tmpdir(), 'adrian-latency-clips');
-  mkdirSync(dir, { recursive: true });
-  const out: Record<string, Int16Array> = {};
-  let tts: any;
-  let seed = 1;
-  const noise = () => ((seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff - 0.5) * 0.002;
-  for (const [name, [text, sid]] of Object.entries(LINES)) {
-    const f = join(dir, `${name}.pcm`);
-    if (!existsSync(f)) {
-      const d = join(MODELS, 'kokoro-multi-lang-v1_0');
-      tts ??= await sherpa.OfflineTts.createAsync({
-        model: { kokoro: { model: `${d}/model.onnx`, voices: `${d}/voices.bin`, tokens: `${d}/tokens.txt`, dataDir: `${d}/espeak-ng-data`, lexicon: `${d}/lexicon-us-en.txt`, lang: 'en-us' }, numThreads: 2, provider: 'cpu', debug: 0 },
-        maxNumSentences: 1,
-      });
-      const a = await tts.generateAsync({ text, sid, speed: 1 });
-      const up: Float32Array = new sherpa.LinearResampler(a.sampleRate, 48_000).flush(a.samples);
-      const pcm = Int16Array.from(up, (v) => Math.max(-32768, Math.min(32767, Math.round((v * 0.5 + noise()) * 32767))));
-      writeFileSync(f, Buffer.from(pcm.buffer));
-    }
-    const b = readFileSync(f);
-    out[name] = new Int16Array(b.buffer.slice(b.byteOffset, b.byteOffset + b.length));
-  }
-  return out;
-}
-/** A mic's noise floor, never digital silence. */
-function quiet(seconds: number): Int16Array {
-  const a = new Int16Array(Math.round(seconds * 48_000));
-  let seed = 7;
-  for (let i = 0; i < a.length; i++) a[i] = Math.round((((seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff) - 0.5) * 0.002 * 32767);
-  return a;
-}
+// --- speech (test/speech-clips.ts) -----------------------------------------
 /** Where the speech in a clip ends, in samples. */
 function speechEnd(a: Int16Array): number {
   for (let i = a.length - 1; i >= 0; i--) if (Math.abs(a[i]!) > 0.01 * 32767) return i + 1;
@@ -190,7 +148,7 @@ async function runOnce(sc: Scenario, sttMs: number, audio: Record<string, Int16A
     guildId: '100000000000000010',
     channelId: '100000000000000020',
     secretsFile: join(dir, 'secrets.env'),
-    listen: { vadModel: join(MODELS, 'silero_vad.onnx'), asrModelDir: dir },
+    listen: { vadModel: join(MODELS!, 'silero_vad.onnx'), asrModelDir: dir },
     voice: { modelDir: join(dir, 'kokoro') },
     brain: { provider: 'openai', baseUrl: 'http://llm.test/v1', model: 'fake', apiKeySecret: 'LLM_API_KEY', priceInPerM: 1, priceOutPerM: 5, totalTimeoutMs: 15_000, firstEventTimeoutMs: 10_000, search: {} },
     music: { enabled: false },
@@ -204,21 +162,18 @@ async function runOnce(sc: Scenario, sttMs: number, audio: Record<string, Int16A
   });
   // What both recognizers hear (the warm-up answer has words of its own).
   let words = sc.words;
-  // Local recognition: one job at a time, like Parakeet.
+  // Local recognition: one job at a time, early ones last, like Parakeet.
   let decodes = 0;
-  let queue: Promise<unknown> = Promise.resolve();
+  const queue = new DecodeQueue();
   const stt = {
-    transcribe(samples: Float32Array, _rate: number, signal?: AbortSignal) {
-      const job = queue.then(async () => {
-        if (signal?.aborted) throw new Error('cancelled');
+    transcribe(samples: Float32Array, _rate: number, signal?: AbortSignal, options?: { background?: () => boolean }) {
+      return queue.run(async () => {
         decodes++;
         if (process.env.LATENCY_DEBUG) process.stderr.write(`decode ${sc.name}: ${(samples.length / 16_000).toFixed(3)} s -> ${words(samples.length / 16_000)}
 `);
         await sleep(sttMs);
         return { text: words(samples.length / 16_000), decodeMs: sttMs };
-      });
-      queue = job.catch(() => undefined);
-      return job;
+      }, signal, options);
     },
   };
   let groqCalls = 0;
@@ -369,11 +324,12 @@ afterEach(() => {
 describe.skipIf(!ON)('reply latency harness', () => {
   it('prints the breakdown', async () => {
     try {
-      setPriority(constants.priority.PRIORITY_BELOW_NORMAL);
+      // Lower only: started at Idle, it stays there.
+      if (getPriority() < constants.priority.PRIORITY_BELOW_NORMAL) setPriority(constants.priority.PRIORITY_BELOW_NORMAL);
     } catch {
       /* not allowed here: fine */
     }
-    const audio = await clips();
+    const audio = await clips(MODELS!);
     const runs: Run[] = [];
     for (const sttMs of STT_LIST)
       for (let i = 0; i < RUNS; i++)
