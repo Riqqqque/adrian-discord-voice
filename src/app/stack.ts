@@ -1408,10 +1408,13 @@ export async function startVoiceStack(
   const hasPc = (userId: UserId) => (satServer?.connections() ?? []).some((c) => c.owner === userId);
   const cloudSttFor = (rm: Room, userId: UserId) => !!csKey && (cs.rooms === 'all' || !!rm.ui || hasPc(userId)) && performance.now() > csPausedUntil;
   /** The cloud's words for a segment, or undefined (slow, failed, rate-limited: use the local ones). */
-  async function cloudListen(samples: Float32Array): Promise<string | undefined> {
+  async function cloudListen(samples: Float32Array, dropped?: AbortSignal): Promise<string | undefined> {
+    const limit = AbortSignal.timeout(cs.timeoutMs);
     try {
-      return (await groqTranscribe(csKey!, samples, 16_000, { model: cs.model, prompt: csPrompt, signal: AbortSignal.timeout(cs.timeoutMs) })) || undefined;
+      return (await groqTranscribe(csKey!, samples, 16_000, { model: cs.model, prompt: csPrompt, signal: dropped ? AbortSignal.any([limit, dropped]) : limit })) || undefined;
     } catch (err) {
+      // Started early for audio that then went on: nobody will read this.
+      if (dropped?.aborted) return undefined;
       const msg = (err as Error).message;
       // Rate limit or outage: give it a minute.
       if (/HTTP (429|5\d\d)/.test(msg)) csPausedUntil = performance.now() + 60_000;
@@ -1424,6 +1427,9 @@ export async function startVoiceStack(
   let turn: TurnOptions | undefined;
   /** What a PC room's VAD waits for: a pause mid-sentence shouldn't split it in two. */
   const pcSilence = Math.max(listen.minSilence, 0.8);
+  /** The PC room's second, quicker VAD: recognition starts this long into the silence, s.
+   *  The words are only used if the full wait then closes the same audio (src/listen/pipeline.ts). */
+  const EARLY_SILENCE = 0.32;
   /** The silence a clip ended on before it closed, ms. */
   const endSilenceMs = (rm: Room, closedBy: ClosedBy | undefined) => (rm.ui ? pcSilence * 1000 : closedBy === 'flush' ? config.silenceMs : listen.minSilence * 1000);
   const vad = {
@@ -1456,8 +1462,20 @@ export async function startVoiceStack(
   /** Listen to one room's audio. `direct()` true: the next thing heard is a question for her (push-to-talk).
    *  `pttOpen()` says the same without using it up. */
   function listenTo(source: VoiceTransport, rm: Room, ctl: ConversationController, direct?: () => boolean, pttOpen?: () => boolean): ListeningPipeline {
-  /** The cloud's listen to held speech, by the clip it heard. A join makes a new clip, so it can't land on the wrong audio. */
+  /** The cloud's listen to held or early speech, by the clip it heard. A join makes a new clip, so it can't land on the wrong audio. */
   const early = new WeakMap<Float32Array, Promise<string | undefined>>();
+  /** Start the cloud's listen before the clip is released, if heard() would ask for it.
+   *  `unlessDangling`: not for words that stop mid-thought, which usually go on. */
+  function listenEarly(userId: UserId, text: string, samples: Float32Array, startedAt: number, o: { dropped?: AbortSignal; unlessDangling?: boolean } = {}): void {
+    if (early.has(samples)) return; // already asked for this very clip
+    const m = wakeDetector.matchLoose(text);
+    const said = m.woke ? m.remainder : text;
+    const kind = classify(said)?.kind;
+    const forHer = m.woke || ctl.listeningTo(userId, startedAt) || !!pttOpen?.();
+    if (!forHer || !said.trim() || kind === 'stop' || kind === 'name' || !cloudSttFor(rm, userId) || inHerCall(userId)) return;
+    if (o.unlessDangling && endsDangling(said)) return;
+    early.set(samples, cloudListen(samples, o.dropped));
+  }
   // Discord keeps the snappier default.
   const pipeline = rm.ui
     ? new ListeningPipeline(
@@ -1478,14 +1496,10 @@ export async function startVoiceStack(
             return !english.looksEnglish(said) || endsDangling(said);
           },
           // The wait is long enough for most of the cloud's listen: start it now.
-          onHeldWords: (userId, { text, samples }) => {
-            const m = wakeDetector.matchLoose(text);
-            const said = m.woke ? m.remainder : text;
-            const kind = classify(said)?.kind;
-            const forHer = m.woke || ctl.listeningTo(userId, performance.now() - (samples.length / 16_000) * 1000);
-            if (forHer && said.trim() && kind !== 'stop' && kind !== 'name' && cloudSttFor(rm, userId) && !inHerCall(userId)) early.set(samples, cloudListen(samples));
-          },
+          onHeldWords: (userId, { text, samples }) => listenEarly(userId, text, samples, performance.now() - (samples.length / 16_000) * 1000),
         },
+        // Recognize during the silence wait; the cloud's listen can start there too.
+        config.satellite.earlyListen ? { minSilence: EARLY_SILENCE, onWords: (userId, { text, samples, startedAt, signal }) => listenEarly(userId, text, samples, startedAt, { dropped: signal, unlessDangling: true }) } : undefined,
       )
     : new ListeningPipeline(source, stt, wakeDetector, vad);
   pipeline.on('heard', (e) => void heard(e).catch((err: Error) => log.warn('heard failed', { error: err.message })));
@@ -1588,6 +1602,7 @@ export async function startVoiceStack(
         closedBy: e.closedBy,
         turnCheckMs: e.turnCheckMs,
         holdMs: e.holdMs,
+        ...(e.early ? { early: true } : {}),
         ...(e.loose ? { loose: true } : {}),
         // Side talk stays out of the log, even when transcripts are on.
         ...(config.satellite.logTranscripts && forBot ? { text: e.text } : {}),

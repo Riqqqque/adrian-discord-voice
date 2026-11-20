@@ -216,10 +216,13 @@ export const PocConfigSchema = z.object({
       recordDays: z.number().int().min(0).max(14).default(0),
       /** At a PC, when a pause sounds mid-sentence (Smart Turn), wait this much longer before answering, ms. 0 = off. */
       unfinishedWaitMs: z.number().int().min(0).max(3000).default(1200),
+      /** At a PC, start recognizing (and the cloud listen) 0.32 s into a pause instead of after the full wait;
+       *  the words are used only if the full wait then closes the same audio. About 0.5 s sooner answers. */
+      earlyListen: z.boolean().default(true),
       /** While the PC app says its owner is in a game: her name for every turn there, short answers, reminders kept for after. */
       quietWhileGaming: z.boolean().default(true),
     })
-    .default({ enabled: false, bind: '0.0.0.0', port: 8791, logTranscripts: false, recordDays: 0, unfinishedWaitMs: 1200, quietWhileGaming: true }),
+    .default({ enabled: false, bind: '0.0.0.0', port: 8791, logTranscripts: false, recordDays: 0, unfinishedWaitMs: 1200, earlyListen: true, quietWhileGaming: true }),
   /** message_member: passing messages on by DM or an @mention in a channel. */
   messaging: z
     .object({

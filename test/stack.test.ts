@@ -179,7 +179,7 @@ async function rig(over: Record<string, unknown> | ((dir: string) => Record<stri
   });
   const steps: { parts: unknown[]; hang?: boolean; lingerMs?: number }[] = [];
   const llmBodies: any[] = [];
-  const groq = { calls: 0, done: 0, delay: 0, reply: '' };
+  const groq = { calls: 0, done: 0, aborted: 0, delay: 0, reply: '' };
   const search = { calls: 0 };
   vi.stubGlobal('fetch', async (url: unknown, init: any) => {
     const u = String(url);
@@ -190,7 +190,10 @@ async function rig(over: Record<string, unknown> | ((dir: string) => Record<stri
     }
     if (u.includes('audio/transcriptions')) {
       groq.calls++;
-      await sleep(groq.delay);
+      await new Promise<void>((res, rej) => {
+        const t = setTimeout(res, groq.delay);
+        init.signal?.addEventListener('abort', () => (clearTimeout(t), groq.aborted++, rej(new DOMException('aborted', 'AbortError'))), { once: true });
+      });
       groq.done++;
       return new Response(JSON.stringify({ text: groq.reply }), { status: 200 });
     }
@@ -2041,6 +2044,121 @@ describe('the cloud listen during a hold', () => {
     turn.onHeldWords!(OWNER, { text: 'hey adrian what is the', samples: new Float32Array(16_000) });
     await sleep(30);
     expect(r.groq.calls).toBe(0);
+    await r.stack.stop();
+  });
+});
+
+describe('the cloud listen during the silence wait', () => {
+  const cloud = { cloudStt: { enabled: true } };
+  const QUESTION = 'Hey Adrian, what is the capital of Australia';
+  type Early = { minSilence: number; onWords(userId: string, w: { text: string; samples: Float32Array; startedAt: number; signal: AbortSignal }): void };
+  const earlyOf = (pipe: EventEmitter) => (pipe as unknown as { args: (Early | undefined)[] }).args[5];
+  const say = (e: Early, text: string, samples = new Float32Array(16_000), signal = new AbortController().signal) => e.onWords(OWNER, { text, samples, startedAt: performance.now() - 1000, signal });
+
+  it('satellite.earlyListen false turns it off', async () => {
+    const r = await rig({ ...cloud, satellite: { enabled: true, port: 40000, unfinishedWaitMs: 0, earlyListen: false } });
+    const { pipe } = r.connect();
+    expect(earlyOf(pipe)).toBeUndefined();
+    await r.stack.stop();
+  });
+
+  it('a PC listens early, the call does not', async () => {
+    const r = await rig(cloud);
+    const { pipe } = r.connect();
+    expect(earlyOf(pipe)!.minSilence).toBe(0.32);
+    expect(earlyOf(r.discordPipe)).toBeUndefined();
+    await r.stack.stop();
+  });
+
+  it('starts on early words with her name, and the answer uses that one listen', async () => {
+    const r = await rig(cloud);
+    const { pipe } = r.connect();
+    r.groq.reply = QUESTION;
+    const samples = new Float32Array(16_000);
+    say(earlyOf(pipe)!, 'hey adrian what is the capital of australia', samples);
+    await until(() => r.groq.calls === 1, 'the cloud listen');
+    r.heard(pipe, OWNER, 'hey adrian what is the capital of australia', 'what is the capital of australia', 1, { samples });
+    await until(() => r.llmBodies.length === 1, 'the model');
+    expect(r.groq.calls).toBe(1);
+    expect(asPrompt(r.llmBodies[0])).toContain('capital of Australia');
+    await r.stack.stop();
+  });
+
+  it('a hold on the same clip does not ask again', async () => {
+    const { r, pipe, turn } = await holding(cloud);
+    r.groq.reply = QUESTION;
+    const samples = new Float32Array(16_000);
+    say(earlyOf(pipe)!, 'hey adrian what is the capital of australia', samples);
+    turn.onHeldWords!(OWNER, { text: 'hey adrian what is the capital of australia', samples });
+    await until(() => r.groq.calls === 1, 'the cloud listen');
+    await sleep(20);
+    expect(r.groq.calls).toBe(1);
+    await r.stack.stop();
+  });
+
+  it('a dropped clip stops its listen quietly, and the clip heard gets its own', async () => {
+    const r = await rig(cloud);
+    const { pipe } = r.connect();
+    r.groq.delay = 200;
+    r.groq.reply = QUESTION;
+    const ctl = new AbortController();
+    say(earlyOf(pipe)!, 'hey adrian what is the capital of australia', new Float32Array(16_000), ctl.signal);
+    await until(() => r.groq.calls === 1, 'the cloud listen');
+    ctl.abort();
+    await until(() => r.groq.aborted === 1, 'the abort');
+    r.groq.delay = 0;
+    r.heard(pipe, OWNER, 'hey adrian what is the capital of australia and why', 'what is the capital of australia and why');
+    await until(() => r.llmBodies.length === 1, 'the model');
+    expect(r.groq.calls).toBe(2);
+    expect(r.warned).not.toContain('cloud speech-to-text failed; using local words');
+    await r.stack.stop();
+  });
+
+  it('inside the follow-up window, judged from when they started talking', async () => {
+    const r = await rig(cloud);
+    const { pipe } = r.connect();
+    await answered(r, OWNER, pipe);
+    const before = r.groq.calls;
+    const e = earlyOf(pipe)!;
+    e.onWords(OWNER, { text: 'and what about new zealand', samples: new Float32Array(16_000), startedAt: performance.now(), signal: new AbortController().signal });
+    await until(() => r.groq.calls === before + 1, 'the cloud listen');
+    // begun after the window closed: not for her
+    e.onWords(OWNER, { text: 'and what about new zealand', samples: new Float32Array(16_000), startedAt: performance.now() + 60_000, signal: new AbortController().signal });
+    await sleep(30);
+    expect(r.groq.calls).toBe(before + 1);
+    await r.stack.stop();
+  });
+
+  it.each([
+    ['side talk', 'so then we went to the store'],
+    ['her name alone', 'hey adrian'],
+    ['a stop', 'hey adrian stop'],
+    ['words that stop mid-thought', 'hey adrian open'],
+  ])('not for %s', async (_what, words) => {
+    const r = await rig(cloud);
+    const { pipe } = r.connect();
+    say(earlyOf(pipe)!, words);
+    await sleep(30);
+    expect(r.groq.calls).toBe(0);
+    await r.stack.stop();
+  });
+
+  it('not when the call has these words', async () => {
+    const r = await rig(cloud);
+    const { pipe } = r.connect();
+    r.voiceStates.set(OWNER, { channelId: CALL, mute: false, deaf: false });
+    say(earlyOf(pipe)!, 'hey adrian what is the capital of australia');
+    await sleep(30);
+    expect(r.groq.calls).toBe(0);
+    await r.stack.stop();
+  });
+
+  it('push-to-talk counts as for her', async () => {
+    const r = await rig(cloud);
+    const { conn, pipe } = r.connect();
+    conn.emit('ptt');
+    say(earlyOf(pipe)!, 'what is the capital of australia');
+    await until(() => r.groq.calls === 1, 'the cloud listen');
     await r.stack.stop();
   });
 });
