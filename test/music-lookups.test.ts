@@ -777,14 +777,16 @@ describe('direct YouTube Music search', () => {
   });
 
   it.each([
-    ['a long song', [song(id('echoes'), '23:31'), song(id('cover'), '4:10')]],
-    ['one with no duration it can read', [song(id('first')), song(id('cover'), '4:10')]],
-  ])('never passes over the top result for a lower one: %s goes to yt-dlp', async (_n, items) => {
+    ['a long song', [song(id('echoes'), '23:31'), song(id('cover'), '4:10')], id('echoes')],
+    ['one with no duration it can read', [song(id('first')), song(id('cover'), '4:10')], id('first')],
+  ])('never passes over the top result for a lower one: %s plays as yt-dlp would find it', async (_n, items, top) => {
     const s = await api(json(results(...items)));
-    const r = rig({ searchApi: s.url });
-    expect(await r.yt.find('x', sig())).toMatchObject({ id: id('song') });
+    const calls: string[] = [];
+    const r = rig({ searchApi: s.url, run: videos(calls, []) });
+    // Asked with words it doesn't match: a long one isn't checked against them.
+    expect(await r.yt.find('ninety minutes of rain', sig())).toMatchObject({ id: top });
     await s.close();
-    expect(r.calls[0]).toContain('#songs');
+    expect(calls).toEqual([`https://www.youtube.com/watch?v=${top}`]);
   });
 
   it('skips a top row with no id, as yt-dlp does', async () => {
@@ -810,7 +812,6 @@ describe('direct YouTube Music search', () => {
     ['a changed shape', json({ contents: { somethingElse: true } })],
     ['a body of null', json(null)],
     ['a row of null', json(results(null as never))],
-    ['columns of the wrong type', json(results({ musicResponsiveListItemRenderer: { playlistItemData: { videoId: id('x') }, flexColumns: [{}, { musicResponsiveListItemFlexColumnRenderer: { text: { runs: 'nope' } } }] } }))],
     ['no results', json(results())],
     ['an id that is not one', json(results(song('short', '3:00')))],
   ])('falls through to yt-dlp on %s', async (_name, reply) => {
@@ -819,6 +820,14 @@ describe('direct YouTube Music search', () => {
     expect(await r.yt.find('x', sig())).toMatchObject({ id: id('song') });
     await s.close();
     expect(r.calls[0]).toContain('#songs');
+  });
+
+  it('takes a top row whose columns it cannot read as one it cannot check (yt-dlp would take the same id)', async () => {
+    const s = await api(json(results({ musicResponsiveListItemRenderer: { playlistItemData: { videoId: id('x') }, flexColumns: [{}, { musicResponsiveListItemFlexColumnRenderer: { text: { runs: 'nope' } } }] } })));
+    const r = rig({ searchApi: s.url });
+    expect(await r.yt.songId('x', sig())).toEqual({ id: id('x'), via: 'direct' });
+    await s.close();
+    expect(r.calls).toEqual([]);
   });
 
   it('falls through when the connection fails', async () => {
