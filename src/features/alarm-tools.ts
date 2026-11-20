@@ -277,8 +277,8 @@ export function alarmTools(d: AlarmToolDeps): Tool[] {
           which: { type: 'string' },
           time: { type: 'string' },
           repeat: { type: 'string' },
-          label: { type: 'string' },
-          sound: { type: 'string' },
+          label: { type: 'string', description: 'The new label; "none" takes it off.' },
+          sound: { type: 'string', description: 'A sound name from alarm_options; "default" puts their default back.' },
           play: { type: 'string' },
           date: { type: 'string' },
           on: { type: 'boolean' },
@@ -359,8 +359,15 @@ export function alarmTools(d: AlarmToolDeps): Tool[] {
           spoken.push("it's not skipping any days now");
         }
       }
-      // An empty label or sound is the model filling in a field, not a change.
-      if (str(a.label) && str(a.label).slice(0, 80) !== (hit.label ?? '')) {
+      // An empty label or sound is the model filling in a field, not a change;
+      // "none" takes the label off, and "default" puts their default sound back.
+      if (/^(?:none|no label|nothing|clear|remove it)$/i.test(str(a.label))) {
+        if (hit.label) {
+          delete hit.label;
+          said.push('no label');
+          spoken.push("it has no label now");
+        }
+      } else if (str(a.label) && str(a.label).slice(0, 80) !== (hit.label ?? '')) {
         hit.label = str(a.label).slice(0, 80);
         said.push(`label "${hit.label}"`);
         spoken.push(`it's called ${hit.label} now`);
@@ -503,8 +510,8 @@ export function alarmTools(d: AlarmToolDeps): Tool[] {
           sound: { type: 'string' },
           query: { type: 'string' },
           name: { type: 'string' },
-          default_sound: { type: 'string' },
-          timer_sound: { type: 'string' },
+          default_sound: { type: 'string', description: 'A sound name; "default" goes back to the standard one.' },
+          timer_sound: { type: 'string', description: 'A sound name; "default" goes back to the standard one.' },
           snooze_minutes: { type: 'number' },
           ring_minutes: { type: 'number' },
           fade_in_seconds: { type: 'number' },
