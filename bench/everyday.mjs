@@ -51,10 +51,10 @@ let ok = 0;
 let total = 0;
 const fails = [];
 /** `tool`: a name that must be called (with `args` true), null for no tool at all, 'any' for either. */
-async function ask(text, { tool = null, args = () => true, says, max = 20, min = 0, user = `u${total}` } = {}) {
+async function ask(text, { tool = null, args = () => true, says, max = 20, min = 0, user = `u${total}`, via = o } = {}) {
   calls.length = 0;
   let out = '';
-  for await (const ch of o.ask(user, 'Sam', text, AbortSignal.timeout(30_000), undefined, { channelId: 'call', guildId: 'g' })) out += (out ? ' ' : '') + ch;
+  for await (const ch of via.ask(user, 'Sam', text, AbortSignal.timeout(30_000), undefined, { channelId: 'call', guildId: 'g' })) out += (out ? ' ' : '') + ch;
   const toolOk = tool === 'any' ? true : tool === null ? calls.length === 0 : calls.some((k) => k.name === tool && args(k.args));
   const saysOk = !says || says.test(out);
   const short = words(out) <= max;
@@ -135,6 +135,28 @@ async function keep() {
   await ask('what alarms and timers do I have', { tool: 'list_timers', user, says: all(/6:30|six thirty/i, /9:15|nine fifteen/i, /pizza/i), max: 60 });
   await ask('what are my reminders', { tool: 'list_timers', user, says: all(/mom/i, /recycling/i), max: 45 });
   await ask('what alarm sounds are there', { tool: 'alarm_options', says: { test: (out) => ['classic', 'chime', 'bells', 'marimba', 'gentle', 'birds', 'pulse', 'digital', 'buzzer'].filter((n) => new RegExp(n, 'i').test(out)).length >= 8 }, max: 70 });
+  // The music queue: four songs after the one playing, all named.
+  const track = (title, artist) => ({ title, artist, source: 'youtube', ref: '' });
+  const queue = [track('Ivy', 'Frank Ocean'), track('Redbone', 'Childish Gambino'), track('Kill Bill', 'SZA'), track('Electric Feel', 'MGMT')];
+  const player = new Proxy({}, {
+    get: (_t, k) => {
+      if (k === 'nowPlaying') return track('Nights', 'Frank Ocean');
+      if (k === 'upNext') return queue;
+      if (k === 'lent') return undefined;
+      if (k === 'recent') return [];
+      if (k === 'paused' || k === 'youtubePaused') return false;
+      if (k === 'autoplay') return true;
+      return async () => ({ ok: true });
+    },
+  });
+  const qkit = prodKit(c, { record: (name, args) => calls.push({ name, args }), answers, pc: 'absent', player });
+  const qo = new ConversationOrchestrator(llm, new SessionMemory(16, 3_600_000), qkit.tools, { ...qkit.options, context: (x) => [...qkit.options.context(x), `In the voice call with ${x.speaker}: Kim, Alex.`] });
+  await ask("what's in the queue", { via: qo, says: all(/ivy/i, /redbone/i, /kill bill/i, /electric feel/i), max: 45 });
+  // A warning that is a caveat on a how-to, not the question itself.
+  await ask('how do I change a light fixture', { ...warn, says: /breaker|power (is )?off|turn off the (power|electricity)|switch off the (power|circuit)|cut the power|kill the power/i });
+  await ask('how do I get mold off the grout with bleach', { ...warn, says: /ventilat|window|fan|gloves|mask|don'?t mix|never mix|ammonia|fumes/i });
+  await ask('how do I jump start my car', { ...warn, says: /red|positive|negative last|black last|ground|unpainted|metal/i });
+  await ask("what's the fastest way to thaw a frozen turkey", { ...warn, says: /fridge|refrigerator|cold water|not (on )?the counter|room temperature/i });
 }
 
 async function main() {
