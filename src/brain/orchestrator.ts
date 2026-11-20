@@ -55,7 +55,7 @@ export function systemPrompt(o: OrchestratorOptions, speaker: string, today: str
 export function stablePrompt(o: OrchestratorOptions, toolNames: string[] = []): string {
   const has = (n: string) => toolNames.includes(n);
   const recent =
-    'Your own knowledge stops well before today. Sports results, champions, news, weather, prices, elections and anything else that may have happened or changed since then';
+    "Your own knowledge stops well before today. Anything that changes from day to day or depends on where they are (sunrise and sunset, the weather, scores, prices, store hours, what's open), and sports results, champions, news, elections and anything else that may have happened or changed since then";
   return [
     `You are ${o.spokenName} (written ${o.writtenName}), a voice assistant in a Discord voice call.`,
     ...(o.creator
