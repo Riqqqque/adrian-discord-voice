@@ -3,7 +3,7 @@
 // only when it's needed, stay short enough to listen to, and admit what she
 // can't do? Web searches get canned results (no network); timers and notes run
 // for real on stubs. Each case is a fresh conversation unless it's a follow-up.
-//   node bench/everyday.mjs <bot.json> [--holdout]
+//   node bench/everyday.mjs <bot.json> [--holdout | --long]
 import { AnthropicLlm } from '../dist/brain/anthropic.js';
 import { ConversationOrchestrator } from '../dist/brain/orchestrator.js';
 import { SessionMemory } from '../dist/brain/sessions.js';
@@ -51,23 +51,25 @@ let ok = 0;
 let total = 0;
 const fails = [];
 /** `tool`: a name that must be called (with `args` true), null for no tool at all, 'any' for either. */
-async function ask(text, { tool = null, args = () => true, says, max = 20, user = `u${total}` } = {}) {
+async function ask(text, { tool = null, args = () => true, says, max = 20, min = 0, user = `u${total}` } = {}) {
   calls.length = 0;
   let out = '';
   for await (const ch of o.ask(user, 'Sam', text, AbortSignal.timeout(30_000), undefined, { channelId: 'call', guildId: 'g' })) out += (out ? ' ' : '') + ch;
   const toolOk = tool === 'any' ? true : tool === null ? calls.length === 0 : calls.some((k) => k.name === tool && args(k.args));
   const saysOk = !says || says.test(out);
   const short = words(out) <= max;
+  const full = words(out) >= min;
   const clean = !OPENERS.test(out.trim()) && !/\n- |\*\*|https?:/.test(out);
-  const pass = toolOk && saysOk && short && clean;
+  const pass = toolOk && saysOk && short && full && clean;
   total++;
   if (pass) ok++;
   else fails.push(text);
-  const why = [!toolOk && 'tool', !saysOk && 'content', !short && 'long', !clean && 'style'].filter(Boolean).join(',');
+  const why = [!toolOk && 'tool', !saysOk && 'content', !short && 'long', !full && 'too short', !clean && 'style'].filter(Boolean).join(',');
   console.log(`${pass ? 'ok ' : 'BAD'} "${text}"${why ? `  [${why}]` : ''}\n    tools: ${calls.map((k) => `${k.name}${JSON.stringify(k.args)}`).join(' ') || '-'}\n    says (${words(out)} words): ${out.slice(0, 300)}`);
 }
 
 if (process.argv.includes('--holdout')) await holdout();
+else if (process.argv.includes('--long')) await long();
 else await main();
 console.log(`\n${ok}/${total} right${fails.length ? `; failed: ${fails.map((f) => JSON.stringify(f)).join(', ')}` : ''}`);
 
@@ -93,6 +95,19 @@ async function holdout() {
   await ask('we just got a new puppy', { max: 25, user: 'puppy' });
   await ask('what should we name him', { max: 30, user: 'puppy' });
   await ask('ugh my back hurts', { max: 30 });
+}
+
+// Where short is wrong: they asked for the whole thing, a warning must stay,
+// or a game needs her to ask. Checks the answer didn't get cut to fit.
+async function long() {
+  await ask('give me a simple recipe for pancakes', { says: /flour[\s\S]*(egg|milk)|(egg|milk)[\s\S]*flour/i, min: 25, max: 150 });
+  await ask('tell me a short bedtime story', { min: 50, max: 250 });
+  await ask('walk me through changing a flat tire', { says: /jack/i, min: 30, max: 160 });
+  await ask('can you explain how compound interest works, in detail', { says: /interest on (the )?interest|interest.{0,40}(adds|added|earn)/i, min: 40, max: 180 });
+  await ask('my kid just swallowed a button battery, what do I do', { says: /911|emergency|\bER\b|hospital|poison control/i, max: 60 });
+  await ask('is it okay to take tylenol a couple hours after advil', { says: /yes|yeah|fine|okay|safe|can/i, max: 50 });
+  await ask("let's play trivia", { tool: 'game', args: (a) => a.action === 'start', says: /\?/, max: 45 });
+  await ask("what's the difference between baking soda and baking powder", { says: /acid/i, max: 45 });
 }
 
 async function main() {
