@@ -263,6 +263,27 @@ describe('recognizing during the silence wait', () => {
     expect(t.heard[0]!.early).toBe(true);
   });
 
+  it('side talk Smart Turn doubts is let go as soon as the check answers, since its words are already there', async () => {
+    // Without early words, "talking again?" is asked when the decode ends; with them, when
+    // Smart Turn answers. Speech that resumes in between is joined in one case, not the other.
+    const turn = { holdMs: 500, detector: { complete: async () => 0.2 }, shouldHold: () => false };
+    const run = async (early: boolean) => {
+      const t = setup({ turn, decodeMs: 40, ...(early ? {} : { early: false as const }) });
+      const clip = speech(1);
+      if (early) {
+        t.quickClose(clip);
+        await wait(60); // its words are in before the full wait closes
+      }
+      t.fullClose(Float32Array.from(clip));
+      await wait(10);
+      t.p.vad.speaking = true; // they start talking again before a fresh decode would end
+      await wait(80);
+      return t.heard.length;
+    };
+    expect(await run(false)).toBe(0); // held, to be joined with what comes next
+    expect(await run(true)).toBe(1); // released on its own
+  });
+
   it('is off unless both waits are whole Silero windows', () => {
     // 1.0 s is 31.25 windows: the two VADs would cut the same speech apart
     const t = setup({ vadSilence: 1.0 });
