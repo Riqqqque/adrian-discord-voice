@@ -1354,12 +1354,11 @@ export async function startVoiceStack(
   /** Owners: the configured IDs plus the bot's app owner. */
   const isOwner = (id: UserId) => config.owners.includes(id) || id === voiceCommands.ownerId();
   /** Has one of the priority roles (config priorityRoleIds) in her server. Read
-   *  from the member cache, or the member a voice state carries: without the
-   *  Members intent someone the bot hasn't seen in voice or chat reads as no. */
+   *  from the member cache (discord.js fills it from voice states and messages):
+   *  without the Members intent someone the bot hasn't seen in voice or chat reads as no. */
   function hasPriorityRole(id: UserId): boolean {
     if (!priorityRoles.size) return false;
-    const g = client.guilds.cache.get(spot?.guildId ?? config.guildId);
-    const m = g?.members.cache.get(id) ?? g?.voiceStates.cache.get(id)?.member;
+    const m = client.guilds.cache.get(spot?.guildId ?? config.guildId)?.members.cache.get(id);
     return !!m && m.roles.cache.some((r) => priorityRoles.has(r.id));
   }
   /** Not a guest for the daily share (limits.guestDailyUsd): owners, the
@@ -1509,8 +1508,9 @@ export async function startVoiceStack(
     const vs = at ? client.guilds.cache.get(at.guildId)?.voiceStates.cache.get(pc.owner) : undefined;
     return !!vs && vs.channelId === at!.channelId && !vs.deaf;
   }
-  /** How long she takes words without her name at this PC, for its orb: none while it takes only push-to-talk. */
-  const pcListenMs = (pc: SatelliteConnection, c: ConversationController) => (pcGuarded(pc) ? 0 : c.listenLeftMs(pc.owner));
+  /** How long she takes words without her name at this PC, for its orb: none
+   *  while it takes only push-to-talk, or leaves their words to her call. */
+  const pcListenMs = (pc: SatelliteConnection, c: ConversationController) => (pcGuarded(pc) || inHerCall(pc.owner) ? 0 : c.listenLeftMs(pc.owner));
   const CALL_PLAYS_HERE = 'Your Discord call plays on this PC, so here I only take push-to-talk.';
   /** When each PC last got the soft "only push-to-talk here" chime. */
   const noticedAt = new WeakMap<SatelliteConnection, number>();
@@ -1545,7 +1545,8 @@ export async function startVoiceStack(
     const kind = classify(said)?.kind;
     const forHer = m.woke || ctl.listeningTo(userId, startedAt) || pttOpen();
     // heard() drops what a PC hears while its speakers play a call: not worth a listen.
-    if (!forHer || !said.trim() || kind === 'stop' || kind === 'name' || !cloudSttFor(rm, userId) || (!!rm.ui && pcGuarded(rm.ui) && !pttOpen())) return;
+    // Nor what it leaves to her call, which runs its own listen.
+    if (!forHer || !said.trim() || kind === 'stop' || kind === 'name' || !cloudSttFor(rm, userId) || (!!rm.ui && !pttOpen() && (pcGuarded(rm.ui) || inHerCall(userId)))) return;
     if (o.unlessDangling && endsDangling(said)) return;
     early.set(samples, cloudListen(samples, o.dropped));
   }
@@ -1582,8 +1583,9 @@ export async function startVoiceStack(
     // Asking whether push-to-talk covers it also uses up a one-shot press, whatever was said.
     const p = ptt?.said(e.vadClosedAt ?? e.segmentClosedAt) ?? { ptt: false, first: false };
     // The first thing said with it needs no name. What follows in the same hold
-    // goes on as more of it (or a follow-up), as it would without the key.
-    if (!e.woke && p.first) e = { ...e, woke: true, command: e.text };
+    // while she's still on it goes on as more of it; once she's done, it's a new
+    // request of its own, not a follow-up to judge.
+    if (!e.woke && p.ptt && (p.first || !ctl.busy)) e = { ...e, woke: true, command: e.text };
     const first = classify(e.woke ? e.command : e.text);
     const stop = first?.kind === 'stop';
     // They're heard in her call itself, and it answers. It can still reach this PC through the PC tools.
@@ -1979,6 +1981,8 @@ export async function startVoiceStack(
         });
         conn.on('closed', () => {
           ptt.close();
+          // A press cut short by the drop mustn't keep her call off their words.
+          pcHasWords.delete(conn.owner);
           quiet.disconnected(conn);
           ctl.cancelAll();
           rm.music?.stop();

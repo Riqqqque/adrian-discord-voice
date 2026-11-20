@@ -332,16 +332,17 @@ describe('what an answer costs', () => {
     const ROLE = '100000000000000080';
     const r = await rig({ owners: [OWNER], identity: { creator: 'Morgan', creatorIds: [CREATOR] }, priorityRoleIds: [ROLE], limits: { perUserPerHour: 0, dailyUsd: 1, monthlyUsd: 0, guestDailyUsd: 0.001 } });
     const id = who === 'a creator account' ? CREATOR : SAM;
-    // Seen in voice: the member comes with the voice state, Members intent or not.
-    const member = (roles: [string, { id: string }][]) => ({ channelId: CALL, mute: false, deaf: false, member: { roles: { cache: new Collection(roles) } } });
-    r.voiceStates.set(SAM, member([[ROLE, { id: ROLE }]]));
+    // Seen in voice or chat: discord.js keeps the member, Members intent or not.
+    const members = r.client.guilds.cache.get(GUILD).members.cache as Map<string, unknown>;
+    const member = (roles: [string, { id: string }][]) => members.set(SAM, { roles: { cache: new Collection(roles) } });
+    member([[ROLE, { id: ROLE }]]);
     r.ledger.addCost(0.01, id);
     r.heard(r.discordPipe, id, 'hey adrian capital of peru', 'capital of peru');
     await until(() => r.llmBodies.length === 1, 'the model');
     await until(() => r.stack.answers().length === 1, 'the answer');
     if (id === SAM) {
       // Without the role: a guest again.
-      r.voiceStates.set(SAM, member([]));
+      member([]);
       r.heard(r.discordPipe, SAM, 'hey adrian capital of chile', 'capital of chile');
       await until(() => r.tts.calls.some((t) => t.includes('share of today')), 'the notice');
       expect(r.llmBodies).toHaveLength(1);
@@ -803,6 +804,34 @@ describe('push-to-talk held down (apps from 0.17.2)', () => {
     await r.stack.stop();
   });
 
+  it('said again in the same hold after her answer, it is a new request, not a follow-up to judge', async () => {
+    const r = await rig();
+    r.voiceStates.set(OWNER, MUTED);
+    const { conn, pipe } = r.connect();
+    conn.emit('ptt', { hold: true });
+    r.heard(pipe, OWNER, 'open spotify');
+    await until(() => r.stack.answers().length === 1, 'the answer');
+    await sleep(20);
+    r.heard(pipe, OWNER, 'and turn it up');
+    await until(() => r.llmBodies.length === 2, 'the second request');
+    expect(asPrompt(r.llmBodies[1])).not.toContain(JUDGE_LINE);
+    expect(JSON.stringify(r.llmBodies[1].messages.at(-1).content)).toContain('and turn it up');
+    conn.emit('pttUp');
+    await r.stack.stop();
+  });
+
+  it('a PC that drops mid-press leaves her call free to take their words', async () => {
+    const r = await rig();
+    r.voiceStates.set(OWNER, { channelId: CALL, mute: false, deaf: false });
+    const { conn } = r.connect();
+    conn.emit('ptt', { hold: true });
+    conn.open = false;
+    conn.emit('closed');
+    r.heard(r.discordPipe, OWNER, 'hey adrian open spotify', 'open spotify');
+    await until(() => r.llmBodies.length === 1, 'the call to answer');
+    await r.stack.stop();
+  });
+
   it('the press and the release each cut what is being heard there', async () => {
     const r = await rig();
     const { conn, pipe } = r.connect();
@@ -872,6 +901,19 @@ describe('a PC on headphones', () => {
     lock(r, pipe);
     await until(() => r.llmBodies.length === 1, 'the model');
     expect(conn.transcripts).not.toContain(CALL_PLAYS_HERE);
+    await r.stack.stop();
+  });
+
+  it('heard in her call itself, nothing goes to the cloud listen at the PC: the call runs its own', async () => {
+    const r = await rig({ cloudStt: { enabled: true, rooms: 'all' } });
+    r.voiceStates.set(OWNER, { channelId: CALL, mute: false, deaf: false });
+    const { conn, pipe } = r.connect();
+    conn.output = 'headphones';
+    const early = (pipe as unknown as { args: ({ onWords(u: string, w: unknown): void } | undefined)[] }).args[5]!;
+    early.onWords(OWNER, { text: 'hey adrian open spotify', samples: new Float32Array(16_000), startedAt: performance.now() - 1000, signal: new AbortController().signal });
+    lock(r, pipe);
+    await sleep(100);
+    expect(r.groq.calls).toBe(0);
     await r.stack.stop();
   });
 
