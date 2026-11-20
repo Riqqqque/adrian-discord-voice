@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { connect } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -192,6 +192,61 @@ describe('a PC unpaired while connected', () => {
     expect(await again.closed).toBe(1008);
     b.ws.close();
     await server.close();
+  });
+});
+
+describe('a pairings file that cannot be read', () => {
+  async function two() {
+    const dir = mkdtempSync(join(tmpdir(), 'sat-'));
+    const d = new SatelliteDevices(dir);
+    const desk = d.add('Desk PC', OWNER);
+    const laptop = d.add('Laptop', OWNER);
+    const port = 20_000 + Math.floor(Math.random() * 20_000);
+    const conns: SatelliteConnection[] = [];
+    const errors: string[] = [];
+    const log = { ...quiet, error: (m: string) => void errors.push(m) };
+    const server = startSatelliteServer({ bind: '127.0.0.1', port, devices: d, log: log as never, welcome: () => ({}), onConnect: (c) => conns.push(c), recheckMs: 40 });
+    await new Promise((r) => setTimeout(r, 50));
+    const open = (token: string) =>
+      new Promise<{ ws: WebSocket; got: unknown[] }>((resolve) => {
+        const ws = new WebSocket(`ws://127.0.0.1:${port}/satellite`);
+        const got: unknown[] = [];
+        ws.on('message', (data, bin) => void (bin || got.push(JSON.parse(String(data)))));
+        ws.on('open', () => (ws.send(JSON.stringify({ type: 'hello', token })), setTimeout(() => resolve({ ws, got }), 80)));
+      });
+    const a = await open(desk.token);
+    const b = await open(laptop.token);
+    return { dir, d, server, a, b, errors, open, desk, file: join(dir, 'satellites.json') };
+  }
+
+  it.each([
+    ['cut short', (f: string) => writeFileSync(f, '{"devices":[{"id":')],
+    ['gone', (f: string) => rmSync(f)],
+    ['replaced by a folder move', (f: string) => renameSync(f, `${f}.moved`)],
+  ])('%s: keeps every connected PC, says so loudly, and still refuses new ones', async (_how, spoil) => {
+    const t = await two();
+    spoil(t.file);
+    await new Promise((res) => setTimeout(res, 200));
+    expect(t.server.connections()).toHaveLength(2);
+    expect([...t.a.got, ...t.b.got]).not.toContainEqual(expect.objectContaining({ type: 'denied' }));
+    expect(t.errors).toEqual([expect.stringContaining("can't be read")]); // once, not every round
+    const again = await t.open(t.desk.token);
+    expect(again.got).toContainEqual({ type: 'denied', reason: 'bad token' });
+    t.a.ws.close();
+    t.b.ws.close();
+    await t.server.close();
+  });
+
+  it('read again, a PC it no longer lists is dropped, and unpairing the last one still counts', async () => {
+    const t = await two();
+    writeFileSync(t.file, 'not json');
+    await new Promise((res) => setTimeout(res, 120));
+    expect(t.server.connections()).toHaveLength(2);
+    writeFileSync(t.file, JSON.stringify({ devices: [] })); // what removing the last PC leaves
+    await new Promise((res) => setTimeout(res, 150));
+    expect(t.server.connections()).toHaveLength(0);
+    expect(t.a.got).toContainEqual({ type: 'denied', reason: 'unpaired' });
+    await t.server.close();
   });
 });
 
