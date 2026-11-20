@@ -232,13 +232,14 @@ Alarms and timers ring with a sound until you stop them, the way an alarm clock 
   - A time that doesn't exist on the night the clocks spring forward (2:30) rings an hour on, like a phone.
 - **Where it rings:**
   - In its call if you're in it and not deafened.
-  - Muted in the call with the PC app running, it rings at your PC instead, where it can hear you say stop. Muted with no PC, it rings in the call and also sends you the **Stop** and **Snooze** buttons.
-  - Otherwise at your PC if the PC app is running. Otherwise as a DM with **Stop** and **Snooze** buttons.
+  - Muted in the call, it rings in the call and also sends you the **Stop** and **Snooze** buttons in a DM, since a spoken stop can't be heard there. If your PC app says it plays through headphones (or you marked it so in its settings), it rings at the PC instead, where a spoken stop works.
+  - Otherwise at your PC if the PC app is running; while you're in another voice call the bot can see, the DM gets the buttons too. Otherwise as a DM with **Stop** and **Snooze** buttons.
   - It follows you: if you join the call or open the PC app while it rings, it moves there.
   - Music goes down while it rings. When it talks over the alarm (the time, or an answer), the alarm turns down for it.
 - **Turning it off:**
   - Say "stop", "turn it off", "dismiss" or "I'm up". "Snooze", "five more minutes" or "snooze for 10 minutes" snoozes it. You don't need its name.
   - Only you can stop your alarm by voice. An owner can stop anyone's, but only with the name ("Adrian, stop the alarm").
+  - At a PC whose speakers play a voice call you're in, what the PC hears might be someone else: use push-to-talk, the window's or tray's buttons, or the DM's buttons. A spoken stop there gets a soft chime instead.
   - Only whole sentences count: "stop by the store later" or a song called *Stop* does nothing to it, and neither do music commands or "stop listening".
   - "Wait, I'm not up" or "turn it back on" within 3 minutes of a stop puts it back, snoozed.
   - Also from the Stop and Snooze buttons in the PC app's window and tray, the DM buttons, or `/alarm stop`.

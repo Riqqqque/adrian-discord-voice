@@ -14,13 +14,18 @@ export interface Limits {
   dailyUsd: number;
   /** USD per local calendar month (0 = unlimited). */
   monthlyUsd: number;
+  /** USD one person who isn't an owner may spend per local day (0 or unset = no cap of their own). */
+  guestDailyUsd?: number;
 }
 
-export type LimitCheck = { ok: true } | { ok: false; reason: 'user-rate' | 'daily' | 'monthly' };
+export type LimitReason = 'user-rate' | 'guest-daily' | 'daily' | 'monthly';
+export type LimitCheck = { ok: true } | { ok: false; reason: LimitReason };
 
 interface DayRecord {
   costUsd: number;
   requests: number;
+  /** Today's spend by person, for the guest cap. Dropped from past days when saved. */
+  users?: Record<UserId, number>;
 }
 
 interface LedgerFile {
@@ -74,12 +79,20 @@ export class UsageLedger {
       .reduce((s, [, r]) => s + r.costUsd, 0);
   }
 
-  /** May this user start a paid request now? */
-  /** `exempt`: skip the per-person hourly limit (owners); spend caps still apply. */
-  check(userId: UserId, exempt = false): LimitCheck {
+  /** What this person has spent today (see addCost). */
+  userTodayUsd(userId: UserId): number {
+    return this.data.days[this.day()]?.users?.[userId] ?? 0;
+  }
+
+  /** May this user start a paid request now? `exempt` (owners): no hourly
+   *  limit and no guest cap. `household` (by default the same; also creator
+   *  accounts and priority-role members): no guest cap. The household's spend
+   *  caps apply to everyone. */
+  check(userId: UserId, exempt = false, household = exempt): LimitCheck {
     const l = this.limits;
     if (l.monthlyUsd > 0 && this.monthUsd() >= l.monthlyUsd) return { ok: false, reason: 'monthly' };
     if (l.dailyUsd > 0 && this.todayUsd() >= l.dailyUsd) return { ok: false, reason: 'daily' };
+    if (!exempt && !household && (l.guestDailyUsd ?? 0) > 0 && this.userTodayUsd(userId) >= l.guestDailyUsd!) return { ok: false, reason: 'guest-daily' };
     if (l.perUserPerHour > 0 && !exempt) {
       const hourAgo = this.now() - 3_600_000;
       const times = (this.recent.get(userId) ?? []).filter((t) => t > hourAgo);
@@ -100,11 +113,15 @@ export class UsageLedger {
     this.scheduleSave();
   }
 
-  /** Add the cost of a finished request. */
-  addCost(usd: number): void {
+  /** Add the cost of a finished request, and whose it was when it was one person's. */
+  addCost(usd: number, userId?: UserId): void {
     if (!(usd > 0)) return;
     const d = (this.data.days[this.day()] ??= { costUsd: 0, requests: 0 });
     d.costUsd += usd;
+    if (userId) {
+      const users = (d.users ??= {});
+      users[userId] = (users[userId] ?? 0) + usd;
+    }
     this.scheduleSave();
   }
 
@@ -113,8 +130,10 @@ export class UsageLedger {
       .sort(([a], [b]) => (a < b ? 1 : -1))
       .slice(0, days)
       .map(([day, r]) => ({ day, costUsd: Number(r.costUsd.toFixed(6)), requests: r.requests }));
+    const today = this.data.days[this.day()];
     return {
-      today: this.data.days[this.day()] ?? { costUsd: 0, requests: 0 },
+      // A copy without the per-person spend: that stays in this file.
+      today: { costUsd: today?.costUsd ?? 0, requests: today?.requests ?? 0 },
       monthUsd: Number(this.monthUsd().toFixed(6)),
       limits: this.limits,
       history,
@@ -135,6 +154,9 @@ export class UsageLedger {
     // Keep ~13 months.
     const keys = Object.keys(this.data.days).sort();
     for (const k of keys.slice(0, Math.max(0, keys.length - 400))) delete this.data.days[k];
+    // Who spent what is only needed for today's guest cap.
+    const today = this.day();
+    for (const [k, d] of Object.entries(this.data.days)) if (k !== today) delete d.users;
     mkdirSync(dirname(this.file), { recursive: true });
     const tmp = `${this.file}.tmp`;
     writeFileSync(tmp, JSON.stringify(this.data), { mode: 0o600 });
@@ -142,8 +164,9 @@ export class UsageLedger {
   }
 }
 
-export const LIMIT_MESSAGES: Record<'user-rate' | 'daily' | 'monthly', string> = {
+export const LIMIT_MESSAGES: Record<LimitReason, string> = {
   'user-rate': "You've asked a lot this hour. I'm pausing your questions for a bit.",
+  'guest-daily': "You've used your share of today's budget, so I'm pausing your questions until tomorrow.",
   daily: "I'm paused for the rest of today because the daily spending limit was reached.",
   monthly: "I'm paused for the rest of the month because the monthly spending limit was reached.",
 };

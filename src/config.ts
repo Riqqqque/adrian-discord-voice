@@ -451,12 +451,14 @@ export const PocConfigSchema = z.object({
       perUserPerHour: z.number().int().min(0).default(30),
       dailyUsd: z.number().min(0).default(1),
       monthlyUsd: z.number().min(0).default(10),
+      /** What one person who isn't an owner may spend per day, USD (0 = no cap of their own). */
+      guestDailyUsd: z.number().min(0).default(0.2),
       /** Where daily totals are kept, so caps survive restarts. */
       usageFile: z.string().min(1).optional(),
       /** Longest question passed to the model, characters. */
       maxRequestChars: z.number().int().min(20).max(4000).default(600),
     })
-    .default({ perUserPerHour: 30, dailyUsd: 1, monthlyUsd: 10, maxRequestChars: 600 }),
+    .default({ perUserPerHour: 30, dailyUsd: 1, monthlyUsd: 10, guestDailyUsd: 0.2, maxRequestChars: 600 }),
   voice: z
     .object({
       modelDir: z.string().min(1),

@@ -147,7 +147,8 @@ server refused this PC (bad token). Check the token in settings."
 ## Using it
 
 - Say "Hey Adrian, ..." anywhere in the room, or hold **Ctrl+Alt+Space** and
-  talk (no "Hey Adrian" needed; it works for the next 15 seconds). You can also
+  talk while you hold it (no "Hey Adrian" needed; with apps before 0.17.2 a
+  press covers the next 15 seconds instead). You can also
   type in the window (up to 2000 characters; while she's offline the text
   isn't sent and stays in the box).
 - After an answer she keeps listening for 20 seconds without her name, so a
@@ -157,10 +158,16 @@ server refused this PC (bad token). Check the token in settings."
 - Closing the window keeps her running in the tray (click the tray icon to
   open it again; Quit is in its menu).
 - **In the bot's Discord call too?** While you're in the same voice channel
-  and not muted or deafened, the call answers instead of the PC, so music
-  plays for everyone. PC orders ("pause Spotify", "open Valorant") still reach
-  your PC. Mute yourself in Discord, hold Ctrl+Alt+Space or type in the window
-  to talk to the PC alone.
+  and not muted, the call answers instead of the PC, so music plays for
+  everyone. PC orders ("pause Spotify", "open Valorant") still reach your PC.
+  Muted in that call, or in any other voice channel the bot can see, your
+  speakers still play it and the PC's mic would hear everyone in it, so the
+  PC then takes only Ctrl+Alt+Space (push-to-talk, for as long as you hold
+  it) and typing in the window. Her name said then gets a soft chime. On
+  headphones or earphones the mic can't hear the call, so hands-free keeps
+  working: Windows says so for most headsets, and for a USB DAC or dock that
+  calls itself speakers, tick "These speakers are headphones" in settings
+  (it's kept per output device). Deafen yourself, or leave the call, also works.
 
 Things to say:
 

@@ -32,13 +32,39 @@ frame arrived most recently (keep-alive pings count, so between two idle PCs
 it can be either).
 
 When the owner is also in the voice call the bot is in, and not muted or
-deafened, the call hears the same words. The call answers, and the PC stays
-quiet: its window shows "Answering in the Discord call." Music and sounds
+deafened, the call hears the same words, so the call answers and the PC stays
+quiet (its window shows "Answering in the Discord call."). Music and sounds
 then play for everyone in the call, and PC orders ("pause Spotify", "open
-Valorant") still reach the PC through the PC tools. The PC takes over again
-when the owner is muted or deafened in Discord, leaves the call, holds
-push-to-talk, or types in the window. A stop said while the PC is busy stays
-with the PC.
+Valorant") still reach the PC through the PC tools. Their requests in the call
+get the same cloud speech-to-text as the PC (`cloudStt`). The PC takes over
+again when the owner leaves the call, holds push-to-talk, or types in the
+window (muted, see below). A stop said while the PC is busy stays with the PC.
+
+While the owner is in a voice call and not deafened, their speakers play it,
+so the PC's mic hears everyone in it, and everything a PC hears counts as its
+owner. The PC app's echo gate only knows her own audio, not Discord's. So
+then (muted in her call, or in any voice channel the bot can see in any of
+its servers, whether or not her own voice link is up) the PC takes only
+push-to-talk and typing in the window. Her name or alarm words said there get
+"Your Discord call plays on this PC, so here I only take push-to-talk." in the
+window, and a soft chime from the PC (`notice`, at most every 20 seconds), so
+it's clear with the window closed. A stop still works by voice: it stops what
+she's saying, music and sounds at the PC, and calls off a restart counting
+down, but not an alarm. Deafened, or in no call, the PC takes speech as usual.
+Disconnecting her from her call or moving the owner elsewhere doesn't lift
+this: any channel the owner is in counts.
+
+Not when the PC plays through headphones: apps from 0.17.2 tell the service
+(`output`), from what Windows says about the default output or the "These
+speakers are headphones" switch in the app's settings (many USB DACs and docks
+say "speakers" whatever is plugged in). An app that doesn't say counts as
+speakers. Calls the bot can't see (servers it isn't in, DM calls, other apps)
+can't be told apart here, so headphones or push-to-talk are the safe setup.
+
+Push-to-talk (apps from 0.17.2) covers everything said from the key going down
+to it going up, pauses included, and nothing before or after: the press and
+the release each cut what's being heard right then. Older apps only send the
+press: the next thing said within 15 seconds is taken.
 
 ## Connection
 
@@ -108,7 +134,8 @@ per-socket limit before the welcome relies on a private field of `ws` 8
 | `speech_start` | | Someone started talking (the PC's loudness gate opened). |
 | *(binary)* | PCM s16le mono 48 kHz | Microphone audio. The app sends it only between `speech_start` and `speech_end`, starting with 300 ms of audio from before the gate opened. The service doesn't enforce this: it takes audio any time after the welcome, and finds the exact speech itself (Silero VAD) and the wake phrase. A binary frame over 256 KiB closes the connection. |
 | `speech_end` | | The gate closed. |
-| `ptt` | `down` | Push-to-talk pressed: the next thing heard within 15 seconds is for her, no wake phrase needed. Only presses count: `down: false` is ignored, and the app never sends it. It also keeps the Discord call off the owner's words from the press until the PC has taken them (at most 15 seconds), and for 3 seconds after. |
+| `ptt` | `down`, optional `hold` | Push-to-talk, no wake phrase needed. `down: true, hold: true` (apps from 0.17.2): everything said until `down: false` is for her, and the press and the release each cut what's being heard right then; a key-up that never comes ends the press after 60 seconds. Without `hold` (older apps, which never send `down: false`): the next thing heard within 15 seconds is for her. While pressed it also keeps the Discord call off the owner's words, and for 3 seconds after. |
+| `output` | `kind` (`headphones`, `speakers` or `unknown`) | What plays sound on this PC: sent after every `welcome` and whenever it changes (apps from 0.17.2). `headphones`: its mic can't hear a call playing there. Anything else, or never sent, counts as speakers. |
 | `text` | `text` | A question typed in the window. Treated as said to her. A typed stop phrase also calls off a pending restart or shutdown. |
 | `stop` | | The stop button or Escape: cancels every answer in that PC's room, stops sounds, and calls off a pending restart or shutdown. |
 | `action_result` | `id`, `ok`, `result`, optional `image` | Outcome of an `action`. `ok` counts only when it is exactly `true`. `result` is text for the model. `image` (`pc_screen` only) is `{ mime, data }`: see [Pictures](#pictures). An unknown `id` is ignored. The only frame that may be over 256 KiB. |
@@ -128,10 +155,11 @@ afterwards.
 | type | fields | meaning |
 |---|---|---|
 | `welcome` | `name`, `owner` | Accepted. `name` is the name the PC was paired with; `owner` is the owner's display name. The app shows "Connected as `name`". |
-| `denied` | `reason` | Rejected (`bad token`, `no hello`); the connection closes with 1008. |
+| `denied` | `reason` | Rejected; the connection closes with 1008. `bad token` and `no hello` answer a hello; `unpaired` comes to a connected PC within 30 seconds of `adrian satellite remove`. |
 | `mode` | `mode` | `thinking` while she works on an answer, `idle` after. No other value is sent (the type also lists `listening` and `speaking`, which are unused: the app learns those from `state`). |
-| `state` | `speaking`, `listenMs` (either or both) | `speaking`: her voice is audible, as opposed to music only (the PC gets both as one stream, and only turns her voice down when you talk over it). `listenMs`: how much longer she takes words without her name there, 0 when she doesn't. Sent when either changes and after `activity` changes. |
+| `state` | `speaking`, `listenMs` (either or both) | `speaking`: her voice is audible, as opposed to music only (the PC gets both as one stream, and only turns her voice down when you talk over it). `listenMs`: how much longer she takes words without her name there, 0 when she doesn't (always 0 while the PC takes only push-to-talk). Sent when either changes and after `activity` changes. |
 | `transcript` | `who` (`you` or `her`), `text`, `final` | What was heard when it was for her, her answer as it grows (`final: false`) and when it's done, reminders, alarms, quiz lines, server announcements, and "Answering in the Discord call." |
+| `notice` | `kind` (`ptt_only`) | Her name or alarm words were heard and left alone, because a call plays through this PC's speakers: the app plays a soft chime (apps from 0.17.2; older ones ignore it). At most every 20 seconds per PC. |
 | *(binary)* | PCM s16le mono 48 kHz | Her voice, music and sounds, in real time: the room's 48 kHz stereo mix averaged to mono. |
 | `audio_stop` | | Drop any audio still buffered (she was interrupted or stopped). |
 | `action` | `id`, `name`, `args` | Do a PC action and answer with `action_result`. Ids count up per connection. |

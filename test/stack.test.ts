@@ -40,10 +40,15 @@ vi.mock('../src/listen/pipeline.js', async (orig) => {
   class ListeningPipeline extends EventEmitter {
     /** What the stack built it with: the turn options are the fifth. */
     readonly args: unknown[];
+    /** Who push-to-talk cut off, in order. */
+    readonly cuts: string[] = [];
     constructor(...args: unknown[]) {
       super();
       this.args = args;
       h.pipes.push(this);
+    }
+    cut(id: string) {
+      this.cuts.push(id);
     }
   }
   return { ...(await orig<typeof import('../src/listen/pipeline.js')>()), ListeningPipeline };
@@ -131,6 +136,10 @@ function fakeConn(owner: string, id: string) {
     open: true,
     isReady: () => c.open,
     transcripts: [] as string[],
+    /** The soft chimes asked for (`notice`). */
+    notices: [] as string[],
+    /** What plays sound there (the app's `output`). */
+    output: 'unknown' as string,
     actions: [] as string[],
     calls: [] as { name: string; args: Record<string, unknown> }[],
     /** Holds PC actions until the test lets go. Like the real ones, they ignore a stop. */
@@ -138,10 +147,17 @@ function fakeConn(owner: string, id: string) {
     /** What the PC answers (default: it worked). */
     reply: { ok: true, result: 'CPU 12%.' },
     mode() {},
-    state() {},
+    /** The `state` messages it was sent. */
+    states: [] as { speaking?: boolean; listenMs?: number }[],
+    state(s: { speaking?: boolean; listenMs?: number }) {
+      c.states.push(s);
+    },
     send() {},
     transcript(who: string, t: string) {
       c.transcripts.push(`${who}: ${t}`);
+    },
+    notice(kind: string) {
+      c.notices.push(kind);
     },
     async action(name: string, args: Record<string, unknown>) {
       if (!c.open) return { ok: false, result: 'The PC disconnected.' };
@@ -249,6 +265,8 @@ async function rig(over: Record<string, unknown> | ((dir: string) => Record<stri
   };
   /** The gateway's ready event: joins the call and starts the timers. */
   const loggedIn = () => client.emit(Events.ClientReady, client);
+  /** What she wrote back in text chat. */
+  const replies: string[] = [];
   /** A message reaching the text chat. No guild: a DM. */
   const typed = (userId: string, content: string, guildId?: string) =>
     client.emit('messageCreate', {
@@ -261,9 +279,9 @@ async function rig(over: Record<string, unknown> | ((dir: string) => Record<stri
       channelId: guildId ? TEXT_CHANNEL : `dm-${userId}`,
       channel: { type: guildId ? ChannelType.GuildText : ChannelType.DM },
       mentions: { users: new Collection(guildId ? [[BOT, {}]] : []), roles: new Collection(), everyone: false },
-      reply: async () => ({}),
+      reply: async (r: { content?: string }) => (replies.push(String(r?.content ?? '')), {}),
     });
-  return { stack, client, ledger, steps, llmBodies, groq, search, tts, transport: h.transport as EventEmitter, discordPipe: h.pipes[0] as EventEmitter, heard, connect, voiceStates, loggedIn, typed, dms, dir, warned, logged };
+  return { replies, stack, client, ledger, steps, llmBodies, groq, search, tts, transport: h.transport as EventEmitter, discordPipe: h.pipes[0] as EventEmitter, heard, connect, voiceStates, loggedIn, typed, dms, dir, warned, logged };
 }
 
 afterEach(() => {
@@ -294,6 +312,59 @@ describe('what an answer costs', () => {
     await r.stack.stop();
   });
 
+  it("a guest past their own share of the day hears why, and nobody else is held back", async () => {
+    const r = await rig({ owners: [OWNER], limits: { perUserPerHour: 0, dailyUsd: 1, monthlyUsd: 0, guestDailyUsd: 0.001 } });
+    r.steps.push({ parts: [text('Canberra.'), usage(1000, 100)] }); // $0.0015
+    r.heard(r.discordPipe, SAM, 'hey adrian capital of australia', 'capital of australia');
+    await until(() => r.stack.answers().length === 1, 'the answer');
+    expect(r.ledger.userTodayUsd(SAM)).toBeCloseTo(0.0015, 6);
+    r.heard(r.discordPipe, SAM, 'hey adrian capital of peru', 'capital of peru');
+    await until(() => r.stack.answers().length === 2, 'the notice');
+    expect(r.llmBodies).toHaveLength(1);
+    expect(r.tts.calls).toContain("You've used your share of today's budget, so I'm pausing your questions until tomorrow.");
+    r.steps.push({ parts: [text('Lima.'), usage(1000, 100)] });
+    r.heard(r.discordPipe, OWNER, 'hey adrian capital of peru', 'capital of peru');
+    await until(() => r.llmBodies.length === 2, 'the owner answered');
+    await r.stack.stop();
+  });
+
+  it.each(['a creator account', 'a priority-role member'])("%s isn't a guest: no share of their own", async (who) => {
+    const CREATOR = '100000000000000070';
+    const ROLE = '100000000000000080';
+    const r = await rig({ owners: [OWNER], identity: { creator: 'Morgan', creatorIds: [CREATOR] }, priorityRoleIds: [ROLE], limits: { perUserPerHour: 0, dailyUsd: 1, monthlyUsd: 0, guestDailyUsd: 0.001 } });
+    const id = who === 'a creator account' ? CREATOR : SAM;
+    // Seen in voice or chat: discord.js keeps the member, Members intent or not.
+    const members = r.client.guilds.cache.get(GUILD).members.cache as Map<string, unknown>;
+    const member = (roles: [string, { id: string }][]) => members.set(SAM, { roles: { cache: new Collection(roles) } });
+    member([[ROLE, { id: ROLE }]]);
+    r.ledger.addCost(0.01, id);
+    r.heard(r.discordPipe, id, 'hey adrian capital of peru', 'capital of peru');
+    await until(() => r.llmBodies.length === 1, 'the model');
+    await until(() => r.stack.answers().length === 1, 'the answer');
+    if (id === SAM) {
+      // Without the role: a guest again.
+      member([]);
+      r.heard(r.discordPipe, SAM, 'hey adrian capital of chile', 'capital of chile');
+      await until(() => r.tts.calls.some((t) => t.includes('share of today')), 'the notice');
+      expect(r.llmBodies).toHaveLength(1);
+    }
+    await r.stack.stop();
+  });
+
+  it('in text chat too: a guest is charged for their answers, and past their share gets the reason, not the model', async () => {
+    const r = await rig({ owners: [OWNER], textChat: { enabled: true, dms: true }, limits: { perUserPerHour: 0, dailyUsd: 1, monthlyUsd: 0, guestDailyUsd: 0.001 } });
+    r.steps.push({ parts: [text('Canberra.'), usage(1000, 100)] }); // $0.0015
+    r.typed(SAM, 'capital of australia?');
+    await until(() => r.ledger.userTodayUsd(SAM) > 0, 'the charge');
+    expect(r.ledger.userTodayUsd(SAM)).toBeCloseTo(0.0015, 6);
+    await sleep(30); // the reply lets go of the person
+    r.typed(SAM, 'capital of peru?');
+    await until(() => r.replies.some((x) => x.includes('share of today')), 'the refusal');
+    expect(r.llmBodies).toHaveLength(1);
+    r.typed(OWNER, 'capital of peru?');
+    await until(() => r.llmBodies.length === 2, 'the owner answered');
+    await r.stack.stop();
+  });
   it('a stop during a search sends no further model call, and the round that ran is charged', async () => {
     const r = await rig();
     r.steps.push({ parts: [toolCall('web_search', '{"query":"weather"}'), usage(1000, 100)] });
@@ -417,6 +488,11 @@ describe('what an answer costs', () => {
   });
 });
 
+const OTHER_GUILD = '100000000000000011';
+const OTHER_CALL = '100000000000000099';
+/** What the PC window says when its speakers may be playing her call. */
+const CALL_PLAYS_HERE = 'her: Your Discord call plays on this PC, so here I only take push-to-talk.';
+
 describe('a request at the PC', () => {
   const ask = (r: Awaited<ReturnType<typeof rig>>, pipe: EventEmitter) => r.heard(pipe, OWNER, 'hey adrian open spotify', 'open spotify');
   const DEFERRED = 'her: Answering in the Discord call.';
@@ -433,26 +509,90 @@ describe('a request at the PC', () => {
   });
 
   it.each([
-    ['muted', { mute: true, deaf: false }],
-    ['deafened', { mute: false, deaf: true }],
-  ])('stays at the PC when they are %s in the call', async (_how, state) => {
+    ['deafened', { channelId: CALL, mute: false, deaf: true }],
+    ['muted and deafened', { channelId: CALL, mute: true, deaf: true }],
+    ['deafened in another channel', { channelId: OTHER_CALL, mute: false, deaf: true }],
+  ])('stays at the PC when they are %s', async (_how, state) => {
     const r = await rig();
-    r.voiceStates.set(OWNER, { channelId: CALL, ...state });
+    r.voiceStates.set(OWNER, state);
     const { pipe } = r.connect();
     ask(r, pipe);
     await until(() => r.llmBodies.length === 1, 'the model');
     await r.stack.stop();
   });
 
-  it.each(['disconnected', 'failed', 'kicked'])('stays at the PC when the voice link is %s, even with them in the channel', async (event) => {
+  it('in another voice channel, its speakers play that call: only push-to-talk counts', async () => {
+    const r = await rig();
+    r.voiceStates.set(OWNER, { channelId: OTHER_CALL, mute: false, deaf: false });
+    const { conn, pipe } = r.connect();
+    ask(r, pipe);
+    await sleep(100);
+    expect(r.llmBodies).toHaveLength(0);
+    expect(conn.transcripts).toContain(CALL_PLAYS_HERE);
+    conn.emit('ptt');
+    ask(r, pipe);
+    await until(() => r.llmBodies.length === 1, 'the model');
+    await r.stack.stop();
+  });
+
+  it("in a voice channel of another server she's in, the same", async () => {
+    const r = await rig();
+    r.client.guilds.cache.set(OTHER_GUILD, { voiceStates: { cache: new Map([[OWNER, { channelId: OTHER_CALL, mute: true, deaf: false }]]) }, members: { cache: new Map() } });
+    const { conn, pipe } = r.connect();
+    ask(r, pipe);
+    await sleep(100);
+    expect(r.llmBodies).toHaveLength(0);
+    expect(conn.transcripts).toContain(CALL_PLAYS_HERE);
+    await r.stack.stop();
+  });
+
+  it('kicked or dragged out of her call by someone, the call still plays there: only push-to-talk counts', async () => {
+    const r = await rig();
+    r.voiceStates.set(OWNER, { channelId: CALL, mute: false, deaf: false });
+    const { conn, pipe } = r.connect();
+    r.transport.emit('kicked', 'dropped');
+    ask(r, pipe);
+    await sleep(100);
+    expect(r.llmBodies).toHaveLength(0);
+    expect(conn.transcripts).toContain(CALL_PLAYS_HERE);
+    await r.stack.stop();
+  });
+
+  it('moved to another channel, the one they stay in still counts', async () => {
+    const r = await rig();
+    r.voiceStates.set(OWNER, { channelId: CALL, mute: false, deaf: false });
+    const { conn, pipe } = r.connect();
+    r.transport.emit('moved', GUILD, OTHER_CALL);
+    ask(r, pipe);
+    await sleep(100);
+    expect(r.llmBodies).toHaveLength(0);
+    expect(conn.transcripts).toContain(CALL_PLAYS_HERE);
+    await r.stack.stop();
+  });
+
+  it('with her voice link down, only the channel she was last in counts', async () => {
+    const r = await rig();
+    r.voiceStates.set(OWNER, { channelId: OTHER_CALL, mute: false, deaf: false });
+    const { pipe } = r.connect();
+    r.transport.emit('disconnected', 'dropped');
+    ask(r, pipe);
+    await until(() => r.llmBodies.length === 1, 'the model');
+    await r.stack.stop();
+  });
+
+  it.each(['disconnected', 'failed'])('with the voice link %s and them still in her channel, their speakers play the call: only push-to-talk counts', async (event) => {
     const r = await rig();
     r.voiceStates.set(OWNER, { channelId: CALL, mute: false, deaf: false });
     const { conn, pipe } = r.connect();
     r.transport.emit(event, 'dropped');
     expect(r.stack.voiceReady()).toBe(false);
     ask(r, pipe);
+    await sleep(100);
+    expect(r.llmBodies).toHaveLength(0);
+    expect(conn.transcripts).toContain(CALL_PLAYS_HERE);
+    conn.emit('ptt');
+    ask(r, pipe);
     await until(() => r.llmBodies.length === 1, 'the model');
-    expect(conn.transcripts).not.toContain(DEFERRED);
     await r.stack.stop();
   });
 
@@ -514,6 +654,296 @@ describe('a request at the PC', () => {
     conn.emit('ptt');
     r.heard(pipe, OWNER, 'open spotify');
     await until(() => r.llmBodies.length === 1, 'the model');
+    await r.stack.stop();
+  });
+});
+
+describe('a PC whose owner is muted in her call', () => {
+  // Their speakers play the call, so the PC mic hears everyone in it, and
+  // everything a PC hears counts as its owner. Only push-to-talk and typing are surely them.
+  const MUTED = { channelId: CALL, mute: true, deaf: false };
+  const lock = (r: Awaited<ReturnType<typeof rig>>, pipe: EventEmitter) => r.heard(pipe, OWNER, 'hey adrian lock my pc', 'lock my pc');
+
+  it('takes nothing it hears without push-to-talk, and says why on her name', async () => {
+    const r = await rig();
+    r.voiceStates.set(OWNER, MUTED);
+    const { conn, pipe } = r.connect();
+    r.steps.push({ parts: [toolCall('pc_system', '{"action":"lock"}'), usage(10, 2)] });
+    lock(r, pipe);
+    r.heard(pipe, OWNER, 'adrian tell me a joke', 'tell me a joke');
+    await sleep(120);
+    expect(r.llmBodies).toHaveLength(0);
+    expect(conn.actions).toHaveLength(0);
+    expect(conn.transcripts).toContain(CALL_PLAYS_HERE);
+    expect(r.logged.some((l) => l.m === 'pc heard')).toBe(false);
+    await r.stack.stop();
+  });
+
+  it('push-to-talk and typing still count', async () => {
+    const r = await rig();
+    r.voiceStates.set(OWNER, MUTED);
+    const { conn, pipe } = r.connect();
+    conn.emit('ptt');
+    lock(r, pipe);
+    await until(() => r.stack.answers().length === 1, 'the answer');
+    conn.emit('text', 'tell me a joke');
+    await until(() => r.llmBodies.length === 2, 'the typed question');
+    await r.stack.stop();
+  });
+
+  it('the follow-up after a push-to-talk answer needs push-to-talk too', async () => {
+    const r = await rig();
+    r.voiceStates.set(OWNER, MUTED);
+    const { conn, pipe } = r.connect();
+    r.steps.push({ parts: [text('Sure, which one?'), usage(10, 2)] });
+    conn.emit('ptt');
+    r.heard(pipe, OWNER, 'open a game');
+    await until(() => r.stack.answers().length === 1, 'the answer');
+    r.heard(pipe, OWNER, 'the one with the dragons');
+    await sleep(100);
+    expect(r.llmBodies).toHaveLength(1);
+    await r.stack.stop();
+  });
+
+  it('nothing it hears goes to the cloud listen', async () => {
+    const r = await rig({ cloudStt: { enabled: true, rooms: 'all' } });
+    r.voiceStates.set(OWNER, MUTED);
+    const { pipe } = r.connect();
+    r.groq.reply = 'Hey Adrian, lock my PC';
+    const early = (pipe as unknown as { args: ({ onWords(u: string, w: unknown): void } | undefined)[] }).args[5]!;
+    early.onWords(OWNER, { text: 'hey adrian lock my pc', samples: new Float32Array(16_000), startedAt: performance.now() - 1000, signal: new AbortController().signal });
+    lock(r, pipe);
+    await sleep(100);
+    expect(r.groq.calls).toBe(0);
+    await r.stack.stop();
+  });
+
+  it('a stop still stops music playing at the PC', async () => {
+    const r = await rig(MUSIC);
+    const m = fakeMusic();
+    vi.spyOn(MusicPlayer.prototype, 'nowPlaying', 'get').mockReturnValue(TRACK as never);
+    r.voiceStates.set(OWNER, MUTED);
+    const { conn, pipe } = r.connect();
+    r.heard(pipe, OWNER, 'hey adrian stop', 'stop');
+    await until(() => r.logged.some((l) => l.m === 'music stopped' && l.f.room === 'sat:d1'), 'the music to stop');
+    expect(m.stop).toHaveBeenCalled();
+    expect(r.llmBodies).toHaveLength(0);
+    expect(conn.notices).toEqual([]); // it was taken: nothing to explain
+    await r.stack.stop();
+  });
+
+  it('her name plays a soft chime at the PC, at most every 20 s', async () => {
+    const r = await rig();
+    r.voiceStates.set(OWNER, MUTED);
+    const { conn, pipe } = r.connect();
+    lock(r, pipe);
+    r.heard(pipe, OWNER, 'adrian tell me a joke', 'tell me a joke');
+    await sleep(60);
+    expect(conn.notices).toEqual(['ptt_only']);
+    r.heard(pipe, OWNER, 'so adrian said that', undefined); // no name heard: nothing
+    const real = performance.now.bind(performance);
+    vi.spyOn(performance, 'now').mockImplementation(() => real() + 21_000);
+    lock(r, pipe);
+    await sleep(60);
+    expect(conn.notices).toEqual(['ptt_only', 'ptt_only']);
+    expect(r.llmBodies).toHaveLength(0);
+    await r.stack.stop();
+  });
+
+  it('the orb never says she listens without her name there', async () => {
+    const r = await rig();
+    r.voiceStates.set(OWNER, MUTED);
+    const { conn, pipe } = r.connect();
+    conn.emit('ptt');
+    r.heard(pipe, OWNER, 'open a game');
+    await until(() => r.stack.answers().length === 1, 'the answer');
+    await sleep(20);
+    expect(conn.states.filter((s) => s.listenMs !== undefined).map((s) => s.listenMs)).toEqual(expect.arrayContaining([0]));
+    expect(conn.states.every((s) => !s.listenMs)).toBe(true);
+    await r.stack.stop();
+  });
+
+  it('voices over her answer at the PC do not cut it off; a stop still does', async () => {
+    const r = await rig();
+    r.voiceStates.set(OWNER, MUTED);
+    const { conn, pipe } = r.connect();
+    r.steps.push({ parts: [text('A long story begins here. And')], hang: true });
+    conn.emit('ptt');
+    r.heard(pipe, OWNER, 'tell me a story');
+    await until(() => r.tts.calls.length === 1, 'speech at the PC');
+    await sleep(20);
+    const real = performance.now.bind(performance);
+    vi.spyOn(performance, 'now').mockImplementation(() => real() + 2_000);
+    pipe.emit('voiceActivity', OWNER, 1_500);
+    await sleep(60);
+    expect(r.stack.answers()).toHaveLength(0);
+    r.heard(pipe, OWNER, 'stop');
+    await until(() => r.stack.answers().length === 1, 'the stopped answer');
+    expect(r.stack.answers()[0]).toMatchObject({ outcome: 'interrupted' });
+    await r.stack.stop();
+  });
+});
+
+describe('push-to-talk held down (apps from 0.17.2)', () => {
+  const MUTED = { channelId: CALL, mute: true, deaf: false };
+  const cuts = (pipe: EventEmitter) => (pipe as unknown as { cuts: string[] }).cuts;
+
+  it('takes everything said until the key goes up as one request, pauses and all', async () => {
+    const r = await rig();
+    r.voiceStates.set(OWNER, MUTED);
+    const { conn, pipe } = r.connect();
+    r.steps.push({ parts: [], hang: true });
+    conn.emit('ptt', { hold: true });
+    r.heard(pipe, OWNER, 'open the mod page');
+    await until(() => r.llmBodies.length === 1, 'the first half');
+    r.heard(pipe, OWNER, 'for jei on modrinth');
+    await until(() => r.llmBodies.length === 2, 'both halves');
+    const asked = JSON.stringify(r.llmBodies[1].messages.at(-1).content);
+    expect(asked).toContain('open the mod page');
+    expect(asked).toContain('for jei on modrinth');
+    conn.emit('pttUp');
+    await r.stack.stop();
+  });
+
+  it('said again in the same hold after her answer, it is a new request, not a follow-up to judge', async () => {
+    const r = await rig();
+    r.voiceStates.set(OWNER, MUTED);
+    const { conn, pipe } = r.connect();
+    conn.emit('ptt', { hold: true });
+    r.heard(pipe, OWNER, 'open spotify');
+    await until(() => r.stack.answers().length === 1, 'the answer');
+    await sleep(20);
+    r.heard(pipe, OWNER, 'and turn it up');
+    await until(() => r.llmBodies.length === 2, 'the second request');
+    expect(asPrompt(r.llmBodies[1])).not.toContain(JUDGE_LINE);
+    expect(JSON.stringify(r.llmBodies[1].messages.at(-1).content)).toContain('and turn it up');
+    conn.emit('pttUp');
+    await r.stack.stop();
+  });
+
+  it('a PC that drops mid-press leaves her call free to take their words', async () => {
+    const r = await rig();
+    r.voiceStates.set(OWNER, { channelId: CALL, mute: false, deaf: false });
+    const { conn } = r.connect();
+    conn.emit('ptt', { hold: true });
+    conn.open = false;
+    conn.emit('closed');
+    r.heard(r.discordPipe, OWNER, 'hey adrian open spotify', 'open spotify');
+    await until(() => r.llmBodies.length === 1, 'the call to answer');
+    await r.stack.stop();
+  });
+
+  it('the press and the release each cut what is being heard there', async () => {
+    const r = await rig();
+    const { conn, pipe } = r.connect();
+    conn.emit('ptt', { hold: true });
+    expect(cuts(pipe)).toEqual([OWNER]);
+    conn.emit('pttUp');
+    expect(cuts(pipe)).toHaveLength(1); // the last words are still on their way
+    await until(() => cuts(pipe).length === 2, 'the release cut');
+    await r.stack.stop();
+  });
+
+  it('a tap takes nothing said after it', async () => {
+    const r = await rig();
+    r.voiceStates.set(OWNER, MUTED);
+    const { conn, pipe } = r.connect();
+    conn.emit('ptt', { hold: true });
+    conn.emit('pttUp');
+    await until(() => cuts(pipe).length === 2, 'the release cut');
+    r.heard(pipe, OWNER, 'lock my pc'); // someone in the call
+    await sleep(100);
+    expect(r.llmBodies).toHaveLength(0);
+    expect(conn.actions).toHaveLength(0);
+    await r.stack.stop();
+  });
+
+  it('speech that was already going when the key went down is not theirs', async () => {
+    const r = await rig();
+    r.voiceStates.set(OWNER, MUTED);
+    const { conn, pipe } = r.connect();
+    const before = performance.now();
+    await sleep(5);
+    conn.emit('ptt', { hold: true });
+    // Closed by the press's cut: it began before the key went down.
+    r.heard(pipe, OWNER, 'lock my pc', undefined, 5, { vadClosedAt: before });
+    await sleep(100);
+    expect(r.llmBodies).toHaveLength(0);
+    r.heard(pipe, OWNER, 'tell me a joke');
+    await until(() => r.llmBodies.length === 1, 'the words said with the key');
+    expect(JSON.stringify(r.llmBodies[0].messages.at(-1).content)).not.toContain('lock my pc');
+    await r.stack.stop();
+  });
+
+  it('the words said with the key stay with the PC: her call leaves its copy alone', async () => {
+    const r = await rig();
+    r.voiceStates.set(OWNER, { channelId: CALL, mute: false, deaf: false });
+    const { conn, pipe } = r.connect();
+    conn.emit('ptt', { hold: true });
+    await sleep(20);
+    r.heard(r.discordPipe, OWNER, 'hey adrian open spotify', 'open spotify'); // the call first
+    r.heard(pipe, OWNER, 'hey adrian open spotify', 'open spotify');
+    await until(() => r.stack.answers().length === 1, 'the answer');
+    await sleep(60);
+    expect(r.llmBodies).toHaveLength(1);
+    await r.stack.stop();
+  });
+});
+
+describe('a PC on headphones', () => {
+  const MUTED = { channelId: CALL, mute: true, deaf: false };
+  const lock = (r: Awaited<ReturnType<typeof rig>>, pipe: EventEmitter) => r.heard(pipe, OWNER, 'hey adrian open spotify', 'open spotify');
+
+  it('muted in her call, hands-free still works there: its mic cannot hear the call', async () => {
+    const r = await rig();
+    r.voiceStates.set(OWNER, MUTED);
+    const { conn, pipe } = r.connect();
+    conn.output = 'headphones';
+    lock(r, pipe);
+    await until(() => r.llmBodies.length === 1, 'the model');
+    expect(conn.transcripts).not.toContain(CALL_PLAYS_HERE);
+    await r.stack.stop();
+  });
+
+  it('heard in her call itself, nothing goes to the cloud listen at the PC: the call runs its own', async () => {
+    const r = await rig({ cloudStt: { enabled: true, rooms: 'all' } });
+    r.voiceStates.set(OWNER, { channelId: CALL, mute: false, deaf: false });
+    const { conn, pipe } = r.connect();
+    conn.output = 'headphones';
+    const early = (pipe as unknown as { args: ({ onWords(u: string, w: unknown): void } | undefined)[] }).args[5]!;
+    early.onWords(OWNER, { text: 'hey adrian open spotify', samples: new Float32Array(16_000), startedAt: performance.now() - 1000, signal: new AbortController().signal });
+    lock(r, pipe);
+    await sleep(100);
+    expect(r.groq.calls).toBe(0);
+    await r.stack.stop();
+  });
+
+  it('heard in her call itself, the call still answers', async () => {
+    const r = await rig();
+    r.voiceStates.set(OWNER, { channelId: CALL, mute: false, deaf: false });
+    const { conn, pipe } = r.connect();
+    conn.output = 'headphones';
+    lock(r, pipe);
+    await sleep(100);
+    expect(r.llmBodies).toHaveLength(0);
+    expect(conn.transcripts).toContain('her: Answering in the Discord call.');
+    await r.stack.stop();
+  });
+
+  it('switched to speakers, push-to-talk only again', async () => {
+    const r = await rig();
+    r.voiceStates.set(OWNER, { channelId: OTHER_CALL, mute: false, deaf: false });
+    const { conn, pipe } = r.connect();
+    conn.output = 'headphones';
+    lock(r, pipe);
+    await until(() => r.llmBodies.length === 1, 'the model');
+    await until(() => r.stack.answers().length === 1, 'the answer');
+    conn.output = 'speakers';
+    conn.emit('output', 'speakers');
+    expect(conn.states.at(-1)).toEqual({ listenMs: 0 });
+    lock(r, pipe);
+    await sleep(100);
+    expect(r.llmBodies).toHaveLength(1);
     await r.stack.stop();
   });
 });
@@ -1600,8 +2030,13 @@ describe('startup', () => {
     h.transport.up = false;
     expect(r.stack.voiceReady()).toBe(false);
     r.heard(pipe, OWNER, 'hey adrian open spotify', 'open spotify');
-    await until(() => r.llmBodies.length === 1, 'the model');
+    await sleep(60);
+    // Not handed to a call that can't answer; their speakers still play it, so push-to-talk.
     expect(conn.transcripts).not.toContain('her: Answering in the Discord call.');
+    expect(conn.transcripts).toContain(CALL_PLAYS_HERE);
+    conn.emit('ptt');
+    r.heard(pipe, OWNER, 'hey adrian open spotify', 'open spotify');
+    await until(() => r.llmBodies.length === 1, 'the model');
     await r.stack.stop();
   });
 });
@@ -2560,6 +2995,53 @@ describe('a ringing alarm', () => {
     await r.stack.stop();
   });
 
+  it('muted in her call, with a PC whose speakers play it: it rings in the call, and the DM has the buttons', async () => {
+    const r = await rig({}, { prepare: ringing });
+    r.voiceStates.set(OWNER, { channelId: CALL, mute: true, deaf: false });
+    const { pipe } = r.connect();
+    r.loggedIn();
+    await until(() => r.logged.some((l) => l.m === 'alarm sound' && l.f.place === 'discord'), 'the ring in the call');
+    await until(() => r.dms.sent.length === 1, 'the DM');
+    expect(JSON.stringify(r.dms.sent[0])).toContain("you're muted there");
+    expect(JSON.stringify(r.dms.sent[0])).toContain('components');
+    r.heard(pipe, OWNER, 'stop'); // maybe someone in the call
+    await sleep(100);
+    expect(alarmsLeft(r.dir)).toBe(1);
+    await r.stack.stop();
+  });
+
+  it('muted in her call, with a PC on headphones: it rings at the PC, and a spoken stop there ends it', async () => {
+    const r = await rig({}, { prepare: ringing });
+    r.voiceStates.set(OWNER, { channelId: CALL, mute: true, deaf: false });
+    const { conn, pipe } = r.connect();
+    conn.output = 'headphones';
+    r.loggedIn();
+    await until(() => r.logged.some((l) => l.m === 'alarm sound' && String(l.f.place).startsWith('sat:')), 'the ring at the PC');
+    r.heard(pipe, OWNER, "I'm up");
+    await until(() => alarmsLeft(r.dir) === 0, 'the alarm off');
+    await r.stack.stop();
+  });
+
+  it('at a PC whose speakers play another call: rings there, the DM has the buttons, and only push-to-talk or a button stops it', async () => {
+    const r = await rig({}, { prepare: ringing });
+    r.voiceStates.set(OWNER, { channelId: OTHER_CALL, mute: false, deaf: false });
+    const { conn, pipe } = r.connect();
+    r.loggedIn();
+    await until(() => r.logged.some((l) => l.m === 'alarm sound' && String(l.f.place).startsWith('sat:')), 'the ring at the PC');
+    await until(() => r.dms.sent.length === 1, 'the DM');
+    expect(JSON.stringify(r.dms.sent[0])).toContain('ringing at your PC');
+    r.heard(pipe, OWNER, 'stop'); // maybe someone in the call
+    r.heard(pipe, OWNER, "I'm up");
+    await sleep(100);
+    expect(alarmsLeft(r.dir)).toBe(1);
+    expect(conn.transcripts).toContain(CALL_PLAYS_HERE); // not just silence
+    expect(conn.notices).toEqual(['ptt_only']); // and a chime, with the window closed
+    conn.emit('ptt');
+    r.heard(pipe, OWNER, 'snooze');
+    await until(() => r.logged.some((l) => l.m === 'alarm snoozed'), 'the snooze');
+    await r.stack.stop();
+  });
+
   it('rings at the PC when they are not in her call, and stops from there', async () => {
     const r = await rig({}, { prepare: ringing });
     const { pipe } = r.connect();
@@ -2642,6 +3124,38 @@ describe('the local voice at start', () => {
       },
     });
     expect(r.logged.some((l) => l.m === 'tts loaded and calibrated')).toBe(true);
+    await r.stack.stop();
+  });
+});
+
+describe('someone with no PC connected', () => {
+  const NO_PC = 'has no PC connected: never offer or use the pc_ tools for them.';
+
+  it("is told so in their turn, while someone else's PC is connected", async () => {
+    const r = await rig();
+    r.connect(OWNER);
+    r.heard(r.discordPipe, SAM, 'hey adrian lock the front door', 'lock the front door');
+    await until(() => r.llmBodies.length === 1, 'the model');
+    expect(asPrompt(r.llmBodies[0])).toContain(NO_PC);
+    await r.stack.stop();
+  });
+
+  it('not when they have one, in the call or at it', async () => {
+    const r = await rig();
+    const { pipe } = r.connect(OWNER);
+    r.heard(r.discordPipe, OWNER, 'hey adrian lock my pc', 'lock my pc');
+    await until(() => r.stack.answers().length === 1, 'the call answer');
+    r.heard(pipe, OWNER, 'hey adrian open spotify', 'open spotify');
+    await until(() => r.llmBodies.length === 2, 'the PC answer');
+    for (const b of r.llmBodies) expect(asPrompt(b)).not.toContain(NO_PC);
+    await r.stack.stop();
+  });
+
+  it('not when PCs are off altogether', async () => {
+    const r = await rig({ satellite: { enabled: false } });
+    r.heard(r.discordPipe, SAM, 'hey adrian lock the front door', 'lock the front door');
+    await until(() => r.llmBodies.length === 1, 'the model');
+    expect(asPrompt(r.llmBodies[0])).not.toContain(NO_PC);
     await r.stack.stop();
   });
 });

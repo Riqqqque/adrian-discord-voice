@@ -528,6 +528,7 @@ Files in the state folder: `heads-up.json` (when each person was last in the cal
 |---|---|---|---|---|
 | `limits.perUserPerHour` | integer 0+ (admin page 0-1000) | `30` | Requests per person per rolling hour: model questions and music plays (including typed and slash music commands). Owners are exempt; 0 means unlimited | `20` |
 | `limits.dailyUsd` | number 0+ (admin page 0-1000) | `1` | Spend cap per local day (in `timezone`), USD. 0 means none | `0.5` |
+| `limits.guestDailyUsd` | number 0+ | `0.2` | What one guest may spend per local day, USD, so one guest can't use up the shared daily cap (also in the dashboard's Limits step). Owners, the creator's accounts (`identity.creatorIds`) and priority-role members aren't guests. Their answers, and what she learns about them, count. Past it they hear that their share is used up until tomorrow. 0 means no cap of their own | `0.5` |
 | `limits.monthlyUsd` | number 0+ (admin page 0-10000) | `10` | Spend cap per calendar month, USD. 0 means none | `5` |
 | `limits.maxRequestChars` | integer 20-4000 | `600` | Longest question passed to the model, voice or text | `400` |
 | `limits.usageFile` | path | installer-owned: `<state>/usage.json` | Where daily totals are kept, so the caps survive restarts | - |
