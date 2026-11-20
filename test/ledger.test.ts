@@ -67,3 +67,50 @@ describe('owner exemption', () => {
     expect(l.check('o', true)).toEqual({ ok: false, reason: 'daily' });
   });
 });
+
+describe("a guest's share of the day", () => {
+  const caps = { perUserPerHour: 0, dailyUsd: 1, monthlyUsd: 10, guestDailyUsd: 0.05 };
+
+  it('stops a guest at their own cap, leaving everyone else and the owners alone', () => {
+    let now = Date.UTC(2026, 9, 15, 12);
+    const l = new UsageLedger(undefined, caps, 'UTC', () => now);
+    l.addCost(0.03, 'guest');
+    expect(l.check('guest').ok).toBe(true);
+    l.addCost(0.03, 'guest');
+    expect(l.check('guest')).toEqual({ ok: false, reason: 'guest-daily' });
+    expect(l.check('other').ok).toBe(true);
+    l.addCost(0.2, 'owner');
+    expect(l.check('owner', true).ok).toBe(true);
+    expect(l.todayUsd()).toBeCloseTo(0.26);
+    now += 24 * 3_600_000; // a new day, a new share
+    expect(l.check('guest').ok).toBe(true);
+  });
+
+  it('is off at 0, and unset in older callers', () => {
+    const l = new UsageLedger(undefined, { perUserPerHour: 0, dailyUsd: 1, monthlyUsd: 10 }, 'UTC', () => Date.UTC(2026, 9, 15, 12));
+    l.addCost(0.5, 'guest');
+    expect(l.check('guest').ok).toBe(true);
+    l.setLimits({ ...caps, guestDailyUsd: 0 });
+    expect(l.check('guest').ok).toBe(true);
+  });
+
+  it('survives a restart, keeps only today by person, and stays out of the summary', () => {
+    const G = '100000000000000777';
+    const dir = mkdtempSync(join(tmpdir(), 'ledger-'));
+    const file = join(dir, 'usage.json');
+    let now = Date.UTC(2026, 9, 15, 12);
+    const a = new UsageLedger(file, caps, 'UTC', () => now);
+    a.addCost(0.06, G);
+    a.flush();
+    const b = new UsageLedger(file, caps, 'UTC', () => now);
+    expect(b.check(G)).toEqual({ ok: false, reason: 'guest-daily' });
+    expect(JSON.stringify(b.summary())).not.toContain(G);
+    now += 24 * 3_600_000;
+    b.addCost(0.01, G);
+    b.flush();
+    const saved = JSON.parse(readFileSync(file, 'utf8')).days;
+    expect(saved['2026-10-15'].users).toBeUndefined();
+    expect(saved['2026-10-15'].costUsd).toBeCloseTo(0.06);
+    expect(saved['2026-10-16'].users).toEqual({ [G]: 0.01 });
+  });
+});

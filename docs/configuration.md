@@ -313,6 +313,7 @@ Files in the state folder: `heads-up.json` (when each person was last in the cal
 |---|---|---|
 | `limits.perUserPerHour` | `30` | Requests per person per hour (owners are exempt); 0 means unlimited |
 | `limits.dailyUsd` | `1` | Daily spend cap in USD (0 means none) |
+| `limits.guestDailyUsd` | `0.2` | What one person who isn't an owner may spend per day, USD, so one guest can't use up the shared daily cap. Their answers, and what she learns about them, count. Past it they hear that their share is used up until tomorrow. 0 means no cap of their own |
 | `limits.monthlyUsd` | `10` | Monthly spend cap in USD (0 means none) |
 | `limits.maxRequestChars` | `600` | Longest question passed to the model |
 
