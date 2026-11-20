@@ -92,6 +92,16 @@ export interface TextToSpeech {
     opts: { voice: string; speed: number },
     signal?: AbortSignal,
   ): Promise<{ samples: Float32Array; sampleRate: number; synthMs: number }>;
+  /** Optional: the same sentence as pieces, in order, as they arrive, so
+   *  playback can start before the whole sentence is ready. Same level as
+   *  synthesize(). */
+  stream?(text: string, opts: { voice: string; speed: number }, signal?: AbortSignal): AsyncIterable<SpeechPiece>;
+}
+
+/** Part of a sentence's audio: mono float, already leveled. */
+export interface SpeechPiece {
+  samples: Float32Array;
+  sampleRate: number;
 }
 
 export interface ToolCall {
