@@ -560,8 +560,122 @@ async function refresh(view, body) {
 let voiceWhy = '';
 let voiceAsked = false;
 
+// --- dashboard numbers (GET /api/dashboard) ---------------------------------
+
+const num = (x) => (x == null ? '–' : Number(x).toLocaleString('en-US'));
+const secs = (x) => (x == null ? '–' : x < 1000 ? `${x} ms` : x < 90_000 ? `${(x / 1000).toFixed(1)} s` : `${Math.round(x / 60_000)} min`);
+const when = (iso) => {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? '' : d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+};
+
+/** A bar for "this much of that"; the colour warns from 80%. */
+function meter(used, of) {
+  if (!(of > 0)) return null;
+  const share = used / of;
+  const fill = h('span');
+  fill.style.width = `${Math.min(100, share * 100).toFixed(1)}%`; // CSSOM, allowed by the CSP
+  return h('div', { class: `bar${share >= 1 ? ' bad' : share >= 0.8 ? ' warn' : ''}` }, fill);
+}
+
+function attentionCard(d) {
+  const items = d.attention;
+  return h('div', { class: 'card' },
+    h('h2', {}, 'Needs attention'),
+    items.length
+      ? h('ul', { class: 'attn' }, items.map((a) => h('li', { class: `msg ${a.level}` }, a.text)))
+      : h('p', { class: 'msg ok' }, 'Nothing needs attention.'));
+}
+
+function spendCard(d, sp) {
+  const p = d.providers;
+  const row = (name, what, extra) => h('tr', {}, h('th', {}, name), h('td', {}, what, extra));
+  const off = h('span', { class: 'muted' }, 'off');
+  return h('div', { class: 'card' },
+    h('h2', {}, 'Spending'),
+    h('table', {},
+      row('Language model', `${usd(p.llm.todayUsd)} today, ${usd(p.llm.monthUsd)} this month`,
+        h('div', { class: 'small muted' }, `Caps: ${p.llm.dailyCapUsd ? usd(p.llm.dailyCapUsd) : 'none'} a day, ${p.llm.monthlyCapUsd ? usd(p.llm.monthlyCapUsd) : 'none'} a month. ${num(p.llm.requestsToday)} questions today.`),
+        meter(p.llm.todayUsd, p.llm.dailyCapUsd), meter(p.llm.monthUsd, p.llm.monthlyCapUsd)),
+      row('Cost per answer', `${usd(d.costPerAnswerUsd.day)} last day, ${usd(d.costPerAnswerUsd.week)} last 7 days`),
+      row('Cloud voice (Speechify)', p.cloudVoice.on
+        ? `${num(p.cloudVoice.monthChars)} of ${p.cloudVoice.monthlyChars ? num(p.cloudVoice.monthlyChars) : 'unlimited'} characters this month`
+        : off, p.cloudVoice.on ? meter(p.cloudVoice.monthChars, p.cloudVoice.monthlyChars) : null),
+      row('Second listen (Groq)', p.cloudStt.on || p.cloudStt.month
+        ? `${num(p.cloudStt.today)} today, ${num(p.cloudStt.month)} this month (about ${usd(p.cloudStt.estMonthUsd)})`
+        : off),
+      row('Web search (Tavily)', p.search.on || p.search.month
+        ? `${num(p.search.today)} today, ${num(p.search.month)} this month (the free plan has ${num(p.search.freePlan)})`
+        : off, p.search.on ? meter(p.search.month, p.search.freePlan) : null)),
+    h('p', { class: 'small muted' }, `The dollar caps count the language model only. The other services have their own plans; these are counted here since ${when(d.since)}.`),
+    sp.history.length
+      ? h('table', {}, h('tr', {}, h('th', {}, 'Day'), h('th', {}, 'Questions'), h('th', {}, 'Cost')), sp.history.slice(0, 14).map((x) => h('tr', {}, h('td', {}, x.day), h('td', {}, x.requests), h('td', {}, usd(x.costUsd)))))
+      : null);
+}
+
+function speedCard(d, note) {
+  const day = d.speed.day;
+  const week = d.speed.week;
+  const line = (name, a, b, sub) => h('tr', { class: sub ? 'sub' : '' }, h('td', {}, name), h('td', {}, secs(a.p50)), h('td', {}, secs(a.p90)), h('td', {}, secs(b.p50)), h('td', {}, secs(b.p90)), h('td', {}, num(b.n)));
+  const stages = [['Speech recognition', 'stt'], ['Second listen (Groq)', 'groq'], ['End-of-turn check', 'turnCheck'], ['Wait for the rest', 'hold'], ['Model first sentence', 'llmFirst'], ['Voice first sentence', 'ttsFirst']];
+  const a = d.answers;
+  return h('div', { class: 'card' },
+    h('h2', {}, 'Answer speed'),
+    h('table', {},
+      h('tr', {}, h('th', {}, 'End of speech to first audio'), h('th', {}, 'Median, day'), h('th', {}, '90th, day'), h('th', {}, 'Median, 7 days'), h('th', {}, '90th, 7 days'), h('th', {}, 'Answers, 7 days')),
+      line('All answers', day.total, week.total),
+      line('In the call', day.call, week.call, true),
+      line('At a PC', day.pc, week.pc, true),
+      h('tr', {}, h('th', { colspan: '6' }, 'Where the time goes')),
+      stages.filter(([, k]) => week.stages[k].n).map(([n, k]) => line(n, day.stages[k], week.stages[k], true))),
+    h('p', { class: 'small muted' },
+      `Last day: ${num(a.day.answers)} answers, ${num(a.day.errors)} failed, ${num(a.day.timedOut)} timed out, ${num(a.day.interrupted)} stopped by the asker. Figures are read from bands, so they are within about 6%.`),
+    note ? h('p', { class: 'small muted' }, note) : null);
+}
+
+function reliabilityCard(d) {
+  const r = d.reliability;
+  const back = (b) => (b.n ? `back in ${secs(b.p50)} (median), ${secs(b.max)} at most` : '');
+  const cell = (w) => [h('td', {}, num(w.drops)), h('td', {}, back(w.back))];
+  const link = (name, day, week) => h('tr', {}, h('td', {}, name), ...cell(day), ...cell(week));
+  const now = r.voiceDownForS != null ? h('span', { class: 'badge bad' }, `voice down for ${r.voiceDownForS} s`) : h('span', { class: `badge ${r.voiceReady ? 'ok' : 'warn'}` }, r.voiceReady ? 'in voice' : 'not in voice');
+  return h('div', { class: 'card' },
+    h('h2', {}, 'Reliability'),
+    h('p', {}, now, ' ', h('span', { class: 'badge ok' }, `${r.pcsOnline} PC${r.pcsOnline === 1 ? '' : 's'} connected`)),
+    h('table', {},
+      h('tr', {}, h('th', {}, 'Link'), h('th', {}, 'Drops, day'), h('th', {}, 'Recovery, day'), h('th', {}, 'Drops, 7 days'), h('th', {}, 'Recovery, 7 days')),
+      link('Voice connection', { drops: r.day.voiceDrops, back: r.day.voiceBack }, { drops: r.week.voiceDrops, back: r.week.voiceBack }),
+      link('PC links', { drops: r.day.pcDrops, back: r.day.pcBack }, { drops: r.week.pcDrops, back: r.week.pcBack })),
+    h('p', { class: 'small muted' }, `Last 7 days: ${num(r.week.pcAway)} times a PC was away for longer than 10 minutes (off or asleep, not counted as drops); ${num(r.week.voiceFailed)} times the voice connection needed many tries; ${num(r.week.startFailed)} failed starts; ${num(r.week.unclean)} unclean shutdowns.`),
+    h('h2', {}, 'Restarts'),
+    d.restarts.length
+      ? h('table', {}, d.restarts.slice(0, 6).map((x) => h('tr', {}, h('td', {}, when(x.at)), h('td', {}, x.kind === 'failed' ? h('span', { class: 'msg bad' }, `Failed to start: ${x.why}`) : x.why), h('td', { class: 'muted' }, x.version ?? ''))))
+      : h('p', { class: 'small muted' }, 'None recorded yet.'),
+    h('h2', {}, 'Latest errors'),
+    d.errors.length
+      ? h('table', {}, d.errors.slice(0, 8).map((e) => h('tr', {}, h('td', {}, when(e.at)), h('td', { class: `msg ${e.level === 'error' ? 'bad' : 'warn'}` }, e.msg, e.detail ? h('div', { class: 'small muted' }, e.detail) : null), h('td', {}, e.n > 1 ? `×${e.n}` : ''))))
+      : h('p', { class: 'small muted' }, 'None since the counters started.'));
+}
+
+function serverCard(d) {
+  const s = d.system;
+  const u = d.updates;
+  const upd = u.available ? `${u.latest} is available` : u.latest ? 'up to date' : u.checkError ? `couldn't check (${u.checkError})` : 'checking…';
+  return h('div', { class: 'card' },
+    h('h2', {}, 'This server'),
+    h('table', {},
+      h('tr', {}, h('th', {}, 'Disk free'), h('td', {}, s.diskFreeGiB == null ? 'unknown' : `${s.diskFreeGiB} GiB of ${s.diskTotalGiB} GiB`)),
+      h('tr', {}, h('th', {}, 'Memory available'), h('td', {}, `${num(s.memAvailableMiB)} MiB of ${num(s.memTotalMiB)} MiB`)),
+      h('tr', {}, h('th', {}, 'Her memory'), h('td', {}, `${num(s.rssMiB)} MiB${s.memLimitMiB ? ` of the ${num(s.memLimitMiB)} MiB cap` : ''}`)),
+      h('tr', {}, h('th', {}, 'Version'), h('td', {}, `${u.current}: ${upd}${u.autoUpdate == null ? '' : u.autoUpdate ? '. Auto-update is on.' : '. Auto-update is off.'}`))),
+    h('p', { class: 'small muted' }, 'Updates are looked up on GitHub while this page is open, at most every 6 hours. Nothing else here leaves the server.'));
+}
+
 async function dashStatus(body) {
   const s = await api('GET', '/api/status');
+  // After the status, so a session that ended is noticed once. The numbers are
+  // extra: if they can't be had, the status still shows, and says so.
+  const dash = await api('GET', '/api/dashboard').catch((e) => ({ failed: e.message }));
   if (s.state === 'running' && !s.voiceReady && !voiceAsked && s.uptimeS > 60) {
     voiceAsked = true;
     const { settings } = await api('GET', '/api/settings').catch(() => ({ settings: {} }));
@@ -598,6 +712,14 @@ async function dashStatus(body) {
       s.warnings.length ? h('ul', {}, s.warnings.map((w) => h('li', { class: 'msg warn' }, w))) : null,
       s.state === 'setup' ? h('button', { class: 'primary', onclick: () => reporting(wizard(0)) }, 'Continue setup') : null,
       restart),
+    ...(dash.failed ? oldCards(sp, lat, capRow, dash.failed) : [attentionCard(dash), spendCard(dash, sp), speedCard(dash, lat.note), reliabilityCard(dash), serverCard(dash)]),
+  );
+}
+
+/** Without the dashboard's numbers: what /api/status has. */
+function oldCards(sp, lat, capRow, why) {
+  return [
+    h('div', { class: 'msg warn' }, `The dashboard's numbers are unavailable: ${why}`),
     h('div', { class: 'card' },
       h('h2', {}, 'Latency (last answers)'),
       h('table', {},
@@ -612,7 +734,7 @@ async function dashStatus(body) {
       sp.history.length
         ? h('table', {}, h('tr', {}, h('th', {}, 'Day'), h('th', {}, 'Questions'), h('th', {}, 'Cost')), sp.history.slice(0, 14).map((d) => h('tr', {}, h('td', {}, d.day), h('td', {}, d.requests), h('td', {}, usd(d.costUsd)))))
         : null),
-  );
+  ];
 }
 
 async function dashSettings(body) {

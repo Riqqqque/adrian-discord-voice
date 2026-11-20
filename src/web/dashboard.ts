@@ -346,8 +346,9 @@ export function attention(i: DashboardInput, p: Providers, u: ReturnType<typeof 
   if (s.memLimitMiB && s.rssMiB > 0.85 * s.memLimitMiB) add('warn', `She is using ${s.rssMiB} MiB of the ${s.memLimitMiB} MiB the service may use; near the cap it slows down, then restarts.`);
 
   // Updates.
-  const how = i.docker ? 'pull the new image and restart the container' : 'run: sudo adrian update';
-  if (u.cutOff) add('warn', `An update was cut off before it finished. To finish or undo it, ${i.docker ? 'restart the container' : 'run: sudo adrian update'}.`);
+  const how = i.docker ? 'build the new image, set ADRIAN_VERSION in .env and run docker compose up -d' : 'run: sudo adrian update';
+  // Only the native install leaves these notes (packaging/adrian).
+  if (u.cutOff) add('warn', 'An update was cut off before it finished. To finish or undo it, run: sudo adrian update.');
   if (u.failedVersion) add('warn', `The update to ${u.failedVersion} failed its checks here and was undone.${u.autoUpdate ? ' Auto-update tries it again after a day.' : ''}`);
   if (u.available && u.latest !== u.failedVersion) add('warn', `Version ${u.latest} is available (this is ${u.current}). ${u.autoUpdate ? 'Auto-update installs it when nobody is in her call.' : `To install it, ${how}.`}`);
   return out;
