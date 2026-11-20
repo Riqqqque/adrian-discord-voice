@@ -153,6 +153,12 @@ export interface SpeechifyOptions {
   /** Default: the shared provider connections (core/http.ts). */
   fetch?: typeof fetch;
   now?: () => number;
+  /** Why memory is too short for the local voice now (undefined: it fits). It
+   *  is then loaded only when a sentence needs it, not ahead of need. */
+  memoryShort?: () => string | undefined;
+  /** The speed the rooms ask for (voice.speed), until a sentence says otherwise:
+   *  the local voice calibrates per speed, so a load before any sentence uses it. */
+  roomSpeed?: number;
 }
 
 export class SpeechifyTts implements TextToSpeech {
@@ -165,6 +171,7 @@ export class SpeechifyTts implements TextToSpeech {
   private readonly short = new Map<string, Float32Array>();
   /** Set once the local voice was asked to load ahead of need. */
   private fallbackWarming = false;
+  private memoryNoted = false;
   /** The speed sentences were last asked for (the local voice calibrates per speed). */
   private speed = 1;
 
@@ -175,6 +182,7 @@ export class SpeechifyTts implements TextToSpeech {
     private readonly fallbackVoice: string,
   ) {
     if (!o.fetch) cloud.register(API);
+    this.speed = o.roomSpeed ?? 1;
   }
 
   private now(): number {
@@ -186,6 +194,13 @@ export class SpeechifyTts implements TextToSpeech {
   private warmFallback(why: string): void {
     const f = this.fallback as TextToSpeech & { prepare?(voice: string, speed: number): Promise<void> };
     if (this.fallbackWarming || !f.prepare) return;
+    // About 0.5 GB for good: not on a hunch while earlyoom is close.
+    const short = this.o.memoryShort?.();
+    if (short) {
+      if (!this.memoryNoted) this.o.log.warn('not loading the local voice ahead of need: memory is short', { why, error: short });
+      this.memoryNoted = true;
+      return;
+    }
     this.fallbackWarming = true;
     const t = performance.now();
     this.o.log.info('loading the local voice in case the cloud voice fails', { why });
