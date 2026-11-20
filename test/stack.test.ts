@@ -248,6 +248,8 @@ async function rig(over: Record<string, unknown> | ((dir: string) => Record<stri
   };
   /** The gateway's ready event: joins the call and starts the timers. */
   const loggedIn = () => client.emit(Events.ClientReady, client);
+  /** What she wrote back in text chat. */
+  const replies: string[] = [];
   /** A message reaching the text chat. No guild: a DM. */
   const typed = (userId: string, content: string, guildId?: string) =>
     client.emit('messageCreate', {
@@ -260,9 +262,9 @@ async function rig(over: Record<string, unknown> | ((dir: string) => Record<stri
       channelId: guildId ? TEXT_CHANNEL : `dm-${userId}`,
       channel: { type: guildId ? ChannelType.GuildText : ChannelType.DM },
       mentions: { users: new Collection(guildId ? [[BOT, {}]] : []), roles: new Collection(), everyone: false },
-      reply: async () => ({}),
+      reply: async (r: { content?: string }) => (replies.push(String(r?.content ?? '')), {}),
     });
-  return { stack, client, ledger, steps, llmBodies, groq, search, tts, transport: h.transport as EventEmitter, discordPipe: h.pipes[0] as EventEmitter, heard, connect, voiceStates, loggedIn, typed, dms, dir, warned, logged };
+  return { replies, stack, client, ledger, steps, llmBodies, groq, search, tts, transport: h.transport as EventEmitter, discordPipe: h.pipes[0] as EventEmitter, heard, connect, voiceStates, loggedIn, typed, dms, dir, warned, logged };
 }
 
 afterEach(() => {
@@ -309,6 +311,20 @@ describe('what an answer costs', () => {
     await r.stack.stop();
   });
 
+  it('in text chat too: a guest is charged for their answers, and past their share gets the reason, not the model', async () => {
+    const r = await rig({ owners: [OWNER], textChat: { enabled: true, dms: true }, limits: { perUserPerHour: 0, dailyUsd: 1, monthlyUsd: 0, guestDailyUsd: 0.001 } });
+    r.steps.push({ parts: [text('Canberra.'), usage(1000, 100)] }); // $0.0015
+    r.typed(SAM, 'capital of australia?');
+    await until(() => r.ledger.userTodayUsd(SAM) > 0, 'the charge');
+    expect(r.ledger.userTodayUsd(SAM)).toBeCloseTo(0.0015, 6);
+    await sleep(30); // the reply lets go of the person
+    r.typed(SAM, 'capital of peru?');
+    await until(() => r.replies.some((x) => x.includes('share of today')), 'the refusal');
+    expect(r.llmBodies).toHaveLength(1);
+    r.typed(OWNER, 'capital of peru?');
+    await until(() => r.llmBodies.length === 2, 'the owner answered');
+    await r.stack.stop();
+  });
   it('a stop during a search sends no further model call, and the round that ran is charged', async () => {
     const r = await rig();
     r.steps.push({ parts: [toolCall('web_search', '{"query":"weather"}'), usage(1000, 100)] });
@@ -2660,6 +2676,7 @@ describe('a ringing alarm', () => {
     r.heard(pipe, OWNER, "I'm up");
     await sleep(100);
     expect(alarmsLeft(r.dir)).toBe(1);
+    expect(conn.transcripts).toContain(CALL_PLAYS_HERE); // not just silence
     conn.emit('ptt');
     r.heard(pipe, OWNER, 'snooze');
     await until(() => r.logged.some((l) => l.m === 'alarm snoozed'), 'the snooze');
