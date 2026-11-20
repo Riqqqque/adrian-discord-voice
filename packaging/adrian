@@ -68,13 +68,21 @@ health_body() { # health_body [timeout_s] → the answer whatever its status (a 
 }
 # wait_healthy seconds [HEALTH]: healthy, and no worse than HEALTH (an earlier
 # reply): running if it was running, in her call if it was in her call.
+# A start the bot puts off until memory frees up is not a failure: the wait
+# goes on while it says so, up to 17 min more (it loads anyway after 15), and
+# the models then get the usual time to load.
 wait_healthy() {
-  local end=$((SECONDS + $1)) was=${2:-} out
+  local end=$((SECONDS + $1)) cap=$((SECONDS + 1020 + $1)) was=${2:-} out said=
   while [ $SECONDS -lt $end ]; do
     if out=$(health 3 2>/dev/null) && grep -q '"ok":true' <<<"$out" \
       && { ! grep -q '"state":"running"' <<<"$was" || grep -q '"state":"running"' <<<"$out"; } \
       && { ! grep -q '"voiceReady":true' <<<"$was" || grep -q '"voiceReady":true' <<<"$out"; }; then
       echo "$out"; return 0
+    fi
+    if [[ $out == *'"waitingFor":"memory"'* ]]; then # no grep: this runs every second
+      [ -n "$said" ] || echo "waiting for free memory before the speech models load (up to 17 min)" >&2
+      said=1
+      end=$((SECONDS + $1 < cap ? SECONDS + $1 : cap))
     fi
     sleep 1
   done

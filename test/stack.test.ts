@@ -3061,7 +3061,10 @@ describe('a ringing alarm', () => {
 });
 
 describe('the local voice at start', () => {
-  const kokoroFile = (dir: string) => writeFileSync(join(dir, 'model.onnx'), '');
+  const kokoroFile = (dir: string) => {
+    for (const f of ['model.onnx', 'voices.bin', 'tokens.txt', 'lexicon-us-en.txt']) writeFileSync(join(dir, f), '');
+    mkdirSync(join(dir, 'espeak-ng-data'), { recursive: true });
+  };
 
   it('is loaded and calibrated when it speaks English', async () => {
     const r = await rig();
@@ -3107,6 +3110,11 @@ describe('the local voice at start', () => {
     vi.spyOn(SpeechifyTts.prototype, 'stream').mockImplementation(async function* (t: string) {
       cloudSaid.push(t);
       yield { samples: tone(), sampleRate: 48_000 };
+    });
+    // Lines over 40 characters stream.
+    vi.spyOn(SpeechifyTts.prototype, 'stream').mockImplementation(async function* (t: string) {
+      cloudSaid.push(t);
+      yield { samples: new Float32Array(960), sampleRate: 48_000 };
     });
     const r = await rig({ cloudVoice: { enabled: true } }, { prepare: kokoroFile });
     r.loggedIn();

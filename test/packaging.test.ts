@@ -344,6 +344,8 @@ describe.skipIf(!hasBash)('adrian update, judged against the version it replaces
     backAfter?: number;
     /** Seconds after the update starts before the new version answers. */
     comesUpAfter?: number;
+    /** Until then the new version says it is waiting for memory to start. */
+    waitsForMemoryUntil?: number;
     /** systemd restarted it by itself during that minute. */
     crashes?: boolean;
     /** Systemd can't start it under its new service file. */
@@ -387,6 +389,7 @@ describe.skipIf(!hasBash)('adrian update, judged against the version it replaces
         *releases/latest) printf '{"tag_name":"v${NEW}"}' ;;
         */api/health)
           local f; f=health.$(basename "$(readlink -f opt/current)")
+          if [ -f "$f.memory" ] && [ $SECONDS -lt "$(cat "$f.memory")" ]; then printf '%s' '{"ok":false,"state":"starting","waitingFor":"memory","voiceReady":false,"busy":false}'; return 0; fi
           [ ! -f prepared ] || [ ! -f "$f.prepared" ] || f=$f.prepared
           [ ! -f watched ] || [ ! -f "$f.watched" ] || { [ -f "$f.back" ] && [ $SECONDS -ge "$(cat "$f.back")" ]; } || f=$f.watched
           [ -f "$f" ] && [ $SECONDS -ge "$(cat "$f.from" 2>/dev/null || echo 0)" ] && cat "$f" || return 22 ;;
@@ -441,6 +444,7 @@ exec "${process.execPath.replaceAll('\\', '/')}" "$@"\n`;
     if (r.afterAMinute !== undefined) put(`health.${NEW}.watched`, r.afterAMinute);
     if (r.backAfter) put(`health.${NEW}.back`, String(r.backAfter));
     if (r.comesUpAfter) put(`health.${NEW}.from`, String(r.comesUpAfter));
+    if (r.waitsForMemoryUntil) put(`health.${NEW}.memory`, String(r.waitsForMemoryUntil));
     if (r.crashes) put('restarts', '1\n');
     if (r.badUnit) put('bad-unit', '');
     if (r.noStarts) put('no-starts', '');
@@ -485,6 +489,25 @@ exec "${process.execPath.replaceAll('\\', '/')}" "$@"\n`;
     expect(m.hourly().code).toBe(0);
     expect(m.version()).toBe(NEW);
   }, 60_000);
+
+  it('waits while the new version waits for memory: that is not the release failing', () => {
+    const m = machine({ waitsForMemoryUntil: 600 }); // ten minutes, far past the two-minute window
+    const r = m.hourly();
+    expect(r.code).toBe(0);
+    expect(r.out).toContain(`Updated to ${NEW}`);
+    expect(r.err).toContain('waiting for free memory');
+    expect(m.version()).toBe(NEW);
+    expect(m.marker()).toBeUndefined();
+  }, 300_000); // ~60 health checks through Git Bash: slow on a busy Windows box
+
+  it("still rolls back one that waits for memory past the bot's own limit", () => {
+    const m = machine({ waitsForMemoryUntil: 100_000 });
+    const r = m.hourly();
+    expect(r.code).not.toBe(0);
+    expect(r.err).toContain(`rolled back to ${OLD}`);
+    expect(m.version()).toBe(OLD);
+    expect(m.marker()).toBe(NEW);
+  }, 300_000); // ~115 health checks
 
   it.each([
     ['lands in setup mode, when her config was running', { after: setupMode }],
@@ -573,6 +596,11 @@ exec "${process.execPath.replaceAll('\\', '/')}" "$@"\n`;
       const m = machine({ before: ok });
       expect(m.run(cmd).code).toBe(0);
     }
+    const waiting = machine();
+    writeFileSync(join(waiting.root, `health.${OLD}.memory`), '300');
+    const w = waiting.run('restart');
+    expect(w.code).toBe(0);
+    expect(w.err).toContain('waiting for free memory');
     const down = machine({ before: null });
     const r = down.run('restart');
     expect(r.code).not.toBe(0);

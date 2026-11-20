@@ -149,7 +149,7 @@ const stt = await phase('asr load (parakeet)', () => ParakeetStt.load({ modelDir
 const tts = new KokoroTts({ modelDir: ttsDir, threads });
 await phase(localVoice ? 'tts: prepareLocalVoice' : 'tts load + calibration (kokoro)', () =>
   localVoice
-    ? localVoice.prepareLocalVoice(tts, { modelDir: ttsDir, voice, speed: 1, cloudPrimary: cloud }, { info() {}, warn() {} })
+    ? localVoice.prepareLocalVoice(tts, { modelDir: ttsDir, voice, speed: 1, cloudPrimary: cloud }, { info() {}, warn() {}, error: (m, f) => console.error(m, f) })
     : tts.gainFor(voice, 1),
 );
 

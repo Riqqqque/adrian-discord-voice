@@ -108,6 +108,32 @@ export class SentenceSplitter {
   }
 }
 
+/** True for addresses that only mean something at home (or to this machine):
+ *  private, loopback, link-local and CGNAT IPv4, localhost, home suffixes,
+ *  and single-label names. */
+function localHost(host: string): boolean {
+  const h = host.toLowerCase();
+  const ip = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(h);
+  if (ip) {
+    const [a, b] = [+ip[1]!, +ip[2]!];
+    return a === 10 || a === 127 || a === 0 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 169 && b === 254) || (a === 100 && b >= 64 && b <= 127);
+  }
+  return h === 'localhost' || !h.includes('.') || /\.(?:local|lan|home|internal|localdomain|localhost|home\.arpa)$/.test(h);
+}
+
+/** How a link is said: its site ("modrinth.com"), never the whole address,
+ *  never an IP, a user name or a home address. */
+function spokenLink(url: string): string {
+  const rest = url.replace(/^https?:\/\//i, '');
+  const authority = rest.split(/[/?#]/, 1)[0] ?? '';
+  if (authority.includes('@')) return 'a link'; // user name (and maybe a password) in it
+  const host = authority.replace(/:\d*$/, '').replace(/^www\./i, '');
+  if (!/^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/i.test(host)) return 'a link'; // IPv6, non-ASCII, odd
+  if (localHost(host)) return 'a local link';
+  if (/^\d+(?:\.\d+)*$/.test(host)) return 'a link'; // a public IP: never read out
+  return host;
+}
+
 const EMOJI = /[\p{Extended_Pictographic}\u{1F1E6}-\u{1F1FF}\u{1F3FB}-\u{1F3FF}\u{FE0F}\u{200D}\u{20E3}]/gu;
 
 /** Make model text safe and natural for TTS: no markdown, no URLs, the
@@ -128,10 +154,12 @@ export function toSpeakable(
   t = t.replace(/```[\s\S]*?```/g, ' ');
   t = t.replace(/`([^`]*)`/g, '$1');
   t = t.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1'); // [text](link) → text
-  // A bare link: just the site's name ("modrinth.com"), not the whole address.
-  t = t.replace(/https?:\/\/(?:www\.)?([a-z0-9.-]*[a-z0-9])(?:[/?#]\S*?)?(?=[.,!?;:)\]]*(?:\s|$))/gi, '$1');
-  // Any other link (quoted, in <>, with a port...): still never the whole address.
-  t = t.replace(/https?:\/\/(?:www\.)?([a-z0-9.-]*[a-z0-9])\S*/gi, '$1');
+  // A link: just the site's name ("modrinth.com"), not the whole address.
+  // Punctuation, quotes and markup after it stay (linear: no backtracking).
+  t = t.replace(/https?:\/\/\S+/gi, (m) => {
+    const tail = /[.,!?;:)\]}'"`>*_~]+$/.exec(m)?.[0] ?? '';
+    return spokenLink(m.slice(0, m.length - tail.length)) + tail;
+  });
   t = t.replace(/(\*\*|__|\*|_|~~)(.+?)\1/g, '$2');
   // Markers left unmatched because a chunk boundary fell inside them.
   t = t.replace(/\*+|~~|(^|\s)_+|_+(?=\s|$)/g, '$1');
@@ -157,9 +185,25 @@ const MONTH_ABBR: Record<string, string> = {
 };
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 const ROMAN: Record<string, number> = { II: 2, III: 3, IV: 4, VI: 6, VII: 7, VIII: 8, IX: 9, XI: 11, XII: 12, XIII: 13, XIV: 14, XV: 15, XVI: 16 };
+const ORDINAL_WORDS = ['', 'First', 'Second', 'Third', 'Fourth', 'Fifth', 'Sixth', 'Seventh', 'Eighth', 'Ninth', 'Tenth', 'Eleventh', 'Twelfth', 'Thirteenth', 'Fourteenth', 'Fifteenth', 'Sixteenth'];
+/** Rulers' names: "Elizabeth II" is "Elizabeth the Second", not "Elizabeth 2". */
+const REGNAL = 'Elizabeth|Henry|Charles|George|Edward|William|Louis|Richard|James|Leo|John|Paul|John Paul|Benedict|Pius|Gregory|Innocent|Clement|Urban|Philip|Frederick|Peter|Catherine|Alexander|Nicholas|Ivan|Mary|Victor Emmanuel|Felipe|Juan Carlos|Ramesses|Ptolemy|Napoleon|Wilhelm|Ludwig|Gustav|Haakon|Olav|Christian|Willem|Constantine|Justinian|Otto|Rudolf|Francis|Joseph|Leopold|Albert|Baudouin|Carlos|Alfonso|Sancho|Ferdinand|Isabella|Anne|Victoria|Stephen|Harold|David|Robert|Malcolm|Kenneth|Selim|Mehmed|Suleiman|Murad|Ahmed|Mahmud';
+const REGNAL_RE = new RegExp(`\\b((?:(?:Queen|King|Pope|Prince|Princess|Emperor|Empress|Tsar|Czar|Sultan|Pharaoh|Kaiser|Shah) [A-Z][a-z]+)|${REGNAL}) (II|III|IV|VI|VII|VIII|IX|XI|XII|XIII|XIV|XV|XVI)\\b(?![a-z'])`, 'g');
+/** "km/h" is "kilometers per hour" (dropping the slash lost the "per"). */
+const PER_UNITS: Record<string, string> = { 'km/h': 'kilometers per hour', 'm/s': 'meters per second', 'ft/s': 'feet per second', 'mi/h': 'miles per hour', 'km/s': 'kilometers per second' };
+/** Words after "a/b" that make it a fraction, not a date ("by 3/5 of the vote"). */
+const FRACTION_NEXT = /^\s+(?:to\s+\d{1,2}\/\d{1,2}\s+)?(?:of|a|an|the|cups?|teaspoons?|tablespoons?|tsp|tbsp|inch(?:es)?|miles?|pounds?|lbs?|oz|ounces?|majority|share|vote|chance)\b/i;
 const FRACTIONS: Record<string, string> = { '1/2': 'half', '1/3': 'a third', '2/3': 'two thirds', '1/4': 'a quarter', '3/4': 'three quarters' };
 /** Units said wrong after a number ("35 ms" as "M S", "6 ft" as "F T"): [singular, plural]. */
 const UNITS: Record<string, [string, string]> = { ms: ['millisecond', 'milliseconds'], ft: ['foot', 'feet'], hz: ['hertz', 'hertz'] };
+
+const DENOMINATORS: Record<number, [string, string]> = { 5: ['fifth', 'fifths'], 6: ['sixth', 'sixths'], 8: ['eighth', 'eighths'], 10: ['tenth', 'tenths'] };
+/** "3/5" as "3 fifths" (simple fractions only: smaller over 5, 6, 8 or 10). */
+function fraction(a: number, b: number): string | undefined {
+  const d = DENOMINATORS[b];
+  if (!d || a < 1 || a >= b) return undefined;
+  return a === 1 ? `one ${d[0]}` : `${a} ${d[1]}`;
+}
 
 export function ordinal(n: number): string {
   const t = n % 100;
@@ -186,12 +230,20 @@ export function forSpeech(text: string): string {
   t = t.replace(/\b(Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sept?|Oct|Nov|Dec)\.?\s+(\d{1,2})(?![\d:.,]\d|st|nd|rd|th)\b/g, (m, mon: string, d: string) =>
     +d >= 1 && +d <= 31 ? `${MONTH_ABBR[mon.toLowerCase()]} ${ordinal(+d)}` : m,
   );
-  t = t.replace(/\b(on|by|until|from|since|before|after|due|through|till)\s+(\d{1,2})\/(\d{1,2})(?![/\d])/gi, (m, w: string, a: string, b: string) =>
-    // "cut it by 1/2" is a fraction, "on 1/2" a date.
-    +a >= 1 && +a <= 12 && +b >= 1 && +b <= 31 && !(FRACTIONS[`${a}/${b}`] && !/^(on|until|since|from|through|till|due)$/i.test(w)) ? `${w} ${MONTHS[+a - 1]} ${ordinal(+b)}` : m,
-  );
-  // Clock-style durations: "00:04:10" and "1:30 left".
-  t = t.replace(/\b(\d{1,2}):(\d\d):(\d\d)\b/g, (_, h: string, m: string, sec: string) => duration(+h, +m, +sec));
+  t = t.replace(/\b(on|by|until|from|since|before|after|due|through|till)\s+(\d{1,2})\/(\d{1,2})(?![/\d])/gi, (m, w: string, a: string, b: string, at: number, all: string) => {
+    // "cut it by 1/2" is a fraction, "on 1/2" a date; so is "by 3/5 of the
+    // vote" and "from 1/2 to 3/4 of a cup".
+    // ("on 11/21 the store opens" is still a date: only by/from/before/after are ambiguous.)
+    if (/^(by|from|before|after)$/i.test(w) && FRACTION_NEXT.test(all.slice(at + m.length))) return m;
+    const fraction = FRACTIONS[`${a}/${b}`] && !/^(on|until|since|through|till|due)$/i.test(w);
+    return +a >= 1 && +a <= 12 && +b >= 1 && +b <= 31 && !fraction ? `${w} ${MONTHS[+a - 1]} ${ordinal(+b)}` : m;
+  });
+  // Clock-style durations: "00:04:10" and "1:30 left". A time of day with
+  // seconds ("at 10:30:00", "3:15:20 PM") isn't one: on the hour it loses its
+  // ":00" seconds, otherwise it's left as it is.
+  t = t.replace(/(?<=\b(?:at|by|until|from|since|till|before|after)\s)(\d{1,2}):(\d\d):00\b/gi, '$1:$2');
+  t = t.replace(/\b(\d{1,2}):(\d\d):00(?=\s?[AaPp]\.?[Mm]\b)/g, '$1:$2');
+  t = t.replace(/(?<!\b(?:at|by|until|from|since|till|before|after)\s)\b(\d{1,2}):(\d\d):(\d\d)\b(?!\s?[AaPp]\.?[Mm]\b)/gi, (_, h: string, m: string, sec: string) => duration(+h, +m, +sec));
   t = t.replace(/\b(\d{1,2}):(\d\d)(?=\s+(?:left|remaining|to go)\b)/g, (_, m: string, sec: string) => duration(0, +m, +sec));
   t = t.replace(/\b0(\d):(\d\d)\b/g, '$1:$2'); // "07:00" → "7:00"
   // On the hour: "7:00" is read "seven zero zero".
@@ -202,9 +254,18 @@ export function forSpeech(text: string): string {
   t = t.replace(/(\d)\s?°\s?F\b/g, '$1 degrees');
   t = t.replace(/(\d)\s?°\s?C\b/g, '$1 degrees Celsius');
   t = t.replace(/(\d)\s?°/g, '$1 degrees');
-  // Money the voices read backwards ("euros 20").
-  t = t.replace(/€\s?(\d[\d,]*)(?:\.(\d\d))?\b/g, (_, n: string, c?: string) => `${n} ${n === '1' ? 'euro' : 'euros'}${c && c !== '00' ? ` ${c}` : ''}`);
-  t = t.replace(/£\s?(\d[\d,]*)(?:\.(\d\d))?\b/g, (_, n: string, c?: string) => `${n} ${n === '1' ? 'pound' : 'pounds'}${c && c !== '00' ? ` ${c}` : ''}`);
+  // Money the voices read backwards ("euros 20"). Cents only for exactly two
+  // decimals; "€2.5 million" is "2.5 million euros".
+  const money = (one: string, many: string) => (_: string, n: string, d: string | undefined, scale: string | undefined) => {
+    if (scale) return `${n}${d ? `.${d}` : ''} ${scale.trim()} ${many}`;
+    if (d !== undefined && d.length !== 2) return `${n}.${d} ${many}`;
+    return `${n} ${n === '1' ? one : many}${d && d !== '00' ? ` ${d}` : ''}`;
+  };
+  // Commas only as thousands separators ("€20, or" keeps its comma), and an
+  // amount run into letters ("£5m", "€20k", "£1.5bn") is left to the voice.
+  const amount = String.raw`\s?(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d+))?(?!\w|[.,]\d)(\s(?:thousand|million|billion|trillion)\b)?`;
+  t = t.replace(new RegExp(`€${amount}`, 'g'), money('euro', 'euros'));
+  t = t.replace(new RegExp(`£${amount}`, 'g'), money('pound', 'pounds'));
   t = t.replace(/#(\d)/g, 'number $1');
   // Units after a number.
   t = t.replace(/\b(\d+(?:\.\d+)?)\s?(ms|ft|Hz)(?![\w/])/g, (m, n: string, u: string) => {
@@ -212,14 +273,19 @@ export function forSpeech(text: string): string {
     return w ? `${n} ${plural(n, w)}` : m;
   });
   // Slashes: "50/50", "1/2 a cup", "AC/DC" (read "slash").
-  t = t.replace(/\b(\d+)\/(\d+)\b(?!\/)/g, (m, a: string, b: string) => (a === b ? `${a} ${b}` : (FRACTIONS[m] ?? m)));
-  t = t.replace(/\b([A-Za-z]+)\/([A-Za-z]+)\b/g, '$1 $2');
+  t = t.replace(/\b(\d+)\/(\d+)\b(?!\/)/g, (m, a: string, b: string) => (a === b ? `${a} ${b}` : (FRACTIONS[m] ?? fraction(+a, +b) ?? m)));
+  t = t.replace(/\b(km|m|ft|mi)\/(h|s)\b/g, (m) => PER_UNITS[m] ?? m);
+  // Only names in capitals ("AC/DC", "TCP/IP") and "and/or"; "w/o" is left to the voice.
+  t = t.replace(/\b([A-Z]{2,})\/([A-Z]{2,})\b/g, '$1 $2');
+  t = t.replace(/\band\/or\b/g, 'and or');
   // Abbreviations read as letters or words: "St." Mary's, "approx.", "Pt. 2".
   // "St." before a name is Saint, but after one ("Main St.") it's Street.
   t = t.replace(/(?<!\b[A-Z][a-z]*\s)\bSt\.\s(?=[A-Z][a-z])/g, 'Saint ');
   t = t.replace(/\bapprox\.?(?=\s)/gi, 'approximately');
   t = t.replace(/\bPt\.?\s?(\d)/g, 'Part $1');
   t = t.replace(/\bvs\.?(?=\s)/g, 'versus'); // read "V S"
+  // Rulers first: "Queen Elizabeth II" is "Queen Elizabeth the Second".
+  t = t.replace(REGNAL_RE, (_, w: string, r: string) => `${w} the ${ORDINAL_WORDS[ROMAN[r]!]}`);
   // "Hades II" is read "Hades Roman two".
   t = t.replace(/\b([A-Z][a-z]+) (II|III|IV|VI|VII|VIII|IX|XI|XII|XIII|XIV|XV|XVI)\b(?![a-z'])/g, (_, w: string, r: string) => `${w} ${ROMAN[r]}`);
   return t;

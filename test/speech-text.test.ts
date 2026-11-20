@@ -32,6 +32,26 @@ describe('forSpeech (English voices)', () => {
     ['Playing Pt. 2 by Kanye West.', 'Playing Part 2 by Kanye West.'],
     ['Hades II is on sale.', 'Hades 2 is on sale.'],
     ['Cats vs. dogs.', 'Cats versus dogs.'],
+    // Review fixes (VO1-VO5)
+    ['It costs €2.5 million.', 'It costs 2.5 million euros.'],
+    ['It costs £1.5 billion.', 'It costs 1.5 billion pounds.'],
+    ['€10.5 per month', '10.5 euros per month'],
+    ['€1.234 total', '1.234 euros total'],
+    ['€20.50 each', '20 euros 50 each'],
+    ['approved by 3/5 of the Senate', 'approved by 3 fifths of the Senate'],
+    ['from 1/2 to 3/4 of a cup', 'from half to three quarters of a cup'],
+    ['Pay it by 11/21.', 'Pay it by November 21st.'],
+    ['The meeting starts at 10:30:00.', 'The meeting starts at 10:30.'],
+    ['It is 10:30:00 PM.', 'It is 10:30 PM.'],
+    ['Queen Elizabeth II', 'Queen Elizabeth the Second'],
+    ['Pope Leo XIV spoke.', 'Pope Leo the Fourteenth spoke.'],
+    ['Henry VIII had six wives.', 'Henry the Eighth had six wives.'],
+    ['World War II ended in 1945.', 'World War 2 ended in 1945.'],
+    ['Going 15 km/h, or 9.8 m/s.', 'Going 15 kilometers per hour, or 9.8 meters per second.'],
+    ['TCP/IP and/or UDP', 'TCP IP and or UDP'],
+    ['It costs €20, or £15.', 'It costs 20 euros, or 15 pounds.'],
+    ['€1,500 total', '1,500 euros total'],
+    ['On 11/21 the store opens.', 'On November 21st the store opens.'],
   ];
   for (const [text, said] of cases) it(text, () => expect(forSpeech(text)).toBe(said));
 
@@ -47,6 +67,10 @@ describe('forSpeech (English voices)', () => {
       'About 5 km, 1.2 kg or 150 lbs, in 20 min.',
       "It's 5:00 PM on November 28.",
       '#gaming',
+      'It ended at 3:15:20 PM.', // a time of day with seconds, not a duration
+      'Coffee w/o sugar.', // left to the voice: "w o" lost the meaning
+      'It cost £5m, then €20k, then £1.5bn.', // amounts run into letters: left to the voice
+      'Downloading at 5 MB/s.', // megabytes, not "megabits per"
     ]) expect(forSpeech(t)).toBe(t);
   });
 
@@ -72,6 +96,24 @@ describe('toSpeakable', () => {
     expect(toSpeakable('(https://example.org)')).toBe('(example.org)');
     // Never the whole address, however it's wrapped.
     for (const t of ['http://localhost:8080/x', '"https://x.com"', '<https://a.b>', '**https://x.com**', 'go to https://x.com/a?b=c&d=e, then']) expect(toSpeakable(t)).not.toMatch(/https?:|\/\//);
+  });
+
+  it('never reads a home address, a user name, an IP or an odd host', () => {
+    expect(toSpeakable('Open http://192.168.0.20:8080/admin now.')).toBe('Open a local link now.');
+    expect(toSpeakable('http://localhost:8080/x')).toBe('a local link');
+    expect(toSpeakable('See http://nas.local/share.')).toBe('See a local link.');
+    expect(toSpeakable('Try http://10.0.0.2 or http://100.100.1.1/')).toBe('Try a local link or a local link');
+    expect(toSpeakable('https://user:secret@host.example/x')).toBe('a link');
+    expect(toSpeakable('http://8.8.8.8/dns')).toBe('a link');
+    expect(toSpeakable('Go to https://日本.jp/x now')).toBe('Go to a link now');
+    expect(toSpeakable('http://[::1]:8080/')).toBe('a link');
+    for (const t of ['http://192.168.1.1', 'https://u@x.com', 'http://[fe80::1]/', 'https://ünï.com']) expect(toSpeakable(t)).not.toMatch(/\d+\.\d+|u@|::|ünï|https?:/);
+  });
+
+  it('reads a link in linear time, however much punctuation follows it', () => {
+    const t0 = performance.now();
+    toSpeakable(`https://a.b/${')'.repeat(32_000)}`);
+    expect(performance.now() - t0).toBeLessThan(200);
   });
 
   it('keeps "#1" but drops a heading marker', () => {

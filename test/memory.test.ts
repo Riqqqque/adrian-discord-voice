@@ -109,16 +109,21 @@ describe('the manager waiting for memory', () => {
   it('puts the start off while memory is short, and starts once it frees up', async () => {
     let mem = starved;
     const r = rig(() => mem);
-    await expect(r.m.restart()).resolves.toBe('failed');
+    // Still starting, not failed: `adrian update` keeps waiting instead of rolling back.
+    await expect(r.m.restart()).resolves.toBe('starting');
+    expect(r.m.waitingFor).toBe('memory');
     expect(r.m.error).toMatch(/Too little free memory/);
     expect(r.start).not.toHaveBeenCalled();
-    expect(r.lines.map((l) => l.m)).toContain('trying the voice stack again');
+    expect(r.lines.map((l) => l.m)).toContain('waiting for memory before loading the speech models');
+    expect(r.lines.map((l) => l.m)).not.toContain('voice stack failed to start');
     await vi.advanceTimersByTimeAsync(30_000);
-    expect(r.start).not.toHaveBeenCalled(); // still short: the wait doubles
+    expect(r.start).not.toHaveBeenCalled(); // still short: it looks again every 30 s
+    expect(r.m.state).toBe('starting');
     mem = usual;
-    await vi.advanceTimersByTimeAsync(60_000);
+    await vi.advanceTimersByTimeAsync(30_000);
     expect(r.start).toHaveBeenCalledTimes(1);
     expect(r.m.state).toBe('running');
+    expect(r.m.waitingFor).toBeUndefined();
   });
 
   it('loads anyway after a quarter of an hour of waiting, in case the estimate is wrong', async () => {
@@ -126,11 +131,12 @@ describe('the manager waiting for memory', () => {
     await r.m.restart();
     await vi.advanceTimersByTimeAsync(14 * 60_000);
     expect(r.start).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(r.m.state).toBe('starting');
+    await vi.advanceTimersByTimeAsync(60_000 + 1);
     expect(r.start).toHaveBeenCalledTimes(1);
     expect(r.lines.map((l) => l.m)).toContain('starting anyway after waiting for memory');
     expect(r.m.state).toBe('running');
-  });
+  }, 30_000); // 30 looks at memory, each a start attempt that reads the config
 
   it('a restart with the speech models already loaded does not wait', async () => {
     vi.spyOn(ParakeetStt, 'load').mockResolvedValue({} as ParakeetStt);

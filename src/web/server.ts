@@ -224,6 +224,8 @@ export function createAdminServer(d: WebDeps): Server {
       return json(res, s.state === 'failed' ? 503 : 200, {
         ok: s.state === 'running' || s.state === 'setup',
         state: s.state,
+        // A start put off for memory: still starting, not the release's fault.
+        ...(s.waitingFor ? { waitingFor: s.waitingFor } : {}),
         voiceReady: s.current?.voiceReady() ?? false,
         // People in her call or music playing: the auto-updater waits.
         busy: s.current?.busy() ?? false,

@@ -198,7 +198,7 @@ export async function startVoiceStack(
       : undefined;
   if (cloud) log.info('cloud voice', { provider: cv!.provider, voice: cv!.voiceId, usedChars: voiceBudget.used(), monthlyChars: cv!.monthlyChars });
   // Kokoro loads now only when it speaks English; as the cloud's stand-in it loads on first use.
-  await prepareLocalVoice(tts, { modelDir: voice.modelDir, voice: voice.voice, speed: voice.speed, cloudPrimary: !!cloud && voiceBudget.allows(1) }, log);
+  await prepareLocalVoice(tts, { modelDir: voice.modelDir, voice: voice.voice, speed: voice.speed, cloudPrimary: !!cloud && voiceBudget.allows(1), gainFile: stateDir ? join(stateDir, 'voice-gains.json') : undefined }, log);
   const CLOUD = 'cloud:en';
   const voiceFor = (lang: ReplyLang) => (lang === 'en' ? (cloud ? CLOUD : voice.voice) : lang === 'vi' && !piperVi ? voice.voice : LANGS[lang].voice);
   /** Said before a slow lookup when nothing else has been said yet. */

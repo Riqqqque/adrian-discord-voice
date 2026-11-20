@@ -122,13 +122,14 @@ export function gainAndLimit(x: Float32Array, rate: number, gainDb: number, ceil
  *  sample, as running gainAndLimit on all of it at once. Holds back the 2 ms
  *  look-ahead until the next piece (or end()) shows what follows. */
 export class StreamLimiter {
-  private readonly g: number;
+  protected readonly g: number;
   private readonly ceil: number;
   private readonly look: number;
   private readonly releasePerSample: number;
   private env = 1;
-  /** Input not yet output (the look-ahead), and its required reduction. */
-  private held = new Float32Array(0);
+  /** Input not yet output (the look-ahead), with its gain applied (in double,
+   *  as gainAndLimit computes x * g * env), and its required reduction. */
+  private held = new Float64Array(0);
   private need = new Float32Array(0);
 
   constructor(rate: number, gainDb: number, ceilingDb = -2) {
@@ -139,13 +140,19 @@ export class StreamLimiter {
   }
 
   push(x: Float32Array): Float32Array {
-    const held = new Float32Array(this.held.length + x.length);
+    return this.pushWithGains(x);
+  }
+
+  /** push(), with a linear gain per sample instead of the fixed one. */
+  protected pushWithGains(x: Float32Array, gains?: Float64Array): Float32Array {
+    const k = this.held.length;
+    const held = new Float64Array(k + x.length);
     held.set(this.held);
-    held.set(x, this.held.length);
+    for (let i = 0; i < x.length; i++) held[k + i] = x[i]! * (gains ? gains[i]! : this.g);
     const need = new Float32Array(held.length);
     need.set(this.need);
-    for (let i = this.need.length; i < held.length; i++) {
-      const a = Math.abs(held[i]! * this.g);
+    for (let i = k; i < held.length; i++) {
+      const a = Math.abs(held[i]!);
       need[i] = a > this.ceil ? this.ceil / a : 1;
     }
     // A sample is final once its whole look-ahead window has arrived.
@@ -159,22 +166,127 @@ export class StreamLimiter {
   /** The held tail, now that nothing follows it. */
   end(): Float32Array {
     const out = this.run(this.held, this.need, this.held.length, this.held.length);
-    this.held = new Float32Array(0);
+    this.held = new Float64Array(0);
     this.need = new Float32Array(0);
     return out;
   }
 
-  private run(x: Float32Array, need: Float32Array, count: number, n: number): Float32Array {
+  private run(x: Float64Array, need: Float32Array, count: number, n: number): Float32Array {
     const out = new Float32Array(count);
     for (let i = 0; i < count; i++) {
       let target = 1;
       for (let j = i; j < Math.min(n, i + this.look); j++) target = Math.min(target, need[j]!);
       this.env = target < this.env ? target : this.env + (target - this.env) * this.releasePerSample;
-      let v = x[i]! * this.g * this.env;
+      let v = x[i]! * this.env;
       if (v > this.ceil) v = this.ceil;
       else if (v < -this.ceil) v = -this.ceil;
       out[i] = v;
     }
     return out;
   }
+}
+
+export interface StreamCapOptions {
+  /** The loudest a sentence may land, LUFS (levelChunk's target + MAX_OVER_LU). */
+  maxLufs: number;
+  /** Audio that goes out at once at the calibrated gain, s (default 0.6). */
+  freeS?: number;
+  /** Ramp from the calibrated gain to the capped one, s (default 0.05). */
+  rampS?: number;
+}
+
+/** levelChunk's whole-sentence cap for audio played as it arrives. The first
+ *  freeS seconds go out at once at the calibrated gain, so first audio is as
+ *  early as without the cap. The rest is held until the sentence is complete
+ *  (end()), then gets the cap measured on the whole sentence, as levelChunk
+ *  does, reached with a short ramp. Speechify sends a sentence about 30 times
+ *  faster than it plays, so all of it is normally in long before the held
+ *  part is due. If the caller says it's due first (release()), it goes out
+ *  uncapped, as does the rest of the sentence: what streaming did before.
+ *  A sentence that isn't hot comes out sample for sample as StreamLimiter's. */
+export class StreamCap extends StreamLimiter {
+  private readonly baseDb: number;
+  private readonly freeN: number;
+  private readonly rampN: number;
+  private readonly all: Float32Array[] = [];
+  private waiting: Float32Array[] = [];
+  private sent = 0;
+  private mode: 'free' | 'hold' | 'open' | 'done' = 'free';
+  /** How far the held part was turned down, dB (0 if the sentence wasn't hot or wasn't held). */
+  cutDb = 0;
+
+  constructor(
+    private readonly rate: number,
+    gainDb: number,
+    ceilingDb: number,
+    private readonly o: StreamCapOptions,
+  ) {
+    super(rate, gainDb, ceilingDb);
+    this.baseDb = gainDb;
+    this.freeN = Math.round((o.freeS ?? 0.6) * rate);
+    this.rampN = Math.max(1, Math.round((o.rampS ?? 0.05) * rate));
+  }
+
+  /** Audio is being held until end() or release(). */
+  get holding(): boolean {
+    return this.mode === 'hold' && this.waiting.length > 0;
+  }
+
+  override push(x: Float32Array): Float32Array {
+    if (this.mode === 'done') return new Float32Array(0);
+    this.all.push(x);
+    if (this.mode === 'open') return super.push(x);
+    let now = x;
+    if (this.mode === 'free') {
+      const take = Math.min(x.length, this.freeN - this.sent);
+      now = x.subarray(0, take);
+      this.sent += take;
+      if (take < x.length) {
+        this.mode = 'hold';
+        this.waiting.push(x.subarray(take));
+      }
+    } else {
+      this.waiting.push(x);
+      now = new Float32Array(0);
+    }
+    return super.push(now);
+  }
+
+  /** The held part is due before the sentence is complete: out it goes,
+   *  uncapped, and so does everything after it. */
+  release(): Float32Array {
+    if (this.mode === 'done' || this.mode === 'open') return new Float32Array(0);
+    this.mode = 'open';
+    const held = concat(this.waiting);
+    this.waiting = [];
+    return super.push(held);
+  }
+
+  /** The whole sentence is in: the held part with the cap, then the limiter's tail. */
+  override end(): Float32Array {
+    if (this.mode === 'done') return new Float32Array(0);
+    let out: Float32Array = new Float32Array(0);
+    if (this.mode !== 'open' && this.waiting.length) {
+      const held = concat(this.waiting);
+      this.waiting = [];
+      const l = integratedLoudness(concat(this.all), this.rate);
+      this.cutDb = Number.isFinite(l) ? Math.max(0, this.baseDb - (this.o.maxLufs - l)) : 0;
+      if (this.cutDb === 0) out = super.push(held);
+      else {
+        const g = new Float64Array(held.length);
+        for (let i = 0; i < g.length; i++) g[i] = 10 ** ((this.baseDb - this.cutDb * Math.min(1, (i + 1) / this.rampN)) / 20);
+        out = this.pushWithGains(held, g);
+      }
+    }
+    this.mode = 'done';
+    return concat([out, super.end()]);
+  }
+}
+
+function concat(parts: Float32Array[]): Float32Array {
+  if (parts.length === 1) return parts[0]!;
+  const out = new Float32Array(parts.reduce((n, p) => n + p.length, 0));
+  let o = 0;
+  for (const p of parts) (out.set(p, o), (o += p.length));
+  return out;
 }

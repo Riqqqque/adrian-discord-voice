@@ -47,6 +47,9 @@ class Channel {
     readonly source: NodeJS.ReadableStream,
     public volume: number,
     private readonly onChange: () => void,
+    /** Speech: never play part of a frame padded with silence while more is
+     *  coming (streamed audio can fall behind mid-word); wait for a whole one. */
+    private readonly wholeFrames = false,
   ) {
     source.on('data', (b: Buffer) => {
       this.chunks.push(b);
@@ -81,9 +84,15 @@ class Channel {
     return this.ended && this.queued === 0;
   }
 
+  /** Less than a frame is buffered and more is coming. */
+  get short(): boolean {
+    return this.queued > 0 && this.queued < FRAME_BYTES && !this.ended;
+  }
+
   /** Next frame, or undefined if nothing is buffered (an underrun). */
   take(): Buffer | undefined {
     if (this.queued === 0) return undefined;
+    if (this.wholeFrames && this.short) return undefined;
     const out = Buffer.alloc(FRAME_BYTES);
     let off = 0;
     while (off < FRAME_BYTES && this.chunks.length) {
@@ -97,7 +106,7 @@ class Channel {
     this.queued -= off;
     this.started = true;
     if (this.queued < FRAME_BYTES * 50) (this.source as Readable).resume?.();
-    return out; // a short tail is padded with silence
+    return out; // a short tail is padded with silence (speech: only its last one)
   }
 
   finish(o: Outcome): void {
@@ -150,8 +159,9 @@ export class Mixer {
   private audioAt: number | undefined;
   /** When a source first held audio too short to start on. */
   private waitingSince: number | undefined;
-  /** Since the last takeStats(): frames the music source was empty, frames made up after stalls, longest stall. */
-  private stats = { musicGaps: 0, madeUp: 0, longestStallMs: 0 };
+  /** Since the last takeStats(): frames the music source was empty, frames made up after stalls, longest
+   *  stall, and frames speech waited with part of a frame in (it fell behind mid-sentence). */
+  private stats = { musicGaps: 0, madeUp: 0, longestStallMs: 0, speechShort: 0 };
   private lastTick = 0;
   private paused = false;
   /** What onVoice last said. */
@@ -166,7 +176,7 @@ export class Mixer {
 
   /** Same shape as VoiceTransport.playPcm, so the Speaker uses it as is. */
   playPcm(stream: NodeJS.ReadableStream, opts?: { volume?: number }): PlaybackHandle {
-    const ch = new Channel(stream, opts?.volume ?? 0.7, () => this.wake());
+    const ch = new Channel(stream, opts?.volume ?? 0.7, () => this.wake(), true);
     this.speech.push(ch);
     this.wake();
     return { done: ch.done, stop: () => (ch.drop(), this.wake()) };
@@ -245,9 +255,9 @@ export class Mixer {
   }
 
   /** Playback health since the last call. */
-  takeStats(): { musicGaps: number; madeUp: number; longestStallMs: number } {
+  takeStats(): { musicGaps: number; madeUp: number; longestStallMs: number; speechShort: number } {
     const s = this.stats;
-    this.stats = { musicGaps: 0, madeUp: 0, longestStallMs: 0 };
+    this.stats = { musicGaps: 0, madeUp: 0, longestStallMs: 0, speechShort: 0 };
     return s;
   }
 
@@ -350,6 +360,7 @@ export class Mixer {
     while (this.speech.length && this.speech[0]!.drained) this.speech.shift()!.finish('finished');
     const sp = this.speech[0];
     const sFrame = audio ? sp?.take() : undefined;
+    if (audio && sp && !sFrame && sp.short) this.stats.speechShort++;
 
     const m = this.music;
     if (m?.drained) {
