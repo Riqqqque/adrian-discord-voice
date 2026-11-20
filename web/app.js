@@ -589,8 +589,9 @@ function attentionCard(d) {
 
 function spendCard(d, sp) {
   const p = d.providers;
-  const row = (name, what, extra) => h('tr', {}, h('th', {}, name), h('td', {}, what, extra));
-  const off = h('span', { class: 'muted' }, 'off');
+  const row = (name, what, ...extra) => h('tr', {}, h('th', {}, name), h('td', {}, what, ...extra));
+  // A new node each time: one node appended to two rows ends up in the last only.
+  const off = () => h('span', { class: 'muted' }, 'off');
   return h('div', { class: 'card' },
     h('h2', {}, 'Spending'),
     h('table', {},
@@ -600,13 +601,13 @@ function spendCard(d, sp) {
       row('Cost per answer', `${usd(d.costPerAnswerUsd.day)} last day, ${usd(d.costPerAnswerUsd.week)} last 7 days`),
       row('Cloud voice (Speechify)', p.cloudVoice.on
         ? `${num(p.cloudVoice.monthChars)} of ${p.cloudVoice.monthlyChars ? num(p.cloudVoice.monthlyChars) : 'unlimited'} characters this month`
-        : off, p.cloudVoice.on ? meter(p.cloudVoice.monthChars, p.cloudVoice.monthlyChars) : null),
+        : off(), p.cloudVoice.on ? meter(p.cloudVoice.monthChars, p.cloudVoice.monthlyChars) : null),
       row('Second listen (Groq)', p.cloudStt.on || p.cloudStt.month
         ? `${num(p.cloudStt.today)} today, ${num(p.cloudStt.month)} this month (about ${usd(p.cloudStt.estMonthUsd)})`
-        : off),
+        : off()),
       row('Web search (Tavily)', p.search.on || p.search.month
         ? `${num(p.search.today)} today, ${num(p.search.month)} this month (the free plan has ${num(p.search.freePlan)})`
-        : off, p.search.on ? meter(p.search.month, p.search.freePlan) : null)),
+        : off(), p.search.on ? meter(p.search.month, p.search.freePlan) : null)),
     h('p', { class: 'small muted' }, `The dollar caps count the language model only. The other services have their own plans; these are counted here since ${when(d.since)}.`),
     sp.history.length
       ? h('table', {}, h('tr', {}, h('th', {}, 'Day'), h('th', {}, 'Questions'), h('th', {}, 'Cost')), sp.history.slice(0, 14).map((x) => h('tr', {}, h('td', {}, x.day), h('td', {}, x.requests), h('td', {}, usd(x.costUsd)))))

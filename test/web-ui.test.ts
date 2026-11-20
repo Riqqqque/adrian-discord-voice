@@ -600,6 +600,22 @@ describe('the dashboard numbers', () => {
     expect(s).toContain('0.17.1: 0.18.0 is available');
   });
 
+  it('draws a bar for each cap and quota', async () => {
+    const p = await page();
+    const spending = p.elements().find((e) => e.className === 'card' && e.textContent.startsWith('Spending'))!;
+    // Today and month against the caps, cloud voice characters, Tavily searches.
+    expect(spending.all().filter((e) => e.className.split(' ').includes('bar'))).toHaveLength(4);
+  });
+
+  it('puts every element in one place only, with several services off', async () => {
+    const off = { ...DASH.providers, cloudVoice: { ...DASH.providers.cloudVoice, on: false }, search: { ...DASH.providers.search, on: false, today: 0, month: 0 } };
+    const p = await page({ '/api/dashboard': () => ({ body: { ...DASH, providers: off } }) });
+    const els = p.elements();
+    // A real DOM moves a node appended twice; this fake one would show it twice.
+    expect(new Set(els).size).toBe(els.length);
+    expect(card(p, 'Spending').match(/off/g)).toHaveLength(3);
+  });
+
   it('says nothing needs attention on a quiet day', async () => {
     const p = await page({ '/api/dashboard': () => ({ body: { ...DASH, attention: [] } }) });
     expect(card(p, 'Needs attention')).toContain('Nothing needs attention.');

@@ -194,6 +194,8 @@ const TEXT = 160;
 /** A PC back within this long had a dropped link; later, it was off or asleep. */
 export const PC_DROP_MS = 10 * 60_000;
 const SAVE_EVERY_MS = 5 * 60_000;
+/** A disconnect this soon after a channel move is the move itself. */
+const MOVE_MS = 5_000;
 
 /** Discord IDs (17-20 digit snowflakes) and secrets out, length capped. */
 function clean(s: unknown): string | undefined {
@@ -240,7 +242,10 @@ export const WATCHED = {
   kicked: 'disconnected from voice by someone; staying out until /join',
   leftEmpty: 'left an empty channel',
   leave: 'leave requested',
-  pcUp: 'satellite connected',
+  moved: 'moved to another channel',
+  /** The first line of every stack start. */
+  stackStarting: 'asr loaded',
+  pcUp:'satellite connected',
   pcDown: 'satellite disconnected',
   satListening: 'satellite server listening',
   llmFallback: 'primary LLM failed; using fallback',
@@ -269,6 +274,7 @@ export class Metrics {
   private readonly pcs = new Map<string, { live: number; goneAt?: number | undefined }>();
   /** The stack is being stopped on purpose: links closing now aren't drops. */
   private stopping = false;
+  private movedAt = -Infinity;
   private readonly now: () => number;
   private readonly tz: string;
   private saveTimer: NodeJS.Timeout | undefined;
@@ -334,7 +340,15 @@ export class Metrics {
         this.answered(t, f ?? {});
         break;
       case WATCHED.voiceDropped:
-        if (!this.stopping) this.voiceDownSince ??= t;
+        // Being dragged to another channel passes through a disconnect too.
+        if (!this.stopping && t - this.movedAt > MOVE_MS) this.voiceDownSince ??= t;
+        break;
+      case WATCHED.moved:
+        this.movedAt = t;
+        this.voiceDownSince = undefined;
+        break;
+      case WATCHED.stackStarting:
+        this.stopping = false;
         break;
       case WATCHED.voiceState:
         if (f?.to === 'ready' && this.voiceDownSince !== undefined) {
