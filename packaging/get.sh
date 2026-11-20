@@ -22,6 +22,7 @@ REPO=${ADRIAN_UPDATE_REPO:-Riqqqque/adrian-discord-voice}
 CLI=/usr/local/bin/adrian
 OPT=/opt/adrian
 WORK=/var/cache/adrian-get
+RUN_SYSTEMD=/run/systemd/system
 
 VERSION="" YES=0 PACKAGES=1 REINSTALL=0 PASS=()
 while [ $# -gt 0 ]; do
@@ -45,8 +46,15 @@ ask() { # ask "question" default(y/n)
   a=${a:-$2}; [[ $a =~ ^[Yy] ]]
 }
 
-[ "$(id -u)" = 0 ] || die "run it as root: sudo bash $0 $*"
+[ "$(id -u)" = 0 ] || die "run it as root: sudo bash $0${PASS[*]:+ ${PASS[*]}}"
 [ "$(uname -s)" = Linux ] || die "this installs on Linux. On Windows, install the PC app instead (see the README)."
+# Before any package or download: the installer would refuse these anyway.
+case "$(uname -m)" in
+  x86_64) ;;
+  *) die "this computer's processor ($(uname -m)) isn't supported: A.D.R.I.A.N. runs only on 64-bit Intel or AMD computers (x86_64) for now. Nothing was changed." ;;
+esac
+[ -d "$RUN_SYSTEMD" ] ||
+  die "systemd isn't running here, and the install needs it (on WSL: add [boot] and systemd=true to /etc/wsl.conf, then wsl --shutdown). In a container, use the Docker install instead. Nothing was changed."
 
 # --- already installed: update instead --------------------------------------
 if [ "$REINSTALL" = 0 ] && [ -x "$CLI" ] && [ -e "$OPT/current" ]; then

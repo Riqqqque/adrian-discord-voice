@@ -30,6 +30,9 @@ interface Site {
   missing?: string[];
   /** The bundle's install.sh exits with this. */
   installExit?: number;
+  /** What uname -m says. */
+  arch?: string;
+  noSystemd?: boolean;
 }
 
 function site(s: Site = {}) {
@@ -55,7 +58,7 @@ function site(s: Site = {}) {
   const latest = versions[versions.length - 1];
   const stubs = `
     id() { echo 0; }
-    uname() { echo Linux; }
+    uname() { if [ "$1" = -m ]; then echo "${s.arch ?? 'x86_64'}"; else echo Linux; fi; }
     install() { mkdir -p "\${@: -1}"; }
     apt-get() { echo "apt-get $*" >>"${root}/apt.log"; }
     ss() { :; }
@@ -79,7 +82,8 @@ function site(s: Site = {}) {
   const script = readFileSync(`${packaging}get.sh`, 'utf8')
     .replace(/^CLI=.*$/m, `CLI=${root}/adrian-cli`)
     .replace(/^OPT=.*$/m, `OPT=${root}/opt`)
-    .replace(/^WORK=.*$/m, `WORK=${root}/work`);
+    .replace(/^WORK=.*$/m, `WORK=${root}/work`)
+    .replace(/^RUN_SYSTEMD=.*$/m, `RUN_SYSTEMD=${root}/${s.noSystemd ? 'none' : 'pub'}`);
   put('get.sh', script);
   return {
     root,
@@ -139,6 +143,16 @@ describe.skipIf(!hasBash)('get.sh', { timeout: 60_000 }, () => {
     expect(r.code).not.toBe(0);
     expect(r.err).toContain("can't reach GitHub");
     expect(r.err).toContain('run the same command again');
+  });
+
+  it('refuses an ARM computer or one without systemd before installing or downloading anything', () => {
+    for (const s of [site({ arch: 'aarch64', missing: ['ffmpeg'] }), site({ noSystemd: true, missing: ['ffmpeg'] })]) {
+      const r = s.run('--yes');
+      expect(r.code).not.toBe(0);
+      expect(r.err).toContain('Nothing was changed');
+      expect(s.read('apt.log')).toBe('');
+      expect(s.read('curl.log')).toBe('');
+    }
   });
 
   it('installs the missing system packages first, by their package names', () => {

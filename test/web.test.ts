@@ -86,6 +86,7 @@ const server = createAdminServer({
   stack,
   voicePreview: async () => Buffer.from('RIFF'),
   fetch: fakeFetch,
+  docker: false, // the same answers on a build machine that happens to be a container
 });
 let base = '';
 let host = '';

@@ -139,9 +139,21 @@ finish_interrupted() {
   rm -f "$MARK" "$MARK.unit"
   set -e
 }
-interrupted_note() { # for status and doctor
-  [ -f "$MARK" ] && echo "an update ($(cat "$MARK" 2>/dev/null | awk '{print $1" -> "$2}')) was cut off before it finished; sudo adrian update checks it and finishes or undoes it"
-  return 0
+update_running() { # another adrian update holds the lock right now
+  command -v flock >/dev/null && [ -f "$OPT/update.lock" ] && ! flock -n "$OPT/update.lock" true
+}
+take_update_lock() { # take_update_lock WHAT: one update (or rollback) at a time
+  command -v flock >/dev/null || return 0
+  exec 9>"$OPT/update.lock"
+  flock -n 9 && return 0
+  [ "$1" = --auto ] && { echo "update check skipped: another update is running"; exit 0; }
+  die "another update is already running (the hourly check, or another terminal). Wait for it to finish: sudo journalctl -u adrian-update -f"
+}
+interrupted_note() { # for status and doctor: "running" while one is, "cut off" only when none is
+  [ -f "$MARK" ] || return 0
+  local what; what=$(awk '{print $1" -> "$2}' "$MARK" 2>/dev/null)
+  if update_running; then echo "running: an update ($what) is under way right now"
+  else echo "cut off: an update ($what) was cut off before it finished; sudo adrian update checks it and finishes or undoes it"; fi
 }
 newer() { # newer A B: true when version A is above B
   "$NODE" -e 'const[a,b]=process.argv.slice(1).map(v=>v.split(/[.+-]/).map(n=>parseInt(n,10)||0));for(let i=0;i<Math.max(a.length,b.length);i++){const d=(a[i]||0)-(b[i]||0);if(d)process.exit(d>0?0:1)}process.exit(1)' "$1" "$2"
@@ -189,7 +201,7 @@ case "$cmd" in
     systemctl --no-pager --lines=0 status "$SERVICE" 2>/dev/null | sed -n '1,4p' || true
     if h=$(health 3 2>/dev/null); then echo "health: $h"; else echo "health: not responding"; fi
     read -r proto host port < <(addr); echo "admin UI: $proto://$host:$port/"
-    n=$(interrupted_note); [ -z "$n" ] || echo "warning: $n"
+    n=$(interrupted_note); [ -z "$n" ] || echo "${n#*: }"
     ;;
   logs) journalctl -u "$SERVICE" --no-pager -n 200 -o cat "$@" ;;
   start|stop|restart) need_root "$cmd"; systemctl "$cmd" "$SERVICE"; [ "$cmd" = stop ] || wait_healthy 60 >/dev/null || die "not healthy after 60 s: adrian logs" ;;
@@ -246,7 +258,8 @@ case "$cmd" in
       fi
     else ok "health: $h"; fi
     [ ! -f "$FAILED" ] || warn "update $(cat "$FAILED") failed here on $(date -r "$FAILED" '+%F %H:%M') and was undone; auto-update tries it again a day later, sudo adrian update any time"
-    n=$(interrupted_note); [ -z "$n" ] || bad "$n"
+    n=$(interrupted_note)
+    case "$n" in running:*) warn "${n#*: }" ;; cut\ off:*) bad "${n#*: }" ;; esac
     [ "$(stat -c %a "$ETC/secrets.env")" = 600 ] && ok "secrets.env is 0600" || bad "secrets.env permissions are $(stat -c %a "$ETC/secrets.env") (want 600)"
     [ "$(stat -c %U "$ETC/secrets.env")" = adrian ] && ok "secrets.env owned by adrian" || bad "secrets.env owner is $(stat -c %U "$ETC/secrets.env")"
     # Files a command run as root by hand left behind: the service can't read or replace them.
@@ -314,15 +327,12 @@ case "$cmd" in
       exit "$rc"
     fi
     # One update at a time: the hourly check and one by hand must not cross.
-    if command -v flock >/dev/null; then
-      exec 9>"$OPT/update.lock"
-      if ! flock -n 9; then
-        [ "$b" = --auto ] && { echo "update check skipped: another update is running"; exit 0; }
-        die "another update is already running (the hourly check, or another terminal). Wait for it to finish: sudo journalctl -u adrian-update -f"
-      fi
+    # --check only looks, so it takes no lock and leaves everything alone.
+    if [ "$b" != --check ]; then
+      take_update_lock "$b"
       rm -rf "$OPT"/.update-* "$OPT"/.prep-* # left by one that was cut off; nothing else uses them while the lock is held
+      finish_interrupted
     fi
-    [ "$b" = --check ] || finish_interrupted
     case "$b" in
       --check)
         v=$(latest_release) || die "couldn't reach GitHub to see the newest release; check this server's internet connection"
@@ -442,6 +452,7 @@ case "$cmd" in
     esac ;;
   rollback)
     need_root rollback
+    take_update_lock rollback
     finish_interrupted
     prev=$(previous_version); [ -n "$prev" ] || die "no previous version to roll back to"
     echo "Switching $(current_version) -> $prev"

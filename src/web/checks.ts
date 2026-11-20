@@ -339,7 +339,10 @@ function noAnswer(e: unknown): string {
  *  is the provider's own message (never shown whole: it may echo the request). */
 export function llmError(status: number, detail: string, model: string): string {
   const d = detail.toLowerCase();
-  const money = /credit balance|insufficient[_ ]quota|billing|payment|exceeded your current quota|out of credits/.test(d);
+  // A rate limit often links the billing page ("upgrade at .../billing"), so
+  // for a 429 only the provider's own out-of-credit words count.
+  const quota = /credit balance|insufficient[_ ]quota|exceeded your current quota|out of credits/.test(d);
+  const money = quota || (status !== 429 && /billing|payment required/.test(d));
   if (money || status === 402) {
     return "The account behind this key has no credit left. Add some on the provider's billing page (for Claude: console.anthropic.com, Plans & Billing; a claude.ai subscription doesn't include API use), or choose Groq, which has a free tier.";
   }

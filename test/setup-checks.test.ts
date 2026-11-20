@@ -133,6 +133,11 @@ describe('a language-model key', () => {
     expect(llmError(429, '{"error":{"code":"insufficient_quota"}}', 'm')).toContain('no credit left');
   });
 
+  it('reads a free-tier rate limit that links the billing page as a rate limit', () => {
+    const groq = '{"error":{"message":"Rate limit reached for model openai/gpt-oss-120b in organization org_x on tokens per minute (TPM): Limit 8000, Used 7000, Requested 2000. Please try again in 7.5s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing","type":"tokens","code":"rate_limit_exceeded"}}';
+    expect(llmError(429, groq, 'openai/gpt-oss-120b')).toContain('rate-limiting');
+  });
+
   it('for a model the key can not use, names it', () => {
     expect(llmError(404, 'model_not_found', 'gemini-9')).toContain('gemini-9');
   });
