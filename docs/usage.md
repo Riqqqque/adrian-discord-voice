@@ -17,7 +17,8 @@ The spoken name is "Adrian". Facts here are for version 0.17.1.
 | "Adrian, …" | Treated as a question to it. |
 | "… hey Adrian, …" in the middle of a sentence | Also a question to it. |
 | "Adrian?" (the name alone) | "Yes?", then your next words within 20 seconds are the question. |
-| "What time is it, Adrian?", "Wait, Adrian, what's the score?" | A question with the name at the end, or after a lead-in: the model decides whether it was meant for it. Anything else said this way ("nice shot, Adrian", "stop it, Adrian") is left to whoever is called Adrian. |
+| "What time is it, Adrian?", "Wait, Adrian, what's the score?" | A question with the name at the end, or after a lead-in: the model decides whether it was meant for it, and sees the whole sentence, name included. Anything else said this way ("nice shot, Adrian", "what a save, Adrian", "stop it, Adrian", "can you stop, Adrian?") is left to whoever is called Adrian. |
+| "Good morning, Adrian", "Hey there, Adrian", "Excuse me, Adrian" | Everyday greetings, said to friends as often as to it: alone they don't wake it (from the next release). Followed by something only it does ("Morning Adrian, play some jazz", "Excuse me Adrian, what's the time?") they do; anything else after them, questions included, is left for the model to judge. |
 | "Adrian is so slow", "Hey, Adrian is in the other channel" | Talk *about* it: the model decides whether to answer, and usually stays quiet. "Have you seen Adrian?" doesn't wake it at all. |
 | "Adrian's late", "Adrian'll know" | Never a wake: a contraction after the name means you're talking about it. |
 
@@ -26,9 +27,11 @@ The spoken name is "Adrian". Facts here are for version 0.17.1.
 - **Keep talking.** If you pause mid-request and carry on before it starts answering (within 12 seconds), the two parts are joined into one request.
 - **Misspellings.** Speech recognition spells unusual names oddly, so it accepts misspellings like "Adrien" and "Adrean".
 - **A friend called Adrian** (next release). The wake check reads words, not who is being spoken to, so in a call with someone of that name:
-  - Questions to them that end in the name ("are you coming, Adrian?", "can you heal Adrian?", "what a shot, Adrian!") wake it loosely. The model is asked whether it was meant for it and usually stays quiet, but each one costs a model call and ducks the music for a few seconds.
-  - A stop phrased as a question ("can you stop, Adrian?") stops the music without asking the model.
-  - A greeting with the name alone ("good morning, Adrian", "morning Adrian") gets "Yes?", and "excuse me, Adrian, ..." is answered as a question to it. "Good morning, Adrian" therefore gets "Yes?" rather than the briefing; with "Hey Adrian, good morning" the model still decides, as before.
+  - Questions to them that end in the name ("are you coming, Adrian?", "did you hit Adrian?") wake it loosely. The model is asked whether it was meant for it, with the whole sentence, and usually stays quiet, but each one costs a model call and ducks the music for a few seconds.
+  - Exclamations ("what a shot, Adrian!", "how lucky, Adrian") and game talk about them ("can you heal Adrian?", "revive Adrian") don't wake it.
+  - A stop phrased as a question ("can you stop, Adrian?") is left to them: nothing stops without the model. "Adrian, stop" and "Adrian, be quiet" still stop it.
+  - A greeting with the name alone ("good morning, Adrian", "morning Adrian") doesn't wake it, so it doesn't answer "Yes?" and doesn't take the friend's next sentence as a question. A greeting followed by a question ("Morning Adrian, how was your weekend?", "Excuse me, Adrian, is this your seat?") goes to the model. With "Hey Adrian, good morning" the model still decides whether to give the briefing.
+  - "Adrian, did you eat?" and other questions about what someone did go to the model; "Adrian, will you…", "would you…" and "is it…" are still questions to it.
   - "Adrian, pass me the controller" has always been taken as an order to it.
   - These rules are English only: "¿Qué hora es, Adrián?" doesn't wake it.
 
