@@ -104,6 +104,8 @@ interface Scenario {
 const SCENARIOS: Scenario[] = [
   { name: 'wake + order', parts: [{ clip: 'wake' }], words: () => 'Hey Adrian, open Spotify.' },
   { name: 'wake + question', parts: [{ clip: 'wake2' }], words: () => 'Hey Adrian, what is the capital of Australia?' },
+  // Smart Turn doubts it, but its words end on a whole thought: let go without the hold.
+  { name: 'wake + order, doubted', parts: [{ clip: 'wake' }], words: () => 'Hey Adrian, open Spotify.', unfinished: () => true },
   { name: 'wake, 0.45 s pause, order', parts: [{ clip: 'name' }, { clip: 'cmd', pauseBefore: 0.45 }], words: (s) => (s < 1.3 ? 'Hey Adrian.' : s < 2.3 ? 'Open Spotify.' : 'Hey Adrian. Open Spotify.') },
   { name: 'wake + "play", 0.4 s, "Drake"', parts: [{ clip: 'play' }, { clip: 'drake', pauseBefore: 0.4 }], words: (s) => (s < 1 ? 'Drake.' : s < 2 ? 'Hey Adrian, play' : 'Hey Adrian, play Drake.') },
   {
