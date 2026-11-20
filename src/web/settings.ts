@@ -45,6 +45,8 @@ export const SettingsPatchSchema = z
       perUserPerHour: z.number().int().min(0).max(1000),
       dailyUsd: z.number().min(0).max(1000),
       monthlyUsd: z.number().min(0).max(10_000),
+      /** Each guest's own share of a day (owners, creator accounts and priority roles have none). */
+      guestDailyUsd: z.number().min(0).max(1000).optional(),
       maxRequestChars: z.number().int().min(20).max(4000),
     }),
     llm: llmChoice,
@@ -162,7 +164,7 @@ export function settingsView(raw: Raw): Raw {
     priorityRoleIds: raw.priorityRoleIds ?? [],
     playbackVolume: raw.playbackVolume ?? 0.7,
     voice: { voice: voice?.voice ?? 'af_heart', speed: voice?.speed ?? 1 },
-    limits: { perUserPerHour: 30, dailyUsd: 1, monthlyUsd: 10, maxRequestChars: 600, ...((raw.limits as Raw) ?? {}), usageFile: undefined },
+    limits: { perUserPerHour: 30, dailyUsd: 1, monthlyUsd: 10, guestDailyUsd: 0.2, maxRequestChars: 600, ...((raw.limits as Raw) ?? {}), usageFile: undefined },
     llm: brain
       ? { preset: brain.preset ?? 'custom', baseUrl: brain.baseUrl, model: brain.model, keySecret: brain.apiKeySecret, priceInPerM: brain.priceInPerM, priceOutPerM: brain.priceOutPerM }
       : null,

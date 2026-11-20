@@ -221,7 +221,7 @@ describe('admin web server', () => {
       fallback: { preset: 'gemini' },
       search: true,
       voice: { voice: 'am_michael', speed: 1 },
-      limits: { perUserPerHour: 20, dailyUsd: 0.5, monthlyUsd: 5, maxRequestChars: 600 },
+      limits: { perUserPerHour: 20, dailyUsd: 0.5, monthlyUsd: 5, guestDailyUsd: 0.3, maxRequestChars: 600 },
     });
     expect(r.status).toBe(200);
     const saved = JSON.parse(readFileSync(configFile, 'utf8')) as Record<string, any>;
@@ -229,6 +229,10 @@ describe('admin web server', () => {
     expect(saved.brain).toMatchObject({ model: 'openai/gpt-oss-120b', apiKeySecret: 'GROQ_API_KEY', search: { apiKeySecret: 'TAVILY_API_KEY' } });
     expect(saved.brain.fallback).toMatchObject({ model: 'gemini-3.1-flash-lite', apiKeySecret: 'GEMINI_API_KEY' });
     expect(saved.limits.usageFile).toBe(join(stateDir, 'usage.json'));
+    expect(saved.limits.guestDailyUsd).toBe(0.3);
+    // A page that doesn't send it keeps what was set.
+    expect((await call('PUT', '/api/settings', { limits: { perUserPerHour: 20, dailyUsd: 0.5, monthlyUsd: 5, maxRequestChars: 600 } })).status).toBe(200);
+    expect(JSON.parse(readFileSync(configFile, 'utf8')).limits.guestDailyUsd).toBe(0.3);
     expect(saved.voice.modelDir).toContain('kokoro-multi-lang-v1_0');
     expect((await call('PUT', '/api/settings', { timezone: 'Mars/Olympus' })).status).toBe(400);
     expect((await call('POST', '/api/restart', {})).status).toBe(200);

@@ -243,6 +243,20 @@ export class ListeningPipeline extends EventEmitter {
     });
   }
 
+  /** End what is being heard from them right now (a PC's push-to-talk going
+   *  down or up): it closes as it is, held speech included, and nothing said
+   *  after this joins it. */
+  cut(userId: UserId): void {
+    const u = this.users.get(userId);
+    if (!u) return;
+    delete u.voicedSince;
+    for (const s of u.vad.flush()) this.handleSegment(userId, s, 'flush');
+    u.early?.flush();
+    this.dropEarly(u);
+    delete u.earlyOpen;
+    this.release(userId, u);
+  }
+
   override on<E extends keyof ListeningPipelineEvents>(e: E, l: ListeningPipelineEvents[E]): this {
     return super.on(e, l);
   }

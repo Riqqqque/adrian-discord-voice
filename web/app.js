@@ -447,13 +447,14 @@ async function stepLimits({ settings, next, back }) {
   const per = h('input', { type: 'number', min: '0', value: l.perUserPerHour });
   const day = h('input', { type: 'number', min: '0', step: '0.1', value: l.dailyUsd });
   const mon = h('input', { type: 'number', min: '0', step: '1', value: l.monthlyUsd });
+  const guest = h('input', { type: 'number', min: '0', step: '0.05', value: l.guestDailyUsd ?? 0.2 });
   const out = h('div', { class: 'msg' });
   const save = h('button', { class: 'primary' }, 'Save and continue');
   save.addEventListener('click', busy(save, async () => {
     try {
       await api('PUT', '/api/settings', {
         timezone: tz.value.trim(),
-        limits: { perUserPerHour: Number(per.value), dailyUsd: Number(day.value), monthlyUsd: Number(mon.value), maxRequestChars: l.maxRequestChars },
+        limits: { perUserPerHour: Number(per.value), dailyUsd: Number(day.value), monthlyUsd: Number(mon.value), guestDailyUsd: Number(guest.value), maxRequestChars: l.maxRequestChars },
       });
       next();
     } catch (e) {
@@ -468,7 +469,9 @@ async function stepLimits({ settings, next, back }) {
     h('div', { class: 'row' },
       h('div', {}, h('label', {}, 'Questions per person per hour'), per),
       h('div', {}, h('label', {}, 'Daily cap (USD)'), day),
-      h('div', {}, h('label', {}, 'Monthly cap (USD)'), mon)),
+      h('div', {}, h('label', {}, 'Monthly cap (USD)'), mon),
+      h('div', {}, h('label', {}, 'Each guest per day (USD)'), guest)),
+    h('p', { class: 'muted small' }, 'Guests are everyone but owners, the creator's accounts and people with a priority role.'),
     out, h('div', {}, back, save),
   );
 }

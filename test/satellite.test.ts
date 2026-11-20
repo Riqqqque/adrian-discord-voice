@@ -144,6 +144,42 @@ describe('satellite connection', () => {
     await r.server.close();
   });
 
+  it('reads push-to-talk, its key-up and the output kind, and sends the chime notice', async () => {
+    const r = await rig();
+    const c = await r.client({ type: 'hello', token: r.token });
+    const conn = r.conns[0]!;
+    const events: unknown[] = [];
+    conn.on('ptt', (p) => events.push(['ptt', p]));
+    conn.on('pttUp', () => events.push(['up']));
+    conn.on('output', (k) => events.push(['output', k]));
+    expect(conn.output).toBe('unknown'); // until the PC says: older apps never do
+    for (const m of [
+      { type: 'ptt', down: true }, // an older app
+      { type: 'ptt', down: true, hold: true },
+      { type: 'ptt', down: false },
+      { type: 'output', kind: 'headphones' },
+      { type: 'output', kind: 'headphones' }, // the same again: no event
+      { type: 'output', kind: 'a toaster' },
+      { type: 'output', kind: 'speakers' },
+    ])
+      c.ws.send(JSON.stringify(m));
+    await new Promise((res) => setTimeout(res, 80));
+    expect(events).toEqual([
+      ['ptt', { hold: false }],
+      ['ptt', { hold: true }],
+      ['up'],
+      ['output', 'headphones'],
+      ['output', 'unknown'],
+      ['output', 'speakers'],
+    ]);
+    expect(conn.output).toBe('speakers');
+    conn.notice('ptt_only');
+    await new Promise((res) => setTimeout(res, 80));
+    expect(c.got).toContainEqual({ type: 'notice', kind: 'ptt_only' });
+    c.ws.close();
+    await r.server.close();
+  });
+
   it('round-trips PC actions, and answers when the PC goes away', async () => {
     const r = await rig();
     const c = await r.client({ type: 'hello', token: r.token });
