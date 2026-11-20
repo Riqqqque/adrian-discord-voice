@@ -113,6 +113,20 @@ describe('CacheWarmer', () => {
     expect(w.isWarm('k1')).toBe(false);
   });
 
+  it('close() resolves once a stopped warm-up has counted its cost, and sends nothing after', async () => {
+    const { llm } = fakeLlm();
+    const counted: WarmUsage[] = [];
+    const w = new CacheWarmer(llm, { enabled: true, maxPerHour: 20, onUsage: (u) => counted.push(u) });
+    w.warm(() => prefix(), 'heard');
+    w.warm(() => prefix('k2'), 'ptt');
+    await w.close();
+    // Both estimates are in by the time the spend file would be saved.
+    expect(counted).toHaveLength(2);
+    expect(w.warm(() => prefix('k3'), 'heard')).toBe('off');
+    expect(llm.warm).toHaveBeenCalledTimes(2);
+    await w.close(); // twice is fine
+  });
+
   it('caps warm-ups per hour and respects the spend caps', async () => {
     let now = 5_000_000;
     let allowed = true;
@@ -162,6 +176,42 @@ describe('orchestrator prewarm', () => {
     for await (const _ of dm.ask('u1', 'Sam', 'hi', new AbortController().signal, undefined, undefined, { text: true })) void _;
     expect(o.prewarm('heard')).toBe('warm'); // shared warmer, same prefix
     expect(llm.warm).not.toHaveBeenCalled();
+  });
+
+  it("an answer from the fallback model doesn't make Claude's prefix warm", async () => {
+    const claude = fakeLlm();
+    const other: LlmProvider = {
+      model: 'other',
+      async *stream(): AsyncIterable<LlmEvent> {
+        yield { type: 'text', delta: 'Canberra.' };
+        yield { type: 'usage', inputTokens: 1_100, cachedTokens: 1_000, outputTokens: 3 }; // its own cache
+      },
+    };
+    const down: LlmProvider & { warm: NonNullable<LlmProvider['warm']> } = {
+      ...claude.llm,
+      async *stream(): AsyncIterable<LlmEvent> {
+        throw new LlmHttpError(529, 'overloaded');
+      },
+    };
+    const llm = new FallbackLlm(down, other);
+    const warmer = new CacheWarmer(llm, { enabled: true, maxPerHour: 20 });
+    const o = new ConversationOrchestrator(llm, new SessionMemory(), [timeTool('America/Denver')], { ...opts, warmer });
+    let said = '';
+    for await (const s of o.ask('u1', 'Sam', 'capital of australia?', new AbortController().signal)) said += s;
+    expect(said).toBe('Canberra.');
+    expect(o.prewarm('heard')).toBe('sent');
+  });
+
+  it('stopWarming() waits for what a stopped warm-up billed', async () => {
+    const { llm } = fakeLlm();
+    const counted: WarmUsage[] = [];
+    const warmer = new CacheWarmer(llm, { enabled: true, maxPerHour: 20, onUsage: (u) => counted.push(u) });
+    const o = new ConversationOrchestrator(llm, new SessionMemory(), [timeTool('America/Denver')], { ...opts, warmer });
+    expect(o.prewarm('heard')).toBe('sent');
+    await o.stopWarming();
+    expect(counted).toHaveLength(1);
+    expect(o.prewarm('heard')).toBe('off');
+    await new ConversationOrchestrator(llm, new SessionMemory(), [], opts).stopWarming(); // no warmer
   });
 
   it('a new tool (a home server joining) is a new prefix', async () => {

@@ -56,6 +56,9 @@ export class CacheWarmer {
   /** Prefix key → when the last request that wrote or read it started. */
   private readonly used = new Map<string, number>();
   private readonly flying = new Map<string, AbortController>();
+  /** Every warm-up still out, settled once its cost is in. */
+  private readonly settling = new Set<Promise<void>>();
+  private closed = false;
   private sent: number[] = [];
   private readonly now: () => number;
 
@@ -69,7 +72,7 @@ export class CacheWarmer {
   /** Warm the prefix unless there's no need. `build` runs only when the
    *  warmer is on. Returns at once; the request runs in the background. */
   warm(build: () => Prefix, reason: string): WarmResult {
-    if (!this.o.enabled) return 'off';
+    if (!this.o.enabled || this.closed) return 'off';
     if (!this.llm.warm) return 'unsupported';
     const p = build();
     if (this.flying.has(p.key)) return 'in-flight';
@@ -83,7 +86,7 @@ export class CacheWarmer {
     this.flying.set(p.key, ctl);
     const timer = setTimeout(() => ctl.abort(), this.o.timeoutMs ?? 5_000);
     const t0 = performance.now();
-    void this.llm
+    const run: Promise<void> = this.llm
       .warm(p.messages, { tools: p.tools, signal: ctl.signal })
       .then(
         (u) => {
@@ -104,7 +107,9 @@ export class CacheWarmer {
       .finally(() => {
         clearTimeout(timer);
         if (this.flying.get(p.key) === ctl) this.flying.delete(p.key);
+        this.settling.delete(run);
       });
+    this.settling.add(run);
     return 'sent';
   }
 
@@ -119,9 +124,13 @@ export class CacheWarmer {
     return last !== undefined && this.now() - last < (this.o.ttlMs ?? 300_000) - (this.o.marginMs ?? 30_000);
   }
 
-  /** Stop any warm-up still out (shutdown). */
-  close(): void {
+  /** Shutdown: send no more, stop any warm-up still out, and resolve once
+   *  what they billed has gone to `onUsage`, so it is in before the spend
+   *  file is saved. */
+  async close(): Promise<void> {
+    this.closed = true;
     for (const ctl of this.flying.values()) ctl.abort();
     this.flying.clear();
+    await Promise.allSettled([...this.settling]);
   }
 }

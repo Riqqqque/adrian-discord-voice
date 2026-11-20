@@ -279,7 +279,7 @@ export class ConversationOrchestrator {
               usage.cachedTokens += ev.cachedTokens;
               usage.cacheWriteTokens += ev.cacheWriteTokens ?? 0;
               usage.outputTokens += ev.outputTokens;
-              if (warmKey && ev.cachedTokens + (ev.cacheWriteTokens ?? 0) > 0) this.o.warmer!.note(warmKey, performance.now() - roundStart);
+              if (warmKey && !ev.fallback && ev.cachedTokens + (ev.cacheWriteTokens ?? 0) > 0) this.o.warmer!.note(warmKey, performance.now() - roundStart);
             }
           }
         } catch (e) {
@@ -453,6 +453,11 @@ export class ConversationOrchestrator {
   prewarm(reason: string): WarmResult {
     if (!this.o.warmer || !this.o.stablePrefix) return 'off';
     return this.o.warmer.warm(() => this.prefix(), reason);
+  }
+
+  /** Shutdown: stop warm-ups and wait until what they billed is counted. */
+  async stopWarming(): Promise<void> {
+    await this.o.warmer?.close();
   }
 
   private async *withFirstEventTimeout(src: AsyncIterable<LlmEvent>, signal: AbortSignal, round: AbortController): AsyncGenerator<LlmEvent> {

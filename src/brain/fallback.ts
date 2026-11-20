@@ -53,6 +53,8 @@ export class FallbackLlm implements LlmProvider {
     } finally {
       clearTimeout(timer);
     }
-    yield* this.secondary.stream(messages, opts);
+    // Marked, so what the secondary read from its own cache isn't taken as
+    // the primary's cache being warm.
+    for await (const ev of this.secondary.stream(messages, opts)) yield ev.type === 'usage' ? { ...ev, fallback: true } : ev;
   }
 }
