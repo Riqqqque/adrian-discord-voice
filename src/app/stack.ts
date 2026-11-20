@@ -866,6 +866,8 @@ export async function startVoiceStack(
           ...games.context(ctx),
           ...(roomFor(ctx).music ? [musicState(roomFor(ctx).music!), ...quizzes.context(roomFor(ctx).key), ...linksLine(links.forPrompt(ctx.userId, ctx.guildId)), ...taste.context(ctx.userId, ctx.speaker)] : []),
           ...(roomFor(ctx).ui ? [`${ctx.speaker} is talking to you through their PC (A.D.R.I.A.N. satellite), not in the Discord call. Music and sounds play on that PC.`] : []),
+          // The PC rule is in every prompt: with it alone, the benches had "lock the front door" reach for pc_system and orders offered "on your PC".
+          ...(satEnabled && !roomFor(ctx).ui && !pcFor(ctx) ? [`${ctx.speaker} has no PC connected: never offer or use the pc_ tools for them.`] : []),
           ...(roomFor(ctx).ui && quiet.playingAt(roomFor(ctx).ui!) ? [gamingLine(ctx.speaker, quiet.gameAt(roomFor(ctx).ui!))] : []),
           ...(satEnabled ? toldLine(ctx.speaker, quiet.told(ctx.userId)) : []),
         ],
