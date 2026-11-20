@@ -431,7 +431,8 @@ export async function startVoiceStack(
     level: Math.min(1, config.playbackVolume),
   };
   /** Where an alarm can ring for them: her call if they can hear it there (muted
-   *  there, their PC first, where she can hear them say stop), else their PC. */
+   *  there, their PC first: not the whole call's to hear, and its window has Stop
+   *  and Snooze; a spoken stop there needs push-to-talk, see callPlaysAt), else their PC. */
   const alarmPlace = (userId: UserId): string | undefined => {
     const vs = inHerChannel(userId);
     const pc = pcFor({ userId });
