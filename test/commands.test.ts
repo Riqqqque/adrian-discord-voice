@@ -3,6 +3,9 @@ import { Events, PermissionsBitField } from 'discord.js';
 import { describe, expect, it, vi } from 'vitest';
 import { COMMANDS, humansIn, registerVoiceCommands, type VoiceSpot } from '../src/app/commands.js';
 
+// vi.waitFor's defaults (1 s, polled every 50 ms) are slow when it passes and too short on a busy machine.
+const WAIT = { timeout: 10_000, interval: 2 };
+
 const GUILD = '100000000000000010';
 const HOME = '100000000000000020';
 const OTHER = '100000000000000021';
@@ -74,7 +77,7 @@ function rig(o: { spot?: VoiceSpot; ready?: boolean; seated?: string | null; mov
       },
     };
     client.emit(Events.InteractionCreate, i);
-    await vi.waitFor(() => expect(replies.length).toBeGreaterThan(0));
+    await vi.waitFor(() => expect(replies.length).toBeGreaterThan(0), WAIT);
     return replies;
   };
   return { slash, moveTo, leave, ownerIs };

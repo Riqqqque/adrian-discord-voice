@@ -1,4 +1,5 @@
 import { mkdtempSync } from 'node:fs';
+import { type AddressInfo, createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -70,19 +71,31 @@ describe('a picture over the connection', () => {
   async function connected(answer: (m: { id: string; name: string }) => Record<string, unknown>) {
     const d = new SatelliteDevices(mkdtempSync(join(tmpdir(), 'sat-')));
     const { token } = d.add('Desk PC', OWNER);
-    const port = 20_000 + Math.floor(Math.random() * 20_000);
+    // A port nothing listens on, and the server's own word that it is listening.
+    const port = await new Promise<number>((resolve) => {
+      const probe = createServer().listen(0, '127.0.0.1', () => {
+        const { port: p } = probe.address() as AddressInfo;
+        probe.close(() => resolve(p));
+      });
+    });
     const conns: SatelliteConnection[] = [];
-    const server = startSatelliteServer({ bind: '127.0.0.1', port, devices: d, log: { debug() {}, info() {}, warn() {}, error() {} } as never, welcome: () => ({ owner: 'Alex' }), onConnect: (c) => conns.push(c) });
-    await new Promise((r) => setTimeout(r, 50));
+    let listening!: () => void;
+    const ready = new Promise<void>((r) => (listening = r));
+    const log = { debug() {}, info: (m: string) => m === 'satellite server listening' && listening(), warn() {}, error() {} };
+    const server = startSatelliteServer({ bind: '127.0.0.1', port, devices: d, log: log as never, welcome: () => ({ owner: 'Alex' }), onConnect: (c) => conns.push(c) });
+    await ready;
     const ws = new WebSocket(`ws://127.0.0.1:${port}/satellite`);
-    await new Promise((r) => ws.on('open', r));
-    ws.send(JSON.stringify({ type: 'hello', token }));
+    let welcomed!: () => void;
+    const welcome = new Promise<void>((r) => (welcomed = r));
     ws.on('message', (data, bin) => {
       if (bin) return;
       const m = JSON.parse(String(data));
+      if (m.type === 'welcome') welcomed();
       if (m.type === 'action') ws.send(JSON.stringify({ type: 'action_result', id: m.id, ...answer(m) }));
     });
-    await new Promise((r) => setTimeout(r, 100));
+    await new Promise((r) => ws.on('open', r));
+    ws.send(JSON.stringify({ type: 'hello', token }));
+    await welcome;
     close = async () => {
       ws.close();
       await server.close();

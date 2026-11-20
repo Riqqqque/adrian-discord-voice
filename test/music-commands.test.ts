@@ -8,6 +8,9 @@ import type { Seat, VoiceSpot } from '../src/app/commands.js';
 import { MusicPlayer, type MusicOutput, type MusicSource, type Track } from '../src/features/music.js';
 import { MusicTaste } from '../src/features/taste.js';
 
+// vi.waitFor's defaults (1 s, polled every 50 ms) are slow when it passes and too short on a busy machine.
+const WAIT = { timeout: 10_000, interval: 2 };
+
 const GUILD = '100000000000000010';
 const OTHER_GUILD = '100000000000000011';
 const CALL = '100000000000000020';
@@ -221,7 +224,7 @@ function rig(o: { spot?: VoiceSpot; seat?: Seat; owners?: string[]; limited?: bo
     };
     if (opts.privateCard) i.message = { flags: { has: () => true } };
     client.emit(Events.InteractionCreate, i);
-    await vi.waitFor(() => expect(out.length).toBeGreaterThan(0));
+    await vi.waitFor(() => expect(out.length).toBeGreaterThan(0), WAIT);
     await flush();
     return out[out.length - 1]!;
   };
@@ -421,7 +424,7 @@ describe('the review fixes', () => {
     let arrive!: () => void;
     const r = rig({ seat: { move: at(ELSEWHERE), channel: {} as never }, moves: () => new Promise<void>((ok) => (arrive = ok)) });
     const i = r.send('slash', 'play', { query: 'one' }, USER, ELSEWHERE);
-    await vi.waitFor(() => expect(r.moveTo).toHaveBeenCalled());
+    await vi.waitFor(() => expect(r.moveTo).toHaveBeenCalled(), WAIT);
     r.p.stop(); // a /leave or "stop the music" meanwhile
     arrive();
     expect((await i).content).toBe('Stopped.');
@@ -546,7 +549,7 @@ function textRig(o: { spot?: VoiceSpot; seat?: Seat; owners?: string[]; leaveRef
     (m.channel as Record<string, unknown>).send = async (r: { content?: string }) => void replies.push({ ...r, plain: true } as never);
     const mine = cmds.isCommand(m as never);
     client.emit(Events.MessageCreate, m);
-    if (mine) await vi.waitFor(() => expect(replies.length).toBeGreaterThan(0));
+    if (mine) await vi.waitFor(() => expect(replies.length).toBeGreaterThan(0), WAIT);
     await flush();
     return { mine, reply: replies.at(-1) };
   };

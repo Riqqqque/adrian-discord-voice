@@ -157,7 +157,9 @@ describe('getting one delivered', () => {
     return { r, file, clock };
   }
   const setPizza = async (r: Reminders) => tool(r, 'set_timer').run({ minutes: 5, label: 'pizza' }, AbortSignal.timeout(1000), ctx);
-  const settle = () => new Promise((done) => setTimeout(done, 0));
+  // setImmediate, not setTimeout(0): the latter waits for the next timer tick
+  // (a millisecond or more), which a day of minute-by-minute retries pays 1,445 times.
+  const settle = () => new Promise((done) => setImmediate(done));
 
   it('stays on disk until it has been delivered', async () => {
     let delivered!: () => void;

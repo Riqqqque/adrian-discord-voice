@@ -38,7 +38,7 @@ describe('game server status', () => {
     const closed = net.createServer();
     await new Promise<void>((r) => closed.listen(0, '127.0.0.1', () => r()));
     const p = (closed.address() as AddressInfo).port;
-    closed.close();
+    await new Promise<void>((r) => closed.close(() => r()));
     expect((await pingMinecraft('127.0.0.1', p)).online).toBe(false);
   });
 

@@ -1,4 +1,5 @@
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { type AddressInfo, createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -519,15 +520,25 @@ describe('activity over the satellite connection', () => {
   it('reaches the stack, and an unknown or broken one is ignored', async () => {
     const d = new SatelliteDevices(mkdtempSync(join(tmpdir(), 'sat-')));
     const { token } = d.add('Desk PC', OWNER);
-    const port = 20_000 + Math.floor(Math.random() * 20_000);
+    // A port nothing listens on, and the server's own word that it is listening.
+    const port = await new Promise<number>((resolve) => {
+      const probe = createServer().listen(0, '127.0.0.1', () => {
+        const { port: p } = probe.address() as AddressInfo;
+        probe.close(() => resolve(p));
+      });
+    });
     const conns: SatelliteConnection[] = [];
-    const log = { debug() {}, info() {}, warn() {}, error() {} };
+    let listening!: () => void;
+    const ready = new Promise<void>((r) => (listening = r));
+    const log = { debug() {}, info: (m: string) => m === 'satellite server listening' && listening(), warn() {}, error() {} };
     const server = startSatelliteServer({ bind: '127.0.0.1', port, devices: d, log: log as never, welcome: () => ({}), onConnect: (c) => conns.push(c) });
-    await new Promise((r) => setTimeout(r, 50));
+    await ready;
     const ws = new WebSocket(`ws://127.0.0.1:${port}/satellite`);
+    const got: { type?: string }[] = [];
+    ws.on('message', (m) => got.push(JSON.parse(String(m))));
     await new Promise((r) => ws.on('open', r));
     ws.send(JSON.stringify({ type: 'hello', token }));
-    await new Promise((r) => setTimeout(r, 80));
+    await vi.waitFor(() => expect(got[0]).toMatchObject({ type: 'welcome' }), { timeout: 10_000, interval: 2 });
     const seen: unknown[] = [];
     conns[0]!.on('activity', (a) => seen.push(a));
     ws.send(JSON.stringify({ type: 'activity', gaming: 'maybe' }));
@@ -535,8 +546,8 @@ describe('activity over the satellite connection', () => {
     ws.send(JSON.stringify({ type: 'something_new', x: 1 }));
     ws.send(JSON.stringify({ type: 'activity', gaming: false }));
     ws.send(JSON.stringify({ type: 'ping' }));
-    const pong = await new Promise((r) => ws.on('message', (m) => r(JSON.parse(String(m)))));
-    expect(pong).toEqual({ type: 'pong' });
+    // Answered in order, so everything before it has been read.
+    await vi.waitFor(() => expect(got.slice(1)).toEqual([{ type: 'pong' }]), { timeout: 10_000, interval: 2 });
     expect(seen).toEqual([{ gaming: true, game: 'VALORANT' }, { gaming: false }]);
     expect(conns[0]!.isReady()).toBe(true);
     ws.close();
