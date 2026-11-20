@@ -126,10 +126,7 @@ describe.skipIf(!ON)('the early listen on real Silero', () => {
       expect(cut.reused).toBe(cut.clips);
       expect(cut.decodes).toBe(cut.clips);
     }
-    process.stderr.write(`early listen, key-up cut:
-${lines.join('
-')}
-`);
+    process.stderr.write(`early listen, key-up cut:\n${lines.join('\n')}\n`);
   }, 120_000);
 
   it('the full wait cuts the same clips with or without it', async () => {

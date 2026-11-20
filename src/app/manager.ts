@@ -224,7 +224,8 @@ export class StackManager {
 
   /** A first start loads the speech models: only when they fit (see memory.ts). */
   private roomToStart(config: PocConfig, secrets: Map<string, string>): void {
-    if (this.models.sttHeldFor(config.listen.asrModelDir, config.listen.asrThreads)) {
+    const asr = config.listen;
+    if (asr && this.models.sttHeldFor(asr.asrModelDir, asr.asrThreads)) {
       this.lowMemorySince = undefined;
       return; // a restart: the big models are already here
     }
