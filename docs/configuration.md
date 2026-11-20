@@ -35,7 +35,7 @@ sudo adrian restart                        # most settings apply on restart
 | `listen.minSilence` | `0.5` | Pause (seconds) that ends a phrase |
 | `listen.minSpeech` | `0.25` | Shortest sound counted as speech (seconds) |
 | `listen.maxSpeech` | `20` | Longest single phrase (seconds) |
-| `listen.asrThreads` | `2` | CPU threads for speech recognition (everything anyone says goes through it; more threads cost more CPU without answering faster) |
+| `listen.asrThreads` | `2` | CPU threads for speech recognition (everything anyone says goes through it; 4 cost twice the CPU of 2 for 10-50 ms quicker words) |
 | `listen.whisperThreads` | `4` | CPU threads for the second listen to questions that aren't in English |
 | `listen.wakeName` | `"adrian"` | The name it listens for |
 | `listen.logTranscripts` | `false` | Development only: log what people say. Leave off. |
