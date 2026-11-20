@@ -46,6 +46,14 @@ export interface AlarmToolDeps {
 
 const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : 0);
 const str = (v: unknown) => (typeof v === 'string' ? v.trim() : '');
+/** "2026-02-30" is shaped like a date but isn't one (it would roll over into March). */
+const realDate = (v: string) => {
+  const [y, m, d] = v.split('-').map(Number) as [number, number, number];
+  const t = new Date(Date.UTC(y, m - 1, d));
+  return t.getUTCFullYear() === y && t.getUTCMonth() === m - 1 && t.getUTCDate() === d;
+};
+/** A saved sound's name: lowercase letters, digits, spaces and hyphens. */
+const soundNameOf = (v: string) => v.toLowerCase().replace(/[^\p{L}\p{N} -]/gu, '').replace(/\s+/g, ' ').slice(0, 30).trim();
 
 export function alarmTools(d: AlarmToolDeps): Tool[] {
   const now = d.now ?? Date.now;
@@ -191,6 +199,7 @@ export function alarmTools(d: AlarmToolDeps): Tool[] {
       if (days === null) return `Didn't understand the repeat "${str(a.repeat)}"; ask which days.`;
       const date = str(a.date);
       if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) return 'The date must be YYYY-MM-DD.';
+      if (date && !realDate(date)) return `There is no ${date}.`;
       const sound = pickSound(ctx.userId, a.sound, a.play);
       if (sound && typeof sound === 'object') return sound.error;
       const tz = c.zone(ctx.userId);
@@ -303,9 +312,10 @@ export function alarmTools(d: AlarmToolDeps): Tool[] {
       if (hit.ringingSince !== undefined && (str(a.time) || a.repeat !== undefined || typeof a.add_minutes === 'number')) c.unring(hit);
       if (typeof a.add_minutes === 'number' && a.add_minutes !== 0) {
         if (hit.kind !== 'timer') return 'add_minutes is for timers; change an alarm with time.';
-        hit.at = Math.max(t + 1000, hit.at + a.add_minutes * 60_000);
+        // Whole ms: the base goes into button ids, and "1/6 of a minute" must not break them.
+        hit.at = Math.round(Math.max(t + 1000, hit.at + a.add_minutes * 60_000));
         hit.base = hit.at;
-        hit.durationMs = (hit.durationMs ?? 0) + a.add_minutes * 60_000;
+        hit.durationMs = Math.round((hit.durationMs ?? 0) + a.add_minutes * 60_000);
         said.push(`${spokenDuration(hit.at - t)} left`);
         spoken.push(`${roughly(hit.at - t)} left on ${hit.label ? `the ${hit.label} timer` : 'it'}`);
       }
@@ -325,6 +335,7 @@ export function alarmTools(d: AlarmToolDeps): Tool[] {
         // A one-off keeps its day ("make it 9:30" for tomorrow's), unless a new date is given.
         const date = str(a.date);
         if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) return 'The date must be YYYY-MM-DD.';
+        if (date && !realDate(date)) return `There is no ${date}.`;
         if (time !== hit.time || days !== hit.days || date) {
           const keep = !days?.length ? date || localDate(hit.base, hit.tz) : undefined;
           let at = nextAt(time!, days, hit.tz, t, keep);
@@ -340,16 +351,18 @@ export function alarmTools(d: AlarmToolDeps): Tool[] {
           said.push(`set for ${clockText(at, hit.tz)} ${days?.length ? daysText(days) : dayText(at, hit.tz, t)}`);
           spoken.push(`it's set for ${clockText(at, hit.tz)} ${days?.length ? daysText(days) : dayText(at, hit.tz, t)}`);
         }
-        const skipDay = a.skip_next === true ? localDate(hit.base, hit.tz) : str(a.skip_date);
+        // Ringing or snoozed now: "the next time" is the one after this.
+        const upcoming = hit.days?.length && hit.time && (hit.ringingSince !== undefined || hit.snoozed) ? (nextAt(hit.time, hit.days, hit.tz, hit.base) ?? hit.base) : hit.base;
+        const skipDay = a.skip_next === true ? localDate(upcoming, hit.tz) : str(a.skip_date);
         if (skipDay) {
           if (!hit.days?.length) return 'That alarm only rings once; turn it off or delete it instead.';
-          if (!/^\d{4}-\d{2}-\d{2}$/.test(skipDay)) return 'skip_date must be YYYY-MM-DD.';
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(skipDay) || !realDate(skipDay)) return 'skip_date must be YYYY-MM-DD.';
           const that = localToEpoch(`${skipDay}T${hit.time}`, hit.tz);
           if (that === undefined || !hit.days.includes(new Date(`${skipDay}T12:00:00Z`).getUTCDay())) return `It doesn't ring that day; it rings ${daysText(hit.days)}.`;
           if (that < t && skipDay !== localDate(hit.base, hit.tz)) return 'That day is already over.';
           hit.skip = [...new Set([...(hit.skip ?? []), skipDay])].sort();
           // The next one it really rings.
-          let after = hit.base;
+          let after = upcoming;
           for (let i = 0; i < 14 && hit.skip.includes(localDate(after, hit.tz)); i++) after = nextAt(hit.time!, hit.days, hit.tz, after) ?? after;
           said.push(`it won't ring ${dayText(that, hit.tz, t)}; next it rings ${dayText(after, hit.tz, t)} at ${clockText(after, hit.tz)}`);
           spoken.push(`it won't ring ${dayText(that, hit.tz, t)}, next it rings ${dayText(after, hit.tz, t)} at ${clockText(after, hit.tz)}`);
@@ -392,7 +405,13 @@ export function alarmTools(d: AlarmToolDeps): Tool[] {
         spoken.push('turned it off');
       } else if (a.on === true && !hit.enabled) {
         hit.enabled = true;
-        if (hit.kind === 'alarm' && hit.time && !(hit.at > t)) hit.at = hit.base = nextAt(hit.time, hit.days, hit.tz, t) ?? hit.at;
+        if (hit.kind === 'alarm' && hit.time && !(hit.at > t)) {
+          hit.at = hit.base = nextAt(hit.time, hit.days, hit.tz, t) ?? hit.at;
+          // A snooze it was in when turned off is long over.
+          delete hit.snoozed;
+          delete hit.unanswered;
+          delete hit.dmRound;
+        }
         said.push(`back on, next ${dayText(hit.base, hit.tz, t)} at ${clockText(hit.base, hit.tz)}`);
         spoken.push(`it's back on, next ${dayText(hit.base, hit.tz, t)} at ${clockText(hit.base, hit.tz)}`);
       }
@@ -490,7 +509,7 @@ export function alarmTools(d: AlarmToolDeps): Tool[] {
     acts: true,
     run: async (a, _s, ctx) => {
       if (a.action === 'snooze') return c.control(ctx.userId, 'snooze', typeof a.minutes === 'number' ? a.minutes : undefined).say;
-      if (!c.ringingFor(ctx.userId).length) return c.control(ctx.userId, 'stop').say;
+      if (!c.ringingFor(ctx.userId).length) return c.control(ctx.userId, 'stop', undefined, { typed: !!ctx.text }).say;
       // Typed (a DM, a channel) is a deliberate stop; spoken goes through their dismiss setting.
       if (ctx.text) return c.control(ctx.userId, 'stop').say;
       return (c.heard(ctx.userId, ctx.said ?? '') ?? c.heard(ctx.userId, 'stop'))?.say ?? 'Nothing is ringing.';
@@ -539,14 +558,17 @@ export function alarmTools(d: AlarmToolDeps): Tool[] {
         }
         case 'save_sound': {
           const q = str(a.query);
-          const name = str(a.name).toLowerCase().replace(/[^\p{L}\p{N} -]/gu, '').slice(0, 30).trim() || q.toLowerCase().slice(0, 30);
+          const name = soundNameOf(str(a.name)) || soundNameOf(q);
           if (!q) return 'Ask what sound to look for.';
+          if (!name) return 'Ask what to call it.';
           if (isTone(name) || name === 'voice' || name === 'default') return `"${name}" is taken by a built-in sound; pick another name.`;
           if (!d.saveClip) return "Saving sounds from YouTube isn't set up here.";
           if (c.sounds(u).length >= 10 && !c.savedSound(u, name)) return 'They have 10 saved sounds; delete one first.';
           const r = await d.saveClip(ctx, q, name, signal);
           if (typeof r === 'string') return r;
-          return keep(`Saved "${r.name}" (${Math.round(r.seconds)} seconds, from "${r.title ?? q}"). It can be used as sound "${r.name}".`, `Saved it as your ${r.name} sound.`);
+          const saved = `Saved "${r.name}" (${Math.round(r.seconds)} seconds, from "${r.title ?? q}"). It can be used as sound "${r.name}".`;
+          // A failed save of alarms.json is the model's to explain.
+          return c.saveFailed ? `${saved}${saveNote()}` : keep(saved, `Saved it as your ${r.name} sound.`);
         }
         case 'delete_sound': {
           const s = c.removeSound(u, str(a.name) || str(a.sound));

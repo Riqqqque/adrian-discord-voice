@@ -242,7 +242,9 @@ Alarms and timers ring with a sound until you stop them, the way an alarm clock 
   - At a PC whose speakers play a voice call you're in, what the PC hears might be someone else: use push-to-talk, the window's or tray's buttons, or the DM's buttons. A spoken stop there gets a soft chime instead.
   - Only whole sentences count: "stop by the store later" or a song called *Stop* does nothing to it, and neither do music commands or "stop listening".
   - "Wait, I'm not up" or "turn it back on" within 3 minutes of a stop puts it back, snoozed.
-  - Also from the Stop and Snooze buttons in the PC app's window and tray, the DM buttons, or `/alarm stop`.
+  - Also from the Stop and Snooze buttons in the PC app's window and tray, the DM buttons, or `/alarm stop`. A DM's buttons work only for the alarm and ring they were sent for: an older message's Stop leaves a newer alarm ringing, and with two ringing at once, each message's buttons stop only their own. Buttons on messages from before 0.17.2 act only on what rings right now.
+  - A DM button, `/alarm stop` or a typed stop also turns off an alarm that is waiting out a snooze, in every turn-off mode: in "firm" and "math" mode they count as you deciding on purpose. A spoken "stop" during a snooze does nothing; in firm mode it takes "I'm up". Stopping one that wasn't ringing isn't said out loud in the call or at your PC.
+  - Deleting an alarm right after a stop is final: "wait, I'm not up" or a Snooze button doesn't bring it back.
 - **Nobody answers:** an alarm rings for 10 minutes, snoozes itself, and rings again, 3 times in all. After that you get a DM saying you missed it. A timer rings for 5 minutes, then sends the DM.
 - **Restarts and updates:**
   - Alarms are saved to disk. A restart while one rings picks the ring up again.
@@ -588,7 +590,7 @@ Hard limits stay in every mode: no sexual roleplay or explicit sexual content, n
 | `set time [repeat] [days] [date] [label] [sound]` | An alarm. `repeat` is once, daily, weekdays or weekends; `date` is YYYY-MM-DD. |
 | `timer minutes [label] [sound]` | A timer, 0.1 to 10,080 minutes. |
 | `list` | Your alarms, timers and reminders. |
-| `stop`, `snooze [minutes]` | What's ringing for you. Typed stops always stop, whatever your dismiss mode. |
+| `stop`, `snooze [minutes]` | What's ringing for you. Typed stops always stop, whatever your dismiss mode, and also turn off one that is waiting out a snooze. |
 | `delete which` | Deletes one (with autocomplete). |
 | `off which [on]` | Turns one off, or back on. |
 | `skip which` | Skips its next ring only. |

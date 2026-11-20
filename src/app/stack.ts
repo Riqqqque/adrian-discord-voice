@@ -52,7 +52,7 @@ import { SmartTurn } from '../speech/smart-turn.js';
 import { groqTranscribe, sttPrompt } from '../speech/cloud-stt.js';
 import { MODEL_LAYOUT } from '../web/checks.js';
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { KokoroTts } from '../speech/kokoro.js';
 import { CharBudget, SpeechifyTts } from '../speech/speechify.js';
@@ -463,11 +463,12 @@ export async function startVoiceStack(
       return { stop: () => h.stop(), alive: () => h.alive() && (place === 'discord' || satRooms.get(place) === rm) };
     },
     dm: (userId, text, b) =>
-      client.users.send(userId, { content: text, ...(b ? { components: [alarmButtons(userId)] } : {}), allowedMentions: { parse: [] } }).then(
+      client.users.send(userId, { content: text, ...(b ? { components: [alarmButtons(userId, b)] } : {}), allowedMentions: { parse: [] } }).then(
         () => true,
         (e: Error) => (log.warn('alarm DM failed', { user: userId, error: e.message }), false),
       ),
     changed: (userId) => pushAlarms(userId),
+    soundGone: (file) => (clipCache.delete(file), soundsDir && rmSync(join(soundsDir, file), { force: true })),
     log: (event, fields) => log.info(event, fields),
   });
   /** Each of their PCs gets the list (to ring by itself if the server is gone) and what's ringing. */
