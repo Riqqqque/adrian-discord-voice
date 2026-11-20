@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { ToolContext } from '../src/core/interfaces.js';
-import { houseOrder, pcTools } from '../src/satellite/tools.js';
+import { judge } from '../src/satellite/target.js';
+import { pcTools } from '../src/satellite/tools.js';
+import { GUARDED } from './pc-guard-cases.js';
 
 function kit(connected = true) {
   const sent: { name: string; args: Record<string, unknown> }[] = [];
@@ -13,19 +15,27 @@ function kit(connected = true) {
   return { sent, run };
 }
 
+/** The house thing a call is refused for, if it is. */
+const refusedFor = (said: string, name = 'pc_system', action = 'screen_off') => {
+  const j = judge(said, name, action);
+  return !j.go && !j.ask ? j.thing : undefined;
+};
+const allowedEverywhere = (said: string | undefined) => GUARDED.every(([name, args]) => judge(said, name, String(args.action ?? '')).go);
+
 describe('house orders are not the PC', () => {
   it('finds the house thing an order is about', () => {
-    expect(houseOrder('lock the front door')?.thing).toBe('door');
-    expect(houseOrder('can you lock the doors')?.thing).toBe('doors');
-    expect(houseOrder('make sure the house is locked up')?.thing).toBe('house');
-    expect(houseOrder('kill the lights')?.thing).toBe('lights');
-    expect(houseOrder('lights off please')?.thing).toBe('lights');
-    expect(houseOrder('shut the garage')?.thing).toBe('garage');
-    expect(houseOrder('turn the TV down')?.thing).toBe('tv');
-    expect(houseOrder('turn the heat down')?.thing).toBe('heat');
-    expect(houseOrder('set the thermostat to seventy')?.thing).toBe('thermostat');
-    expect(houseOrder('turn off the fan')?.thing).toBe('fan');
-    expect(houseOrder('turn down my music and turn off the lights')).toMatchObject({ thing: 'lights', media: true });
+    expect(refusedFor('lock the front door', 'pc_system', 'lock')).toBe('door');
+    expect(refusedFor('can you lock the doors', 'pc_system', 'lock')).toBe('doors');
+    expect(refusedFor('make sure the house is locked up', 'pc_system', 'lock')).toBe('house');
+    expect(refusedFor('kill the lights')).toBe('lights');
+    expect(refusedFor('lights off please')).toBe('lights');
+    expect(refusedFor('shut the garage', 'pc_system', 'shutdown')).toBe('garage');
+    expect(refusedFor('turn the TV down', 'pc_volume', 'down')).toBe('tv');
+    expect(refusedFor('turn the heat down', 'pc_volume', 'down')).toBe('heat');
+    expect(refusedFor('set the thermostat to seventy', 'pc_volume', 'set')).toBe('thermostat');
+    expect(refusedFor('turn off the fan')).toBe('fan');
+    expect(refusedFor('turn down my music and turn off the lights')).toBe('lights');
+    expect(judge('turn down my music and turn off the lights', 'pc_volume', 'down').go).toBe(true);
   });
 
   it('leaves PC orders and passing mentions alone', () => {
@@ -36,7 +46,6 @@ describe('house orders are not the PC', () => {
       'mute the tv show',
       'pause the tv series',
       'open the apple tv app',
-      'pause the music, my mom is at the front door',
       'someone is at the door',
       'turn off my monitors',
       'put this window in the top right corner',
@@ -44,12 +53,13 @@ describe('house orders are not the PC', () => {
       undefined,
       '',
     ])
-      expect(houseOrder(s), String(s)).toBeUndefined();
-    expect(houseOrder("lock my pc, I'm heading out the front door")).toBeUndefined();
-    expect(houseOrder('turn off my pc and turn off the lights')).toMatchObject({ thing: 'lights', pc: true });
+      expect(allowedEverywhere(s), String(s)).toBe(true);
+    expect(judge('pause the music, my mom is at the front door', 'pc_media', 'pause').go).toBe(true);
+    expect(judge("lock my pc, I'm heading out the front door", 'pc_system', 'lock').go).toBe(true);
+    expect(judge('turn off my pc and turn off the lights', 'pc_system', 'shutdown').go).toBe(true);
   });
 
-  it('leaves every PC order of the pc-orders bench alone', () => {
+  it('leaves every PC order of the pc-orders bench alone, whatever the call', () => {
     const orders = [
       'open spotify', 'close discord', 'turn it down a little', 'turn down my music', 'can you turn the music up a bit', 'mute the video',
       'turn the whole pc volume down', 'set the volume to 30', 'mute discord', 'skip this song', 'pause it', "what's playing right now",
@@ -62,10 +72,7 @@ describe('house orders are not the PC', () => {
       "what's this error on my screen", 'send that link to my pc', 'open that on my pc', 'put that video on my pc', 'play this on my pc instead',
       'move the music to my pc', "put what i'm watching into the call",
     ];
-    for (const s of orders) {
-      const h = houseOrder(s);
-      expect(!h || h.pc, s).toBe(true);
-    }
+    for (const s of orders) expect(allowedEverywhere(s), s).toBe(true);
   });
 
   it('refuses before anything reaches the PC, connected or not', async () => {
@@ -77,36 +84,39 @@ describe('house orders are not the PC', () => {
       expect(await run('pc_volume', { action: 'down', playing: true }, 'turn the tv down')).toMatch(/^Didn't happen/);
       expect(await run('pc_volume', { action: 'down', playing: true }, 'turn the heat down')).toMatch(/heat/);
       expect(await run('pc_media', { action: 'pause' }, 'pause the tv')).toMatch(/^Didn't happen/);
+      expect(await run('pc_open', { search: 'garage door' }, 'open the garage door')).toMatch(/garage/);
       expect(await run('pc_apps', { action: 'open', name: 'garage' }, 'open the garage')).toMatch(/garage/);
       expect(await run('pc_apps', { action: 'close', name: 'the front door' }, 'close it')).toMatch(/front door/);
       expect(sent).toEqual([]);
     }
   });
 
-  it("finds every house order of the home-pc bench (the model hardly tries a pc_ tool there, so the bench doesn't test the guard)", () => {
+  it("refuses every call for each house order of the home-pc bench (the model hardly tries a pc_ tool there, so the bench doesn't test the guard)", () => {
     for (const s of [
       'lock the front door', 'lock the back door', 'can you lock the doors', 'make sure the house is locked up', 'turn off the lights',
       'turn the living room lights off', 'kill the lights', 'shut the garage', 'close the garage door', 'open the garage', 'turn off the TV',
       'turn the tv down', 'mute the tv', 'shut off the tv in the living room', 'turn off the fan', 'turn the heat down',
+      'turn off the ceiling fan', 'lock the office door', 'turn off the lights and lock the office door', 'turn down the office tv',
     ])
-      expect(houseOrder(s), s).toMatchObject({ pc: false });
+      for (const [name, args] of GUARDED) expect(judge(s, name, String(args.action ?? '')), `${s}: ${name} ${JSON.stringify(args)}`).toMatchObject({ go: false, ask: false });
   });
 
   it('ties the order to the thing it is about, so a PC verb next to a house word stays a PC order', () => {
-    for (const s of [
-      "pause someone's at the door",
-      'mute my mom is at the front door',
-      'pause the doorbell just rang',
-      'stop the pizza guy is at the gate',
-      'pause my mom is at the front door',
-      'open the tv app',
-    ])
-      expect(houseOrder(s), s).toBeUndefined();
-    expect(houseOrder('mute the tv')?.thing).toBe('tv');
-    expect(houseOrder('mute the doorbell')?.thing).toBe('doorbell');
-    expect(houseOrder('pause the tv')?.thing).toBe('tv');
-    expect(houseOrder('turn off the living room lights')?.thing).toBe('lights');
-    expect(houseOrder('pause, gotta open the door')).toMatchObject({ thing: 'door', rest: ['pause'] });
+    for (const s of ["pause someone's at the door", 'pause my mom is at the front door', 'pause the doorbell just rang', 'pause I gotta open the door', 'pause, gotta open the door'])
+      expect(judge(s, 'pc_media', 'pause').go, s).toBe(true);
+    expect(judge('mute my mom is at the front door', 'pc_volume', 'mute').go).toBe(true);
+    expect(judge('stop the pizza guy is at the gate', 'pc_media', 'stop').go).toBe(true);
+    expect(refusedFor('mute the tv', 'pc_volume', 'mute')).toBe('tv');
+    expect(refusedFor('mute the doorbell', 'pc_volume', 'mute')).toBe('doorbell');
+    expect(refusedFor('pause the tv', 'pc_media', 'pause')).toBe('tv');
+    expect(refusedFor('turn off the living room lights')).toBe('lights');
+  });
+
+  it('reads accented Spanish words whole ("acá" is not "ac")', () => {
+    expect(judge('pon acá la música', 'pc_media', 'play').go).toBe(true);
+    expect(judge('sube acá el volumen', 'pc_volume', 'up').go).toBe(true);
+    expect(refusedFor('apágame las luces')).toBe('luces');
+    expect(refusedFor('sube la calefacción', 'pc_volume', 'up')).toBe('calefaccion');
   });
 
   it('does a PC order said next to a house errand', async () => {
@@ -120,6 +130,7 @@ describe('house orders are not the PC', () => {
       ['pc_volume', { action: 'mute' }, 'mute my mom is at the front door'],
       ['pc_media', { action: 'pause' }, 'pause the doorbell just rang'],
       ['pc_media', { action: 'stop' }, 'stop the pizza guy is at the gate'],
+      ['pc_media', { action: 'pause' }, 'pause I gotta open the door'],
       ['pc_system', { action: 'cancel_shutdown' }, 'cancel the shutdown and turn the lights back on'],
       ['pc_system', { action: 'cancel_shutdown' }, 'wait, turn the lights back on'],
       ['pc_system', { action: 'lock' }, 'lock it and turn off the lights'],
@@ -138,6 +149,8 @@ describe('house orders are not the PC', () => {
     expect(await run('pc_system', { action: 'screen_off' }, 'turn off the tvs')).toMatch(/tvs/);
     expect(await run('pc_system', { action: 'screen_off' }, 'apaga las luces')).toMatch(/luces/);
     expect(await run('pc_system', { action: 'lock' }, 'cierra la puerta del garaje')).toMatch(/puerta/);
+    expect(await run('pc_system', { action: 'lock' }, 'turn off the lights and lock the office door')).toMatch(/door/);
+    expect(await run('pc_system', { action: 'lock' }, 'pause the music and lock the office door')).toMatch(/door/);
     expect(sent).toEqual([]);
   });
 

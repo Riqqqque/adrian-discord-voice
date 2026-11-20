@@ -516,6 +516,48 @@ export const CASES: Case[] = [
     ["pause the dog's at the door", PAUSE, 'go'],
     ["turn down the kids' tv", DOWN, 'no'],
   ]),
+  // Written after the guard, labelled before running it: the first run missed
+  // "turn off the one in the kitchen" and "...whatever's on in the living room".
+  ...rows('held out (written after the guard; first run 59/61)', 'no', [
+    ['switch the hall light off', SO], ['can you kill the lamp next to my bed', SO], ['turn off the light over the sink', SO], ['shut the porch light off', SO],
+    ['turn the overhead lights off please', SO], ['lock the deadbolt', LOCK], ['lock up the garage', LOCK], ['lock the car doors', LOCK], ['secure the front door', LOCK],
+    ['turn down the living room speakers', DOWN], ['mute the echo', MUTE], ['pause the movie on the tv', PAUSE], ['turn the tv in the basement down', DOWN],
+    ['drop the thermostat to 65', SET20], ['turn off the lights in the kids room', SO], ['apaga la luz del baño', SO], ['cierra el garaje', LOCK], ['baja las persianas', DOWN],
+    ['apaga el televisor', SO], ['turn off both bedside lamps', SO], ['turn off the string lights on the porch', SO], ['unplug the kettle', SO], ['stop the dishwasher', STOP],
+    ['pause the dryer', PAUSE], ['shut off the water heater', SO], ['turn the tv off in 10 minutes', SO], ['open the door for the pizza guy', URL], ['shut down the tv in the den', SHUTDOWN],
+  ]),
+  ...rows('held out (written after the guard; first run 59/61)', 'go', [
+    ['lock this computer', LOCK], ['turn my screens off for now', SO], ['put the pc to sleep', SLEEP], ["mute spotify, the doorbell's ringing", MUTE],
+    ['pause the song, gotta grab the door', PAUSE], ['lower the music a bit, my roommate is sleeping', DOWN_PLAYING], ["skip, I'll get the lights later", NEXT],
+    ['turn the volume down so I can hear the doorbell', DOWN], ['pause while I check the door', PAUSE], ['lock my computer before I go lock the garage', LOCK],
+    ['can you mute discord real quick, the tv is loud', MUTE_DISCORD], ['pause this, the garage door just opened', PAUSE], ["turn it up, I can't hear over the fan", UP],
+    ['turn off my monitor so I can sleep', SO], ['silencia, alguien tocó la puerta', MUTE], ['pausa la canción, voy a abrir la puerta', PAUSE],
+    ['baja el volumen de spotify', DOWN], ['turn down the youtube video, the heater is loud', DOWN], ['next song then turn off the lights', NEXT],
+    ['stop the video and close the garage', STOP], ['mute the game and lock the back door', MUTE], ['lock my pc and then go lock the front door', LOCK],
+    ["pause I think someone's at the door", PAUSE], ['pause my show the doorbell rang', PAUSE], ['look up the front door camera', search('front door camera')],
+    ['show me the garage camera', search('garage camera')], ['turn discord down and the lights off', DOWN_DISCORD],
+  ]),
+  ...rows('held out (written after the guard; first run 59/61)', 'ask', [
+    ['turn off the fan and lock it', LOCK], ['lock the front', LOCK], ['turn off the one in the kitchen', SO], ['turn off everything downstairs', SO],
+    ['lock every door and window', LOCK], ["turn off whatever's on in the living room", SO],
+  ]),
+  // A second batch, also labelled before running: the first run missed
+  // "turn off the lights, all of them" and refused "pause, the garage".
+  ...rows('held out 2 (written after the first; first run 39/41)', 'no', [
+    ['yo turn off the lights', SO], ['could ya switch off the garage light', SO], ['turn the porch and the kitchen lights off', SO], ['turn off the lights, all of them', SO],
+    ['please turn the big tv in the living room down a little', DOWN], ['lights in the hallway off', SO], ['lock the doors, the garage and the gate', LOCK],
+    ['garage door, close it', SHUTDOWN], ['tv off', SO], ['tv down', DOWN], ['volume down on the tv', DOWN], ['mute tv', MUTE], ['apaga todo en la sala', SO],
+    ['baja un poco la tele', DOWN], ['cerrá la puerta', LOCK], ['turn off the tele', SO], ['can you turn the heating off for the night', SO],
+    ['the front door needs locking', LOCK], ['make the lights dimmer', DOWN], ['close the garage door behind me', SHUTDOWN],
+  ]),
+  ...rows('held out 2 (written after the first; first run 39/41)', 'go', [
+    ['yo pause', PAUSE], ['pause it real quick, my dog is barking at the door', PAUSE], ['lock up my pc', LOCK], ['mute everything, the door', MUTE],
+    ['next, then lock the door', NEXT], ['lock the computer then the front door', LOCK], ['turn my volume down cause the tv is on', DOWN],
+    ["shush, someone's at the door", MUTE], ['pause the stream, gotta let the dog out', PAUSE], ['stop playing, I need to answer the door', STOP],
+    ['turn off my second monitor and the lamp', SO], ['mute my mic, the tv is loud', MUTE], ['turn it down a notch, the fan is loud', DOWN],
+    ['pon pausa que tocan la puerta', PAUSE], ['bájale a la música', DOWN], ['silencia el juego', MUTE], ['lock my pc i have to go lock the shed', LOCK], ['pause, the garage', PAUSE],
+  ]),
+  ...rows('held out 2 (written after the first; first run 39/41)', 'ask', [['turn off the lights and the thing', SO], ['lock em', LOCK], ['turn off the speakers in the kitchen', SO]]),
 ];
 
 /** Every order in these is about the house: nothing a pc_ call does may reach the PC. */
