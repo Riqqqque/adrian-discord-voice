@@ -33,7 +33,19 @@ const QUESTION = /\?|\b(?:what|when|where|who|which|how|did|does|do|remember|rem
 const NOT_A_TOPIC = new Set(
   ('about again all and any anything are been but call called can could day did does doing done everything for from get got had has have hello her here hers him his how into just know knows like mine name named not now number one our out people person please really recall remember remind said say says she should so some something stuff tell that the their them then there these they thing things this those time told too very was were what when where which who whom whose why will with would yes you your yours').split(' '),
 );
-const topics = (s: string) => (s.toLowerCase().match(/[\p{L}\p{N}]{3,}/gu) ?? []).filter((w) => !NOT_A_TOPIC.has(w));
+/** Words that ask about the same thing as a note's word ("what do I do for a living" is "works at ..."). */
+const SAME_AS: Record<string, string> = {
+  job: 'work', jobs: 'work', career: 'work', living: 'work', employer: 'work', workplace: 'work',
+  pup: 'dog', puppy: 'dog', pupper: 'dog', doggo: 'dog', kitty: 'cat', kitten: 'cat',
+  bday: 'birthday', allergy: 'allergic', allergies: 'allergic',
+};
+/** A word's rough stem, so "live", "lives" and "living" meet, and "work" and "works". */
+const stem = (word: string) => {
+  const w = SAME_AS[word] ?? word;
+  const s = w.replace(/ies$/, 'y').replace(/(?:ing|ed|es|s)$/, '').replace(/e$/, '');
+  return s.length >= 3 ? s : w; // "bed" stays "bed", not "b"
+};
+const topics = (s: string) => (s.toLowerCase().match(/[\p{L}\p{N}]{3,}/gu) ?? []).filter((w) => !NOT_A_TOPIC.has(w)).map(stem);
 
 /** Do their own words ask about this note? "What do you know about me" doesn't
  *  count: in a shared place that would read out everything. */
