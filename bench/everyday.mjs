@@ -149,7 +149,9 @@ async function keep() {
       return async () => ({ ok: true });
     },
   });
-  const qkit = prodKit(c, { record: (name, args) => calls.push({ name, args }), answers, pc: 'absent', player });
+  // prod-kit answers tools that aren't local from `answers`: this is music_control's own status text for that queue.
+  const status = (a) => (a.action === 'status' ? `Playing: "Nights" by Frank Ocean. Up next: ${queue.map((t) => `"${t.title}" by ${t.artist}`).join('; ')}. Autoplay on.` : 'Nothing found.');
+  const qkit = prodKit(c, { record: (name, args) => calls.push({ name, args }), answers: { ...answers, music_control: status }, pc: 'absent', player });
   const qo = new ConversationOrchestrator(llm, new SessionMemory(16, 3_600_000), qkit.tools, { ...qkit.options, context: (x) => [...qkit.options.context(x), `In the voice call with ${x.speaker}: Kim, Alex.`] });
   await ask("what's in the queue", { via: qo, says: all(/ivy/i, /redbone/i, /kill bill/i, /electric feel/i), max: 45 });
   // A warning that is a caveat on a how-to, not the question itself.
