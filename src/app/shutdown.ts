@@ -5,7 +5,7 @@
 
 import type { Logger } from '../core/interfaces.js';
 import type { StackState } from './manager.js';
-import { memoryFields } from './memory.js';
+import { memoryFields, readMemInfo } from './memory.js';
 
 export interface ShutdownDeps {
   log: Pick<Logger, 'info' | 'warn'>;
@@ -54,7 +54,7 @@ export function shutdownOnSignal(d: ShutdownDeps): (signal: string) => Promise<v
     }
     stopping = true;
     const state = d.state();
-    d.log.info('shutting down', { signal, state, uptimeS: d.uptimeS(), ...(d.memory ?? memoryFields)() });
+    d.log.info('shutting down', { signal, state, uptimeS: d.uptimeS(), ...(d.memory ?? (() => memoryFields(readMemInfo())))() });
     // While the models load, stopping would wait for the load to finish, and
     // whoever sent the signal wants the memory back now. Nothing has started
     // that needs a clean stop yet.
