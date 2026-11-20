@@ -608,12 +608,14 @@ export class YoutubeSource implements MusicSource {
     // misheard by speech recognition found someone else) also gets a regular
     // YouTube search and a web search, and the result that matches best.
     // Not when the catalog's answer is longer than a song (yt-dlp would take it
-    // the same way), or in another script, so its words can't be compared.
-    if (song && !song.long && !otherScript(query, song.text)) {
+    // the same way).
+    if (song && !song.long) {
       // A version it doesn't name (a Tiny Desk set, an open mic) isn't what was
-      // asked for, however well the rest matches.
+      // asked for, however well the rest matches. Otherwise an answer in
+      // another script is kept: its words can't be compared.
       const versions = versionsAsked(query);
-      const songScore = hasVersions(song.text, versions) ? matchScore(query, song.text) : 0;
+      const lacks = !hasVersions(song.text, versions);
+      const songScore = lacks ? 0 : otherScript(query, song.text) ? 1 : matchScore(query, song.text);
       if (songScore < LOOK_FURTHER) {
         const maxS = WHOLE_SET.test(query) ? MAX_SET_S : MAX_SONG_S;
         const better = await this.closerMatch(query, songScore, signal, versions, maxS);
