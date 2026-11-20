@@ -3,7 +3,7 @@ import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { HelixClient, HelixError } from '../src/features/helix.js';
 import {
   chatText,
@@ -21,6 +21,10 @@ import {
 } from '../src/features/servercontrol.js';
 import type { McStatus } from '../src/features/gameservers.js';
 import type { ToolContext } from '../src/core/interfaces.js';
+
+// Real HTTP round trips to the mock Helix, and a few 1.5 s client timeouts. Set
+// here, not only in vitest.config.ts, because package.sh runs the tests without it.
+vi.setConfig({ testTimeout: 20_000 });
 
 // --- a fake Helix gateway -------------------------------------------------
 
@@ -52,6 +56,14 @@ class MockHelix {
   override?: (op: string, body: Record<string, unknown> | undefined, path: string) => Reply;
   /** How a lifecycle job ends, and after how many ms. */
   jobPlan: { ms: number; status: 'complete' | 'failed'; error?: string; detail?: Record<string, unknown> } = { ms: 0, status: 'complete' };
+  /** Finishes a job whose time is up. A job's state follows the clock, not timer
+   *  order: on a busy machine a wait's own timer can fire before the job's. */
+  private due = new Map<string, (now: number) => void>();
+  private finishers = new Map<string, () => void>();
+  /** Ends this test's jobs, as their plan says (for plans with ms -1). */
+  finishJobs() {
+    for (const id of this.jobs.keys()) this.finishers.get(id)?.();
+  }
   console: (cmd: string) => Reply | string = () => '';
   waitRefused = false;
   inFlight = 0;
@@ -98,13 +110,17 @@ class MockHelix {
         if (this.waitRefused) return done({ status: 403, body: { code: 'authorization_denied', message: 'no' } });
         // Waits run at a tenth of real time, so tests stay quick.
         const until = Date.now() + Number(url.searchParams.get('timeout_seconds') ?? 12) * 100;
-        while (Date.now() < until && !['complete', 'failed'].includes(this.jobs.get(wait[1]!)?.status ?? 'complete')) await new Promise((r) => setTimeout(r, 10));
+        const over = () => (this.due.get(wait[1]!)?.(Date.now()), ['complete', 'failed'].includes(this.jobs.get(wait[1]!)?.status ?? 'complete'));
+        while (Date.now() < until && !over()) await new Promise((r) => setTimeout(r, 10));
+        // However late this answer is, it says whether the job was done by the end of the wait.
+        this.due.get(wait[1]!)?.(until);
         const j = this.jobs.get(wait[1]!);
         if (!j) return done({ status: 403, body: { code: 'authorization_denied', message: 'no' } });
         return done({ status: 200, body: { ...this.record(j), finished: j.status === 'complete' || j.status === 'failed' } });
       }
       const inst = this.insts.get(String(body?.instance_id ?? ''));
       if (op === 'job_status') {
+        this.due.get(String(body?.job_id))?.(Date.now());
         const j = this.jobs.get(String(body?.job_id));
         return j ? done({ status: 200, body: this.record(j) }) : done({ status: 403, body: { code: 'authorization_denied', message: 'no' } });
       }
@@ -126,7 +142,10 @@ class MockHelix {
         const job: Job = { id, server: String(body?.instance_id), status: 'running', stage: 'Waiting until the game is ready', result: null, error: null };
         this.jobs.set(id, job);
         const plan = this.jobPlan;
+        let finished = false;
         const finish = () => {
+          if (finished) return;
+          finished = true;
           job.status = plan.status;
           if (plan.status === 'failed') job.error = plan.error ?? 'it broke';
           else {
@@ -135,8 +154,13 @@ class MockHelix {
             job.result = { instance_id: job.server, action, accepted: true, detail: { online: action !== 'stop', ...(action === 'start' ? { already_running: was } : action === 'stop' ? { already_stopped: !was } : { previously_running: was }), ...plan.detail } };
           }
         };
+        this.finishers.set(id, finish);
         if (plan.ms === 0) finish();
-        else if (plan.ms > 0) setTimeout(finish, plan.ms);
+        else if (plan.ms > 0) {
+          const at = Date.now() + plan.ms;
+          setTimeout(finish, plan.ms);
+          this.due.set(id, (now) => now >= at && finish());
+        }
         return done({ status: 200, body: { job_id: id, reused: false } });
       }
       return done({ status: 400, body: { code: 'invalid_json', message: 'unknown operation' } });
@@ -324,26 +348,26 @@ describe('the Helix client', () => {
     await new Promise<void>((r) => big.listen(0, '127.0.0.1', () => r()));
     const base = `http://127.0.0.1:${(big.address() as AddressInfo).port}`;
     try {
-      const t0 = Date.now();
-      const endless = new HelixClient({ url: base, token: TOKEN, timeoutMs: 4000 });
+      // Running into the time limit would be "unreachable", so too_large alone shows
+      // the cap cut it off; the limit is long so a busy machine can't get there first.
+      const endless = new HelixClient({ url: base, token: TOKEN, timeoutMs: 20_000 });
       await expect(endless.detail(SURVIVAL)).rejects.toMatchObject({ failure: { kind: 'other', code: 'too_large' } });
-      expect(Date.now() - t0).toBeLessThan(3000);
       expect(chunks).toBeLessThan(200); // stopped near 1 MiB, not after the timeout
-      const declared = new HelixClient({ url: `${base}/declared`, token: TOKEN, timeoutMs: 4000 });
-      const t1 = Date.now();
+      const declared = new HelixClient({ url: `${base}/declared`, token: TOKEN, timeoutMs: 20_000 });
+      // Its body never ends, so only the declared length can refuse it this way.
       await expect(declared.detail(SURVIVAL)).rejects.toMatchObject({ failure: { kind: 'other', code: 'too_large' } });
-      expect(Date.now() - t1).toBeLessThan(1000);
     } finally {
       big.closeAllConnections();
       big.close();
     }
-  });
+  }, 30_000);
 
   it('nothing listening is "unreachable"; a change with no answer is "lost"', async () => {
     const closed = http.createServer();
     await new Promise<void>((r) => closed.listen(0, '127.0.0.1', () => r()));
     const port = (closed.address() as AddressInfo).port;
-    closed.close();
+    // Wait for the close: until then a connection can still be taken and reset ("lost").
+    await new Promise<void>((r) => closed.close(() => r()));
     const c = new HelixClient({ url: `http://127.0.0.1:${port}`, token: TOKEN });
     await expect(c.action(SURVIVAL, 'restart')).rejects.toMatchObject({ failure: { kind: 'unreachable' } });
     mock.override = () => 'hang';
@@ -405,7 +429,7 @@ describe('start, stop, restart', () => {
 
   it('a long start is announced once it is up; a second asker joins the same job', async () => {
     mock.insts.get(SURVIVAL)!.status = 'stopped';
-    mock.jobPlan = { ms: 400, status: 'complete' };
+    mock.jobPlan = { ms: -1, status: 'complete' }; // runs until the checks below are done
     const c = make();
     expect(await c.lifecycle('start', 'survival', ctx(OWNER))).toBe("Starting Survival. I'll tell you when it's up.");
     expect(c.busyWith(SURVIVAL)).toBe('start');
@@ -414,6 +438,7 @@ describe('start, stop, restart', () => {
     expect(await c.lifecycle('start', 'survival', ctx(OWNER, 2))).toBe("Survival is already starting. I'll tell you when it's up.");
     expect(await c.status('survival')).toContain('starting now (Waiting until the game is ready)');
     expect(await c.lifecycle('stop', 'survival', ctx(OWNER, 3))).toMatch(/^Survival is busy: Alex asked to start it just now/);
+    mock.finishJobs();
     await until(() => announced.length > 0);
     expect(announced).toEqual([{ userId: OWNER, text: 'Survival is up.' }]);
     expect(mock.ops('server_action')).toHaveLength(1);
@@ -552,7 +577,7 @@ describe('start, stop, restart', () => {
       ]),
     );
     make({ stateFile }).resume();
-    await new Promise((r) => setTimeout(r, 100));
+    await until(() => logs.filter((l) => l.msg === 'game server watch dropped after restart').length >= 2 && readFileSync(stateFile, 'utf8').trim() === '[]');
     expect(announced).toEqual([]);
     expect(logs.filter((l) => l.msg === 'game server watch dropped after restart').map((l) => l.fields?.reason)).toEqual(['server gone', 'too old']);
     expect(JSON.parse(readFileSync(stateFile, 'utf8'))).toEqual([]);
@@ -574,9 +599,10 @@ describe('start, stop, restart', () => {
 
   it('falls back to job_status polling where the wait route is refused', async () => {
     mock.insts.get(SURVIVAL)!.status = 'stopped';
-    mock.jobPlan = { ms: 200, status: 'complete' };
+    mock.jobPlan = { ms: -1, status: 'complete' }; // still running when the tool answers
     mock.waitRefused = true;
     expect(await make().lifecycle('start', 'survival', ctx())).toBe("Starting Survival. I'll tell you when it's up.");
+    mock.finishJobs();
     await until(() => announced.length > 0);
     expect(announced[0]!.text).toBe('Survival is up.');
     expect(mock.ops('job_status').length).toBeGreaterThan(0);
@@ -605,7 +631,8 @@ describe('start, stop, restart', () => {
 
   it('a lost answer is never sent again: it finds the job, or says it cannot tell', async () => {
     mock.insts.get(SURVIVAL)!.players = 0;
-    const client = new HelixClient({ url: mock.url, token: TOKEN, timeoutMs: 300 });
+    // Short enough to lose the answer to a 'hang' (3 s), long enough for every other request on a busy machine.
+    const client = new HelixClient({ url: mock.url, token: TOKEN, timeoutMs: 1500 });
     const c = make({ client });
     expect(await c.lifecycle('restart', 'survival', ctx(OWNER, 1))).toBe('Restart Survival?');
     mock.override = (op) => (op === 'server_action' ? 'hang' : undefined);

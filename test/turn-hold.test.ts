@@ -1,8 +1,12 @@
 import { EventEmitter } from 'node:events';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { SpeechToText, UserId, VoiceTransport, WakeDetector } from '../src/core/interfaces.js';
 import { endsDangling, type HeardEvent, ListeningPipeline, type TurnOptions, type UserState } from '../src/listen/pipeline.js';
 import { Downsampler, type SileroVad } from '../src/speech/sherpa.js';
+
+// Real timers throughout, a few tests with 2-3 s holds. Set here, not only in
+// vitest.config.ts, because package.sh runs the tests without it.
+vi.setConfig({ testTimeout: 20_000 });
 
 /** A VAD stand-in: segments are handed out on speechEnd, or on audio from `closing`. */
 class FakeVad {
@@ -36,7 +40,7 @@ const seconds = (s: number) => new Float32Array(Math.round(s * 16_000)).fill(0.1
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** Polls, so a busy machine slows a test down instead of failing it. */
-async function until(done: () => boolean, ms = 3_000): Promise<void> {
+async function until(done: () => boolean, ms = 10_000): Promise<void> {
   const end = performance.now() + ms;
   while (!done() && performance.now() < end) await wait(2);
 }
@@ -173,7 +177,9 @@ describe('recognizing beside the turn check', () => {
   });
 
   it('reuses the words when a hold runs out', async () => {
-    const t = setup([0.2], 120, { words: async (s) => (await wait(30), `len ${s.length}`) });
+    // A slow decode (2 s) inside a longer hold (3 s): counted, it would dwarf
+    // what a busy machine adds by itself.
+    const t = setup([0.2], 3_000, { words: async (s) => (await wait(2_000), `len ${s.length}`) });
     const clip = seconds(1);
     t.say(clip);
     await wait(10);
@@ -182,8 +188,8 @@ describe('recognizing beside the turn check', () => {
     expect(t.decoded).toEqual([16_000]);
     expect(t.heard[0]!.samples).toBe(clip);
     expect(t.heard[0]!.text).toBe('len 16000');
-    // ready before the release, so the 30 ms decode isn't in here
-    expect(t.heard[0]!.sttLatencyMs).toBeLessThan(20);
+    // ready before the release, so the 2 s decode isn't in here
+    expect(t.heard[0]!.sttLatencyMs).toBeLessThan(1_500);
   });
 
   it('decodes the joined audio, not the old promise', async () => {
@@ -457,14 +463,15 @@ describe('asking the words whether to hold', () => {
 
   it("doesn't add slow words to the wait", async () => {
     const asked: string[] = [];
+    // Words that take 20x the hold, so even a busy machine's delays stay far below them.
     const t = setup([0.2], 100, {
-      words: async () => (await wait(400), 'play the'),
+      words: async () => (await wait(2_000), 'play the'),
       hooks: { shouldHold: (_id, text) => (asked.push(text), true) },
     });
     t.say(seconds(1));
     await until(() => t.heard.length > 0);
     const e = t.heard[0]!;
-    expect(e.segmentClosedAt - e.vadClosedAt!).toBeLessThan(350);
+    expect(e.segmentClosedAt - e.vadClosedAt!).toBeLessThan(1_500);
     expect(asked).toEqual([]); // the wait ran out first, so there was nothing left to decide
   });
 
@@ -601,7 +608,8 @@ describe('when a clip closed', () => {
   });
 
   it('stamps a joined clip at the last close', async () => {
-    const t = setup([0.2, 0.9], 200);
+    // A hold far longer than the 40 ms gap, so a busy machine can't run it out before the join.
+    const t = setup([0.2, 0.9], 10_000);
     t.say(seconds(1));
     await wait(40);
     const second = performance.now();
@@ -609,18 +617,20 @@ describe('when a clip closed', () => {
     await until(() => t.heard.length > 0);
     const e = t.heard[0]!;
     expect(e.vadClosedAt!).toBeGreaterThanOrEqual(second);
-    expect(e.holdMs).toBe(0); // the wait before the join was them talking
+    expect(e.holdMs).toBeLessThan(1_000); // the wait before the join was them talking, not a hold
   });
 
   it('times the check and reports no hold on a clip that sounds finished', async () => {
     const check = deferred<number>();
-    const t = setup([check.promise]);
+    // A long hold: held, holdMs would be 10 s; not held, it is only the few
+    // milliseconds a busy machine takes to hand the clip on.
+    const t = setup([check.promise], 10_000);
     t.say(seconds(1));
     await wait(30);
     check.resolve(0.9);
     await until(() => t.heard.length > 0);
     expect(t.heard[0]!.turnCheckMs!).toBeGreaterThanOrEqual(25);
-    expect(t.heard[0]!.holdMs).toBe(0);
+    expect(t.heard[0]!.holdMs).toBeLessThan(1_000);
   });
 
   it('has no check or hold figures where nothing checks', async () => {
