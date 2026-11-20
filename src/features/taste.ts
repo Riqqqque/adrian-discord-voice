@@ -145,7 +145,9 @@ export class MusicTaste {
     if (this.file) writeJsonFile(this.file, this.data);
   }
 
-  tools(): Tool[] {
+  /** `english`: does this person speak English to her? Her short line is in
+   *  English, so for anyone else the model says it. */
+  tools(english: (userId: UserId) => boolean = () => true): Tool[] {
     return [
       {
         spec: {

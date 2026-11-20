@@ -161,6 +161,8 @@ export interface GameNightDeps {
   maxMentions: number;
   perUserPerHour: number;
   now?(): number;
+  /** Does this person speak English to her? Her own short lines are English; for anyone else the model words it. Default: yes. */
+  english?(userId: UserId): boolean;
 }
 
 const NO_PRESENCE = "I can't see who's online or what people are playing: that needs Discord's Presence intent, which is off for me. I can only see who's in voice.";

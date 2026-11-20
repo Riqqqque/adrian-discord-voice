@@ -689,7 +689,7 @@ export async function startVoiceStack(
       tools.push(...reminders.tools(inEnglish).filter((t) => t.spec.name === 'set_reminder'));
       tools.push(...alarmToolList);
       tools.push(...notes.tools(inEnglish), ...games.tools());
-      if (music) tools.push(...musicTools((ctx) => roomFor(ctx).music, taste, (id) => (userLang.get(id) ?? 'en') === 'en').map((t) => inRoomOnly(notingStarts(t, musicStarts, (ctx) => roomFor(ctx).key))), ...taste.tools(), inRoomOnly(quizzes.tool((ctx) => quizRoom(roomFor(ctx)))));
+      if (music) tools.push(...musicTools((ctx) => roomFor(ctx).music, taste, (id) => (userLang.get(id) ?? 'en') === 'en').map((t) => inRoomOnly(notingStarts(t, musicStarts, (ctx) => roomFor(ctx).key))), ...taste.tools(inEnglish), inRoomOnly(quizzes.tool((ctx) => quizRoom(roomFor(ctx)))));
       if (sounds) tools.push(inRoomOnly(soundTool(sounds)));
       if (satEnabled)
         tools.push(
@@ -738,6 +738,7 @@ export async function startVoiceStack(
         announce: (id, text) => controller.announce(id, text),
         speakable: (text) => toSpeakable(text, 'A.D.R.I.A.N.', 'Adrian', creator ? [[creator, config.identity.creatorSpoken ?? creator]] : []),
         ...(ytForSounds ? { findVideo: (q: string, signal: AbortSignal) => ytForSounds.videoId(q, signal) } : {}),
+        english: inEnglish,
       });
       tools.push(...pcDiscord.tools);
       // Read-only lookups are reused briefly: asking twice in a row doesn't wait again.
