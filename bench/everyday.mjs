@@ -19,8 +19,8 @@ const SEARCH = [
   [/weather|forecast|snow|rain|temperature/i, '- Tomorrow\'s forecast (published 2026-11-20): Saturday, partly cloudy, high 48°F, low 29°F, 10% chance of snow, wind 10 mph.\n- Weekend outlook: dry and sunny Sunday, high 52°F.'],
   [/bears|game|score|won|nfl/i, '- Bears beat Packers 24-17 (published 2026-11-16): Chicago won on Sunday behind two fourth-quarter touchdowns.\n- Week 11 recap: Bears improve to 7-3.'],
   [/target|thanksgiving|open|hours/i, '- Target Thanksgiving 2026 hours (published 2026-11-12): Target stores are closed on Thanksgiving Day, Thursday Nov 26, and open at 6 AM on Black Friday.'],
-  [/ps5|playstation|price|cost/i, '- PS5 prices this week (published 2026-11-18): PS5 Slim digital $449.99, PS5 Slim with disc drive $499.99, PS5 Pro $749.99; Black Friday deals start Nov 27.'],
   [/gas|fuel/i, '- Local gas prices (published 2026-11-19): regular averages $2.89 a gallon in the metro area, down 6 cents from last week.'],
+  [/ps5|playstation|price|cost/i, '- PS5 prices this week (published 2026-11-18): PS5 Slim digital $449.99, PS5 Slim with disc drive $499.99, PS5 Pro $749.99; Black Friday deals start Nov 27.'],
 ];
 const answers = {
   web_search: (a) => SEARCH.find(([re]) => re.test(String(a.query ?? '')))?.[1] ?? 'No results.',
