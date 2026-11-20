@@ -1,8 +1,12 @@
 import { EventEmitter } from 'node:events';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { SpeechToText, UserId, VoiceTransport, WakeDetector } from '../src/core/interfaces.js';
 import { endsDangling, type HeardEvent, ListeningPipeline, type TurnOptions, type UserState } from '../src/listen/pipeline.js';
 import { Downsampler, type SileroVad } from '../src/speech/sherpa.js';
+
+// Real timers throughout, a few tests with 2-3 s holds. Set here, not only in
+// vitest.config.ts, because package.sh runs the tests without it.
+vi.setConfig({ testTimeout: 20_000 });
 
 /** A VAD stand-in: segments are handed out on speechEnd, or on audio from `closing`. */
 class FakeVad {

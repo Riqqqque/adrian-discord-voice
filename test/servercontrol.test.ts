@@ -3,7 +3,7 @@ import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { HelixClient, HelixError } from '../src/features/helix.js';
 import {
   chatText,
@@ -21,6 +21,10 @@ import {
 } from '../src/features/servercontrol.js';
 import type { McStatus } from '../src/features/gameservers.js';
 import type { ToolContext } from '../src/core/interfaces.js';
+
+// Real HTTP round trips to the mock Helix, and a few 1.5 s client timeouts. Set
+// here, not only in vitest.config.ts, because package.sh runs the tests without it.
+vi.setConfig({ testTimeout: 20_000 });
 
 // --- a fake Helix gateway -------------------------------------------------
 

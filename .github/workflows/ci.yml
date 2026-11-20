@@ -41,3 +41,7 @@ jobs:
 
       - name: Tests
         run: npx vitest run
+        env:
+          # As the service and the adrian CLI do: sherpa-onnx's native addon finds
+          # its shared libraries through this on Linux.
+          LD_LIBRARY_PATH: ${{ github.workspace }}/node_modules/sherpa-onnx-linux-x64
