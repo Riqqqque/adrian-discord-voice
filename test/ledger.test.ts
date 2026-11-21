@@ -22,7 +22,7 @@ describe('usage ledger', () => {
 
   it('pauses at the daily cap, resumes the next local day, and stops at the monthly cap', () => {
     let now = Date.UTC(2026, 9, 15, 12);
-    const l = new UsageLedger(undefined, { ...limits, perUserPerHour: 0 }, 'America/Denver', () => now);
+    const l = new UsageLedger(undefined, { ...limits, perUserPerHour: 0 }, 'America/Boise', () => now);
     l.addCost(0.006);
     expect(l.check('a').ok).toBe(true);
     l.addCost(0.005);
@@ -36,9 +36,9 @@ describe('usage ledger', () => {
   });
 
   it('day boundaries follow the household timezone', () => {
-    // 2026-10-16 03:00 UTC is still Oct 15 in Denver.
+    // 2026-10-16 03:00 UTC is still Oct 15 in Chicago.
     const now = Date.UTC(2026, 9, 16, 3);
-    const l = new UsageLedger(undefined, limits, 'America/Denver', () => now);
+    const l = new UsageLedger(undefined, limits, 'America/Boise', () => now);
     l.addCost(0.001);
     expect(l.summary().history[0]?.day).toBe('2026-10-15');
   });

@@ -35,7 +35,7 @@ describe('pasted links', () => {
     const r = new RecentLinks(() => t);
     const yt = parseMediaLink('https://youtu.be/dQw4w9WgXcQ')!;
     const sc = parseMediaLink('https://soundcloud.com/a/b')!;
-    r.add({ link: yt, userId: 'me', name: 'Rique', guildId: 'g', channelId: 'c' });
+    r.add({ link: yt, userId: 'me', name: 'Morgan', guildId: 'g', channelId: 'c' });
     t = 60_000;
     r.add({ link: sc, userId: 'sam', name: 'Sam', guildId: 'g', channelId: 'c' });
     expect(r.latestFor('me', 'g')?.link.kind).toBe('youtube');
@@ -55,7 +55,7 @@ describe('pasted links', () => {
     t = 60_000;
     expect(r.latestFor('owner', undefined)).toBeUndefined();
     expect(linksLine(r.forPrompt('owner', undefined), t)).toEqual([]);
-    r.add({ link: yt, userId: 'owner', name: 'Rique', guildId: 'g', channelId: 'c' });
+    r.add({ link: yt, userId: 'owner', name: 'Morgan', guildId: 'g', channelId: 'c' });
     expect(r.latestFor('owner', undefined)?.userId).toBe('owner');
   });
 

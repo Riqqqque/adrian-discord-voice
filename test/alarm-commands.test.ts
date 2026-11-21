@@ -12,7 +12,7 @@ import { AlarmClock, type AlarmDeps } from '../src/features/alarms.js';
 import { alarmTools } from '../src/features/alarm-tools.js';
 import { Reminders } from '../src/features/reminders.js';
 
-const TZ = 'America/Denver';
+const TZ = 'America/Boise';
 // Obviously fake snowflakes.
 const APP = '100000000000000001';
 const GUILD = '200000000000000002';
@@ -40,7 +40,7 @@ const DEF = ALARM_COMMANDS[0]!.toJSON() as RESTPostAPIChatInputApplicationComman
 
 /** The bot with /alarm on a fake Discord: who the user is, where, and what the clock says. */
 function world(o: { file?: string; start?: number; place?: string | undefined; owners?: string[]; english?: boolean; reach?: 'call' | 'pc' | 'none' } = {}) {
-  let now = o.start ?? Date.UTC(2026, 10, 18, 20, 0); // Wed Nov 18 2026, 1 PM in Denver
+  let now = o.start ?? Date.UTC(2026, 10, 18, 20, 0); // Wed Nov 18 2026, 1 PM in Chicago
   let place: string | undefined = 'place' in o ? o.place : undefined; // default: nowhere, so DMs with buttons
   const dms: { user: string; text: string; components: Raw[] }[] = [];
   const said: { user: string; text: string }[] = [];
@@ -413,7 +413,7 @@ describe('/alarm set', () => {
     expect(w.clock.forUser(SAM)[0]!.at).toBe(Date.UTC(2026, 10, 19, 7, 0));
     expect(await w.text('settings', { timezone: 'Mars/Olympus' })).toBe('"Mars/Olympus" isn\'t a time zone name; use one like America/Chicago.');
 
-    // Spring forward in Denver: 2:30 doesn't exist on March 14, 2027; it rings at 3:30.
+    // Spring forward in Chicago: 2:30 doesn't exist on March 14, 2027; it rings at 3:30.
     const s = world({ start: Date.UTC(2027, 2, 13, 19, 0) });
     expect(await s.text('set', { time: '2:30', date: '2027-03-14' })).toBe('Alarm set for 3:30 AM tomorrow, Sunday.');
     expect(s.clock.forUser(SAM)[0]!.at).toBe(Date.UTC(2027, 2, 14, 9, 30));
@@ -623,7 +623,7 @@ describe('/alarm sounds and settings', () => {
   it('shows the settings, and changes every one of them', async () => {
     const w = world();
     expect(await w.text('settings')).toBe(
-      'Settings: alarm sound classic, timer sound chime, snooze 9 minutes, each ring lasts 10 minutes (timers 5) and an unanswered alarm rings 3 times, fades in over 30 seconds, volume 100%, turn off by saying stop, her voice on, time zone America/Denver.',
+      'Settings: alarm sound classic, timer sound chime, snooze 9 minutes, each ring lasts 10 minutes (timers 5) and an unanswered alarm rings 3 times, fades in over 30 seconds, volume 100%, turn off by saying stop, her voice on, time zone America/Boise.',
     );
     const t = await w.text('settings', { sound: 'birds', timer_sound: 'bells', snooze: 15, ring: 5, fade_in: 0, volume: 70, turn_off_by: 'math', voice: false, timezone: 'America/New_York' });
     expect(t).toBe(

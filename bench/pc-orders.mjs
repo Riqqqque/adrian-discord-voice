@@ -70,7 +70,7 @@ const stub = new Proxy({}, {
 const recorded = (t, answer) => ({ ...t, run: async (args) => (calls.push({ name: t.spec.name, args }), typeof answer === 'function' ? answer(args) : answer) });
 const [handoff] = handoffTools({ things: { candidates: () => [] }, starts: {}, callRoom: 'discord', pcFor: () => pc, callMusic: () => undefined, call: () => undefined, inCall: () => false, isOwner: () => true, canSee: async () => true, readable: false });
 const handoffAnswer = (x) => (x.action === 'music_to_pc' ? 'Moved "Nights by Frank Ocean" to their PC and stopped it in the call.' : x.action === 'pc_to_call' ? 'Now playing Nights by Frank Ocean in the call, and paused it on their PC.' : `Opened "Sam"'s YouTube video on their PC.`);
-const tell = tellCallTool({ nameOf: () => 'Rique', inHerCall: () => false, call: () => undefined, isMember: async () => true, announce: async () => true, post: async () => 'general', limiter: { take: () => undefined, release() {} }, maxChars: 200 });
+const tell = tellCallTool({ nameOf: () => 'Morgan', inHerCall: () => false, call: () => undefined, isMember: async () => true, announce: async () => true, post: async () => 'general', limiter: { take: () => undefined, release() {} }, maxChars: 200 });
 const night = gameNightTool({ guild: () => undefined, allowedGuilds: [], presences: false, signups: {}, lastText: () => undefined, voiceChannel: () => undefined, cooldownMs: 1, maxMentions: 10, perUserPerHour: 4 });
 const nightAnswer = (x) => (x.action === 'ping' ? 'Pinged 4 people in #general for Valorant.' : x.action === 'join' ? 'Signed them up for game-night pings, every game.' : x.action === 'leave' ? 'No more game-night pings for them.' : 'In voice: Sam (in voice Lounge); Kim (in voice Lounge, muted). (Presence still off; you already told them, so leave it out.)');
 const alarms = alarmKit(c.timezone, (name, args) => calls.push({ name, args }));
@@ -89,7 +89,7 @@ async function ask(text, check, maxWords = 30, { user = `u${total}`, followUp = 
   calls.length = 0;
   let out = '';
   // A fresh conversation per check, so one result can't color the next.
-  for await (const ch of o.ask(user, 'Rique', text, AbortSignal.timeout(30000), undefined, { channelId: 'sat:x' }, { desk: true, followUp })) out += (out ? ' ' : '') + ch;
+  for await (const ch of o.ask(user, 'Morgan', text, AbortSignal.timeout(30000), undefined, { channelId: 'sat:x' }, { desk: true, followUp })) out += (out ? ' ' : '') + ch;
   const got = calls.map((k) => `${k.name}${JSON.stringify(k.args)}`).join(' ');
   const pass = check(calls, out) && words(out) <= maxWords;
   total++;
@@ -166,7 +166,7 @@ await ask('open the link sam just posted', ho('send_to_pc', (x) => /sam/i.test(x
 await ask('play this on my pc instead', ho('music_to_pc'));
 await ask('move the music to my pc', ho('music_to_pc'));
 await ask("put what i'm watching into the call", ho('pc_to_call'));
-await ask("tell the call i'll be on in 5", call('tell_call', (x) => /5|five/.test(`${x.message} ${x.spoken ?? ''}`) && (!x.spoken || /rique/i.test(x.spoken))));
+await ask("tell the call i'll be on in 5", call('tell_call', (x) => /5|five/.test(`${x.message} ${x.spoken ?? ''}`) && (!x.spoken || /morgan/i.test(x.spoken))));
 await ask('ask them if they want to play valorant', call('tell_call', (x) => /valorant/i.test(x.message)));
 // Game nights.
 await ask("who's playing right now", call('game_night', (x) => a(x) === 'who_playing' || a(x) === 'who_free'));

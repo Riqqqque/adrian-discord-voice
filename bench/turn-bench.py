@@ -6,7 +6,7 @@ was NOT done (truth "incomplete"), at the end they were (truth "complete").
   smart:       after `stop` s of silence the model is asked with the audio so far. "complete"
                ends the turn (inside the clip that's a cut-off); "incomplete" keeps waiting until
                `fallback` s. The end costs `stop` s if the model says complete, else `fallback` s.
-Sets: the shootout corpus (pc TTS, AMI far/headset, LibriSpeech), Rique's recordings (real),
+Sets: the shootout corpus (pc TTS, AMI far/headset, LibriSpeech), the owner's recordings (real),
 and longer AMI headset segments (ami-long, fetched once) because they have real hesitations.
    venv/bin/python -I bench/turn-bench.py <bench dir> <smart-turn.onnx> <silero_vad.onnx>"""
 import io, json, os, sys, time, urllib.request

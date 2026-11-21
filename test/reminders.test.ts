@@ -9,8 +9,8 @@ const tool = (r: Reminders, name: string) => r.tools().find((t) => t.spec.name =
 
 describe('timers and reminders', () => {
   it('converts household clock times, including across DST', () => {
-    expect(new Date(localToEpoch('2026-10-16T07:30', 'America/Denver')!).toISOString()).toBe('2026-10-16T13:30:00.000Z'); // MDT
-    expect(new Date(localToEpoch('2026-12-01T07:30', 'America/Denver')!).toISOString()).toBe('2026-12-01T14:30:00.000Z'); // MST
+    expect(new Date(localToEpoch('2026-10-16T07:30', 'America/Boise')!).toISOString()).toBe('2026-10-16T13:30:00.000Z'); // MDT
+    expect(new Date(localToEpoch('2026-12-01T07:30', 'America/Boise')!).toISOString()).toBe('2026-12-01T14:30:00.000Z'); // MST
     expect(localToEpoch('tomorrow at 7', 'UTC')).toBeUndefined();
   });
 
@@ -73,7 +73,7 @@ describe('timers and reminders', () => {
     });
 
     it('says the time in the household time zone', async () => {
-      const r = new Reminders(undefined, 'America/Denver', () => {}, now);
+      const r = new Reminders(undefined, 'America/Boise', () => {}, now);
       expect(await said(r, 'set_reminder', { text: 'call mom', at: '2026-10-17T19:00' })).toBe('Reminder set for Saturday at 7 PM.');
     });
 

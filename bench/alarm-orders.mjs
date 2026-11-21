@@ -42,7 +42,7 @@ const words = (t) => t.split(/\s+/).filter(Boolean).length;
 async function ask(text, check, maxWords = 30, { user = 'u1', followUp = false } = {}) {
   calls.length = 0;
   let out = '';
-  for await (const ch of o.ask(user, 'Rique', text, AbortSignal.timeout(30000), undefined, { channelId: 'voice1', guildId: 'g1' }, { followUp })) out += (out ? ' ' : '') + ch;
+  for await (const ch of o.ask(user, 'Morgan', text, AbortSignal.timeout(30000), undefined, { channelId: 'voice1', guildId: 'g1' }, { followUp })) out += (out ? ' ' : '') + ch;
   const got = calls.map((k) => `${k.name}${JSON.stringify(k.args)}`).join(' ');
   const pass = check(calls, out) && words(out) <= maxWords;
   total++;

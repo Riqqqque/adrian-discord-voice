@@ -17,7 +17,7 @@ let total = 0;
 async function say(text, { followUp = true, expect } = {}) {
   let out = '';
   let silent = false;
-  for await (const ch of o.ask('u1', 'Rique', text, AbortSignal.timeout(20000), undefined, { channelId: 'sat:x' }, { followUp, desk: true, onSilent: () => (silent = true) }))
+  for await (const ch of o.ask('u1', 'Morgan', text, AbortSignal.timeout(20000), undefined, { channelId: 'sat:x' }, { followUp, desk: true, onSilent: () => (silent = true) }))
     out += (out ? ' ' : '') + ch;
   const got = silent || !out ? 'silent' : 'answer';
   if (expect) {

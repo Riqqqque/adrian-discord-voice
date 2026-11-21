@@ -11,8 +11,8 @@ const L = `${process.env.HOME}/adrian-dev/models`;
 const B = `${BENCH}/models`;
 const THREADS = 4; // what the bot uses
 // The same word list the bot gives Whisper (names and apps people say at a PC).
-const VOCAB = 'Hey Adrian, Rique. Spotify, Discord, Valorant, Steam, Chrome, YouTube, Netflix, Modrinth, CurseForge, Minecraft, Fabric, Forge, OBS, FL Studio.';
-const HOTWORDS = 'Adrian,Rique,Spotify,Discord,Valorant,Steam,Chrome,YouTube,Netflix,Modrinth,CurseForge,Minecraft,Fabric,Forge,OBS,FL Studio';
+const VOCAB = 'Hey Adrian, Morgan. Spotify, Discord, Valorant, Steam, Chrome, YouTube, Netflix, Modrinth, CurseForge, Minecraft, Fabric, Forge, OBS, FL Studio.';
+const HOTWORDS = 'Adrian,Morgan,Spotify,Discord,Valorant,Steam,Chrome,YouTube,Netflix,Modrinth,CurseForge,Minecraft,Fabric,Forge,OBS,FL Studio';
 
 const transducer = (dir, files = ['encoder.int8.onnx', 'decoder.int8.onnx', 'joiner.int8.onnx']) => ({
   transducer: { encoder: `${dir}/${files[0]}`, decoder: `${dir}/${files[1]}`, joiner: `${dir}/${files[2]}` },

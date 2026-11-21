@@ -35,14 +35,14 @@ async function msg(uid, who, text, { direct = false, expect } = {}) {
 }
 await msg('s', 'Sam', 'yo who wants to run valorant tonight');
 await msg('k', 'Kim', 'im down after 9');
-await msg('s', 'Sam', 'bet, rique you in?');
-await msg('r', 'Rique', 'what are they planning?', { direct: true, expect: 'answer' });
-await msg('r', 'Rique', 'ok and what time did kim say', { expect: 'answer' });
+await msg('s', 'Sam', 'bet, morgan you in?');
+await msg('r', 'Morgan', 'what are they planning?', { direct: true, expect: 'answer' });
+await msg('r', 'Morgan', 'ok and what time did kim say', { expect: 'answer' });
 // (A message that @mentions someone else never reaches the model.)
-await msg('r', 'Rique', 'yeah im in', { expect: 'silent' });
-await msg('r', 'Rique', 'lmaooo', { expect: 'silent' });
-await msg('r', 'Rique', 'what agent should I play if we need a controller', { expect: 'answer' });
-await msg('r', 'Rique', 'kim you playing sova again?', { expect: 'silent' });
+await msg('r', 'Morgan', 'yeah im in', { expect: 'silent' });
+await msg('r', 'Morgan', 'lmaooo', { expect: 'silent' });
+await msg('r', 'Morgan', 'what agent should I play if we need a controller', { expect: 'answer' });
+await msg('r', 'Morgan', 'kim you playing sova again?', { expect: 'silent' });
 await msg('k', 'Kim', 'adrian is lowkey smart', { expect: 'silent' });
 await msg('k', 'Kim', 'adrian what rank is good for a duo queue', { expect: 'answer' });
 console.log(`\n${ok}/${total} judged as expected`);

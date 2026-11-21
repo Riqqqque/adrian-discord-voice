@@ -106,8 +106,8 @@ const orchestrator = new ConversationOrchestrator(
       })
     : new OpenAiCompatibleLlm({ baseUrl, model: 'mock' }),
   new SessionMemory(),
-  [timeTool('America/Denver')],
-  { spokenName: 'Adrian', writtenName: 'A.D.R.I.A.N.', timezone: 'America/Denver', firstEventTimeoutMs: 8_000, maxTokens: 200, maxToolRounds: 2 },
+  [timeTool('America/Boise')],
+  { spokenName: 'Adrian', writtenName: 'A.D.R.I.A.N.', timezone: 'America/Boise', firstEventTimeoutMs: 8_000, maxTokens: 200, maxToolRounds: 2 },
 );
 const pipeline = new ListeningPipeline(transport, stt, new TextWakeDetector(), {
   model: cfg.vadModel,

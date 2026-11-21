@@ -366,7 +366,7 @@ export const PocConfigSchema = z.object({
     })
     .default({ enabled: false, people: [], awayHours: 4, minHours: 6 }),
   /** Weather where the household is (Open-Meteo, no key): a place name
-   *  ("Denver, Colorado") or coordinates. Only this is sent. */
+   *  ("Springfield, Illinois") or coordinates. Only this is sent. */
   weather: z
     .object({
       place: z.string().min(2).max(100).optional(),

@@ -14,7 +14,7 @@ const TIMEOUT_MS = 6_000;
 const MAX_BYTES = 1024 * 1024;
 
 export interface WeatherPlace {
-  /** "Denver" or "Denver, Colorado" or "Denver, US". */
+  /** "Chicago" or "Springfield, Illinois" or "Chicago, US". */
   place?: string | undefined;
   latitude?: number | undefined;
   longitude?: number | undefined;

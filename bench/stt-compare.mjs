@@ -27,7 +27,7 @@ const phrases = [
   'who sings the song that is playing',
   'switch to chrome and close steam',
   'how do i install sodium on fabric',
-  'what is the weather in denver tomorrow',
+  'what is the weather in chicago tomorrow',
   'skip this song it is trash',
   'search youtube for minecraft speedrun world record',
 ];
@@ -55,7 +55,7 @@ for (const [voice, speed] of [['am_michael', 1.0], ['af_heart', 1.15]]) {
     const local = (await parakeet.transcribe(noisy, 16000)).text;
     await new Promise((r) => setTimeout(r, 3200)); // Groq free tier: ~20 a minute
     const t0 = performance.now();
-    const cloud = await groqTranscribe(key, noisy, 16000, { prompt: sttPrompt(['Rique']), signal: AbortSignal.timeout(8000) });
+    const cloud = await groqTranscribe(key, noisy, 16000, { prompt: sttPrompt(['Morgan']), signal: AbortSignal.timeout(8000) });
     lat.push(performance.now() - t0);
     const a = wer(p, local), b = wer(p, cloud);
     tot.local.e += a.errors; tot.local.w += a.words;

@@ -167,15 +167,15 @@ describe('admin web server', () => {
     auth.ensureSetupCode();
     const code = (JSON.parse(readFileSync(join(stateDir, 'setup-code'), 'utf8')) as { code: string }).code;
     expect((await call('GET', '/api/session')).data.setupNeeded).toBe(true);
-    const wrong = await call('POST', '/api/setup/claim', { code: 'WRONG-CODE0', username: 'rique', password: 'correct horse battery' });
+    const wrong = await call('POST', '/api/setup/claim', { code: 'WRONG-CODE0', username: 'morgan', password: 'correct horse battery' });
     expect(wrong.status).toBe(403);
     // Says where the right one is: the code is printed once, at install.
     expect(wrong.data.error).toContain('sudo adrian setup-code');
     expect((await call('GET', '/api/session')).data.setupCodeCommand).toBe('sudo adrian setup-code');
     // Cross-origin claim refused even with the right code.
-    expect((await call('POST', '/api/setup/claim', { code, username: 'rique', password: 'correct horse battery' }, { origin: 'http://evil.example' })).status).toBe(403);
-    expect((await call('POST', '/api/setup/claim', { code, username: 'rique', password: 'short' })).status).toBe(400);
-    const ok = await call('POST', '/api/setup/claim', { code, username: 'rique', password: 'correct horse battery' });
+    expect((await call('POST', '/api/setup/claim', { code, username: 'morgan', password: 'correct horse battery' }, { origin: 'http://evil.example' })).status).toBe(403);
+    expect((await call('POST', '/api/setup/claim', { code, username: 'morgan', password: 'short' })).status).toBe(400);
+    const ok = await call('POST', '/api/setup/claim', { code, username: 'morgan', password: 'correct horse battery' });
     expect(ok.status).toBe(200);
     expect(ok.headers.get('set-cookie')).toMatch(/HttpOnly; SameSite=Strict/);
     expect(ok.headers.get('set-cookie')).not.toMatch(/Secure/); // plain HTTP on loopback
@@ -279,7 +279,7 @@ describe('admin web server', () => {
     const r = await call('PUT', '/api/settings', {
       guildId: '100000000000000010',
       channelId: '100000000000000020',
-      timezone: 'America/Denver',
+      timezone: 'America/Boise',
       llm: { preset: 'groq' },
       fallback: { preset: 'gemini' },
       search: true,
@@ -492,15 +492,15 @@ describe('admin web server', () => {
     await call('POST', '/api/logout', {});
     cookie = '';
     csrf = '';
-    for (let i = 0; i < 5; i++) expect((await call('POST', '/api/login', { username: 'rique', password: 'wrong password!' })).status).toBe(401);
-    expect((await call('POST', '/api/login', { username: 'rique', password: 'correct horse battery' })).status).toBe(429);
+    for (let i = 0; i < 5; i++) expect((await call('POST', '/api/login', { username: 'morgan', password: 'wrong password!' })).status).toBe(401);
+    expect((await call('POST', '/api/login', { username: 'morgan', password: 'correct horse battery' })).status).toBe(429);
   });
 
   it('logs a run of refused logins once, so it cannot flush the dashboard log', async () => {
     // The status field: a 401's timestamp can hold those digits too (".429Z").
     const refused = () => logLines.filter((l) => l.includes('login failed') && l.includes('"status":429')).length;
     expect(refused()).toBe(1);
-    await Promise.all(Array.from({ length: 20 }, () => call('POST', '/api/login', { username: 'rique', password: 'wrong password!' })));
+    await Promise.all(Array.from({ length: 20 }, () => call('POST', '/api/login', { username: 'morgan', password: 'wrong password!' })));
     expect(refused()).toBe(1);
   });
 });

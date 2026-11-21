@@ -148,12 +148,12 @@ describe('CacheWarmer', () => {
 });
 
 describe('orchestrator prewarm', () => {
-  const opts = { spokenName: 'Adrian', writtenName: 'A.D.R.I.A.N.', timezone: 'America/Denver', firstEventTimeoutMs: 1_000, maxTokens: 200, maxToolRounds: 2, stablePrefix: true, stableLines: ['A cached rule.'] };
+  const opts = { spokenName: 'Adrian', writtenName: 'A.D.R.I.A.N.', timezone: 'America/Boise', firstEventTimeoutMs: 1_000, maxTokens: 200, maxToolRounds: 2, stablePrefix: true, stableLines: ['A cached rule.'] };
 
   it('warms exactly the prefix an answer sends', async () => {
     const { llm, warms, asks } = fakeLlm();
     const warmer = new CacheWarmer(llm, { enabled: true, maxPerHour: 20 });
-    const tools = [timeTool('America/Denver')];
+    const tools = [timeTool('America/Boise')];
     const o = new ConversationOrchestrator(llm, new SessionMemory(), tools, { ...opts, warmer });
     expect(o.prewarm('heard')).toBe('sent');
     const sent = warms[0]!;
@@ -171,8 +171,8 @@ describe('orchestrator prewarm', () => {
   it('an answer that read the cache makes the next warm-up unnecessary', async () => {
     const { llm } = fakeLlm();
     const warmer = new CacheWarmer(llm, { enabled: true, maxPerHour: 20 });
-    const o = new ConversationOrchestrator(llm, new SessionMemory(), [timeTool('America/Denver')], { ...opts, warmer });
-    const dm = new ConversationOrchestrator(llm, new SessionMemory(), [timeTool('America/Denver')], { ...opts, warmer });
+    const o = new ConversationOrchestrator(llm, new SessionMemory(), [timeTool('America/Boise')], { ...opts, warmer });
+    const dm = new ConversationOrchestrator(llm, new SessionMemory(), [timeTool('America/Boise')], { ...opts, warmer });
     for await (const _ of dm.ask('u1', 'Sam', 'hi', new AbortController().signal, undefined, undefined, { text: true })) void _;
     expect(o.prewarm('heard')).toBe('warm'); // shared warmer, same prefix
     expect(llm.warm).not.toHaveBeenCalled();
@@ -195,7 +195,7 @@ describe('orchestrator prewarm', () => {
     };
     const llm = new FallbackLlm(down, other);
     const warmer = new CacheWarmer(llm, { enabled: true, maxPerHour: 20 });
-    const o = new ConversationOrchestrator(llm, new SessionMemory(), [timeTool('America/Denver')], { ...opts, warmer });
+    const o = new ConversationOrchestrator(llm, new SessionMemory(), [timeTool('America/Boise')], { ...opts, warmer });
     let said = '';
     for await (const s of o.ask('u1', 'Sam', 'capital of australia?', new AbortController().signal)) said += s;
     expect(said).toBe('Canberra.');
@@ -206,7 +206,7 @@ describe('orchestrator prewarm', () => {
     const { llm } = fakeLlm();
     const counted: WarmUsage[] = [];
     const warmer = new CacheWarmer(llm, { enabled: true, maxPerHour: 20, onUsage: (u) => counted.push(u) });
-    const o = new ConversationOrchestrator(llm, new SessionMemory(), [timeTool('America/Denver')], { ...opts, warmer });
+    const o = new ConversationOrchestrator(llm, new SessionMemory(), [timeTool('America/Boise')], { ...opts, warmer });
     expect(o.prewarm('heard')).toBe('sent');
     await o.stopWarming();
     expect(counted).toHaveLength(1);
@@ -217,11 +217,11 @@ describe('orchestrator prewarm', () => {
   it('a new tool (a home server joining) is a new prefix', async () => {
     const { llm } = fakeLlm();
     const warmer = new CacheWarmer(llm, { enabled: true, maxPerHour: 20 });
-    const tools = [timeTool('America/Denver')];
+    const tools = [timeTool('America/Boise')];
     const o = new ConversationOrchestrator(llm, new SessionMemory(), tools, { ...opts, warmer });
     for await (const _ of o.ask('u1', 'Sam', 'hi', new AbortController().signal)) void _;
     expect(o.prewarm('heard')).toBe('warm');
-    tools.push({ ...timeTool('America/Denver'), spec: { ...timeTool('America/Denver').spec, name: 'lights' } });
+    tools.push({ ...timeTool('America/Boise'), spec: { ...timeTool('America/Boise').spec, name: 'lights' } });
     expect(o.prewarm('heard')).toBe('sent');
   });
 
@@ -261,7 +261,7 @@ describe('warm-ups on the providers', () => {
         finalMessage: async () => ({ content: [], usage: { input_tokens: 9, cache_read_input_tokens: 1_000, cache_creation_input_tokens: 0, output_tokens: 2 } }),
       };
     });
-    const tools: ToolSpec[] = [timeTool('America/Denver').spec];
+    const tools: ToolSpec[] = [timeTool('America/Boise').spec];
     const stable: ChatMessage = { role: 'system', content: 'rules', cache: true };
     const u = await llm.warm([stable, { role: 'user', content: WARM_PLACEHOLDER }], { tools });
     expect(u).toEqual({ inputTokens: 1_009, cachedTokens: 0, cacheWriteTokens: 1_000, outputTokens: 0 });

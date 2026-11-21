@@ -849,10 +849,10 @@ describe('the from line', () => {
 
   it("doesn't let a name's markdown hide the account", async () => {
     const r = rig();
-    r.guild.members.cache.get(ASKER)!.displayName = 'Rique** ||';
+    r.guild.members.cache.get(ASKER)!.displayName = 'Morgan** ||';
     await r.tell({ member: 'Sam', message: 'hi' });
     const line = JSON.stringify(r.sam.send.mock.calls);
-    expect(line).not.toContain('Rique** ||');
+    expect(line).not.toContain('Morgan** ||');
     expect(line).toContain('(@danad)');
   });
 });

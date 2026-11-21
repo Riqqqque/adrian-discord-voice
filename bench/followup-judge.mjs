@@ -218,7 +218,7 @@ sc({ id: 'back', room: 'pc', hold: true, q: "what's a good stretch for lower bac
   ["you hungry? I'm about to order", 'not', 7],
   ['how many times a day', 'for', 4],
 ] });
-sc({ id: 'nuggets', room: 'pc', q: "what's the score of the Nuggets game", a: 'Nuggets lead 88 to 80 in the fourth.', said: [
+sc({ id: 'bulls', room: 'pc', q: "what's the score of the Nuggets game", a: 'Nuggets lead 88 to 80 in the fourth.', said: [
   ['Nuggets are up by eight bro', 'not', 4],
   ['who has the most points', 'for', 5],
   ["perfect, that's all I needed", 'either', 4],
@@ -228,10 +228,10 @@ sc({ id: 'smart', room: 'pc', q: 'how many bones are in the human body', a: 'Two
   ['Adrian is kind of smart actually', 'not', 5],
 ] });
 
-// ---------------- Call (Rique, Sam and Kim) ----------------
+// ---------------- Call (Morgan, Sam and Kim) ----------------
 sc({ id: 'coop', room: 'call', q: "what's a good co-op game for four people", a: "Try Deep Rock Galactic. It's great with four.", said: [
   ['is it on game pass?', 'for', 3, undefined, [['Sam', "ooh I've heard of that"]]],
-  ['yeah I got it last summer', 'not', 4, undefined, [['Sam', 'rique you have it right?']]],
+  ['yeah I got it last summer', 'not', 4, undefined, [['Sam', 'morgan you have it right?']]],
   ["I think it's like thirty bucks", 'not', 3, undefined, [['Kim', 'how much is it']]],
   ['how much does it cost', 'for', 2],
 ] });
@@ -253,7 +253,7 @@ sc({ id: 'team', room: 'call', hold: true, q: "what's a good name for our team",
   ['Kim what do you think', 'not', 2],
   ['yeah give us a few more', 'for', 3, undefined, [['Kim', 'night owls is kinda mid']]],
 ] });
-sc({ id: 'moab', room: 'call', q: 'how long is the drive from Denver to Moab', a: 'About five and a half hours.', said: [
+sc({ id: 'stlouis', room: 'call', q: 'how long is the drive from Chicago to St. Louis', a: 'About five hours.', said: [
   ['like six am?', 'either', 3, undefined, [['Sam', 'we should leave early then']]],
   ["what's the best route", 'for', 3],
 ] });
@@ -292,7 +292,7 @@ sc({ id: 'slow', room: 'call', hold: true, q: 'what time is it in Tokyo', a: "It
   ['and in London?', 'for', 2],
 ] });
 sc({ id: 'sam-asks', room: 'call', q: 'how many players are on a soccer team', a: 'Eleven on the field for each side.', said: [
-  ['nah I can play after nine', 'not', 3, undefined, [['Sam', 'rique you free tonight?']]],
+  ['nah I can play after nine', 'not', 3, undefined, [['Sam', 'morgan you free tonight?']]],
   ['what about futsal', 'for', 3],
 ] });
 
@@ -311,7 +311,7 @@ sc({ id: 'scifi', room: 'pc', set: 'stmt', q: 'name a good sci-fi book', a: 'Pro
 sc({ id: 'water', room: 'pc', set: 'stmt', q: 'how much water should I drink a day', a: 'Around eight cups is a common target.', said: [['that seems like a lot', 'for', 3]] });
 sc({ id: 'pasta', room: 'pc', set: 'stmt', q: 'how long do I boil pasta', a: 'About ten minutes.', said: [["the water's boiling, can you grab the salt", 'not', 6]] });
 sc({ id: 'sunny', room: 'pc', set: 'stmt', q: "what's the weather tomorrow", a: 'Sunny, around sixty.', said: [["honey I'm taking the dog out", 'not', 7]] });
-sc({ id: 'boulder', room: 'pc', set: 'stmt', q: 'how far is Denver from Boulder', a: 'About thirty miles.', said: [["I'll pick you up at seven then", 'not', 8]] });
+sc({ id: 'evanston', room: 'pc', set: 'stmt', q: 'how far is Chicago from Evanston', a: 'About fifteen miles.', said: [["I'll pick you up at seven then", 'not', 8]] });
 sc({ id: 'jackbox', room: 'call', set: 'stmt', q: 'suggest a party game for tonight', a: 'Try Jackbox, Party Pack 9 has good ones.', said: [['yeah we did that already, something different', 'for', 3, undefined, [['Sam', 'we played that last week']]]] });
 sc({ id: 'budapest', room: 'call', set: 'stmt', q: "what's a good movie for the group", a: 'How about The Grand Budapest Hotel?', said: [["Kim's seen it already", 'for', 3]] });
 sc({ id: 'trivia', room: 'call', set: 'stmt', q: 'give me a trivia question', a: "What's the only planet that spins clockwise?", said: [["I think it's Venus", 'for', 4]] });
@@ -350,10 +350,10 @@ async function trial(t) {
   // Seeded, as heard: her name and question, her answer, any talk between, then these words.
   memory.append(user, { role: 'user', content: t.q });
   memory.append(user, { role: 'assistant', content: t.a });
-  room.add(ch, user, 'Rique', `Adrian, ${t.q}`);
-  room.add(ch, 'bot', 'You (answering Rique)', t.a);
+  room.add(ch, user, 'Morgan', `Adrian, ${t.q}`);
+  room.add(ch, 'bot', 'You (answering Morgan)', t.a);
   for (const [who, line] of t.lines) room.add(ch, who.toLowerCase(), who, line);
-  room.add(ch, user, 'Rique', t.said);
+  room.add(ch, user, 'Morgan', t.said);
   const state = { calls: [], music: !!t.music };
   return als.run(state, async () => {
     const kind = classify(t.said)?.kind;
@@ -365,7 +365,7 @@ async function trial(t) {
     // In a `loose` scenario, the line with her name in it is the loose wake.
     const loose = !!t.loose && /\badrian\b/i.test(t.said);
     const opts = { followUp: true, ...(loose ? { loose: true } : {}), ...(t.room === 'pc' ? { desk: true } : {}), ...(hint ? { extra: [MUSIC_FOLLOW_UP] } : {}), sinceMs: t.secs * 1000, onSilent: () => (silent = true) };
-    for await (const chunk of brain.ask(user, 'Rique', t.said, AbortSignal.timeout(30_000), undefined, { channelId: ch }, opts)) out += (out ? ' ' : '') + chunk;
+    for await (const chunk of brain.ask(user, 'Morgan', t.said, AbortSignal.timeout(30_000), undefined, { channelId: ch }, opts)) out += (out ? ' ' : '') + chunk;
     const got = silent ? 'silent' : META.test(out) ? 'meta' : out || state.calls.length ? 'answer' : 'silent';
     return { got, out, calls: state.calls };
   });

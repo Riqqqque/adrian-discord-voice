@@ -16,7 +16,7 @@ mkdirSync(out, { recursive: true });
 const tts = new KokoroTts({ modelDir, threads: 4 });
 
 const ANSWER =
-  "It's sixty eight degrees and partly cloudy in Denver right now. Tonight it drops to about forty five, so grab a jacket if you're heading out. Tomorrow looks sunny, with a high near seventy two.";
+  "It's sixty eight degrees and partly cloudy in Chicago right now. Tonight it drops to about forty five, so grab a jacket if you're heading out. Tomorrow looks sunny, with a high near seventy two.";
 
 /** Chunks the way the live bot gets them: streamed in small deltas. */
 function chunks(splitter) {

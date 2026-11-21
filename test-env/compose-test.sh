@@ -25,7 +25,7 @@ services:
     volumes:
       - $CACHE:/dl:ro
 EOF
-export ADRIAN_PORT=$PORT ADRIAN_DOWNLOAD_CACHE=/dl TZ=America/Denver
+export ADRIAN_PORT=$PORT ADRIAN_DOWNLOAD_CACHE=/dl TZ=America/Boise
 VERSION=$(tar -xzOf "$BUNDLE" ./package.json | sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' | head -1)
 export ADRIAN_VERSION=$VERSION
 dc() { docker compose -p $P -f "$D/compose.yaml" -f "$D/compose.test.yaml" "$@"; }
@@ -56,7 +56,7 @@ r=$(curl -sS -b $J -H "Origin: $BASE" -H "X-CSRF-Token: $csrf" -H 'Content-Type:
 grep -q 'rejected' <<<"$r" && ok "invalid Discord token rejected" || bad "invalid token: $r"
 check "voice preview (Kokoro in container)" bash -c "curl -fsS -b $J -o /dev/null '$BASE/api/voice-preview?voice=am_michael&speed=1'"
 echo "  memory: $(docker stats --no-stream --format '{{.MemUsage}}' $C)"
-check "time zone passed through" bash -c "docker exec $C grep -q America/Denver /etc/adrian/config.json"
+check "time zone passed through" bash -c "docker exec $C grep -q America/Boise /etc/adrian/config.json"
 dc restart adrian >/dev/null 2>&1
 for _ in $(seq 1 60); do curl -fsS $BASE/api/health >/dev/null 2>&1 && break; sleep 1; done
 check "admin account survives restart" bash -c "curl -fsS $BASE/api/session | grep -q '\"setupNeeded\":false'"

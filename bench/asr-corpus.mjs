@@ -81,7 +81,7 @@ const PHRASES = [
   'open the jei modrinth page', 'put on some drake', 'play nights by frank ocean', 'turn spotify down a little',
   'what is eating up my ram', 'open valorant and mute discord', 'remind me in ten minutes to check the oven',
   'who sings the song that is playing', 'switch to chrome and close steam', 'how do i install sodium on fabric',
-  'what is the weather in denver tomorrow', 'skip this song it is trash', 'search youtube for minecraft speedrun world record',
+  'what is the weather in chicago tomorrow', 'skip this song it is trash', 'search youtube for minecraft speedrun world record',
   'set the volume to thirty', 'lock my computer', 'what time is it in tokyo', 'tell sam i will be on in five minutes',
   'how many people are in the discord call', 'open my downloads folder', 'is the minecraft server up', 'play something chill for studying',
   'what was that song from earlier', 'turn the volume up on discord', 'open fl studio with auto tune', 'what is kendrick lamar doing these days',

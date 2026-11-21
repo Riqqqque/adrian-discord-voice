@@ -32,7 +32,7 @@ vi.mock('node:fs', async (importOriginal) => {
   };
 });
 
-const TZ = 'America/Denver';
+const TZ = 'America/Boise';
 const SAM = '400000000000000005';
 const ctx = { userId: SAM, speaker: 'Sam', text: true };
 const quiet = { debug() {}, info() {}, warn() {}, error() {}, child() { return quiet; } };

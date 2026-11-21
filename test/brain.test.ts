@@ -43,13 +43,13 @@ const usage = { choices: [], usage: { prompt_tokens: 100, completion_tokens: 20,
 const opts = {
   spokenName: 'Adrian',
   writtenName: 'A.D.R.I.A.N.',
-  timezone: 'America/Denver',
+  timezone: 'America/Boise',
   firstEventTimeoutMs: 1_000,
   maxTokens: 200,
   maxToolRounds: 2,
 };
 const make = (memory = new SessionMemory()) =>
-  new ConversationOrchestrator(new OpenAiCompatibleLlm({ baseUrl, model: 'mock' }), memory, [timeTool('America/Denver')], opts);
+  new ConversationOrchestrator(new OpenAiCompatibleLlm({ baseUrl, model: 'mock' }), memory, [timeTool('America/Boise')], opts);
 const collect = async (g: AsyncGenerator<string>) => {
   const out: string[] = [];
   for await (const s of g) out.push(s);

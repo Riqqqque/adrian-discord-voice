@@ -17,7 +17,7 @@ const calls = [];
 // Made-up search results, picked by what the query is about.
 const SEARCH = [
   [/weather|forecast|snow|rain|temperature/i, '- Tomorrow\'s forecast (published 2026-11-20): Saturday, partly cloudy, high 48°F, low 29°F, 10% chance of snow, wind 10 mph.\n- Weekend outlook: dry and sunny Sunday, high 52°F.'],
-  [/broncos|game|score|won|nfl/i, '- Broncos beat Raiders 24-17 (published 2026-11-16): Denver won on Sunday behind two fourth-quarter touchdowns.\n- Week 11 recap: Broncos improve to 7-3.'],
+  [/bears|game|score|won|nfl/i, '- Bears beat Packers 24-17 (published 2026-11-16): Chicago won on Sunday behind two fourth-quarter touchdowns.\n- Week 11 recap: Broncos improve to 7-3.'],
   [/target|thanksgiving|open|hours/i, '- Target Thanksgiving 2026 hours (published 2026-11-12): Target stores are closed on Thanksgiving Day, Thursday Nov 26, and open at 6 AM on Black Friday.'],
   [/gas|fuel/i, '- Local gas prices (published 2026-11-19): regular averages $2.89 a gallon in the metro area, down 6 cents from last week.'],
   [/ps5|playstation|price|cost/i, '- PS5 prices this week (published 2026-11-18): PS5 Slim digital $449.99, PS5 Slim with disc drive $499.99, PS5 Pro $749.99; Black Friday deals start Nov 27.'],
@@ -181,7 +181,7 @@ await ask('how much lemon juice', { says: /tablespoon|spoon/i, max: 25, user: 'b
 await ask('should I get a real christmas tree or a fake one', { max: 35 });
 // Things that change: look it up, then say only what matters.
 await ask("what's the weather supposed to be tomorrow", { tool: 'web_search', says: /48|forty.?eight/i, max: 25 });
-await ask('did the broncos win', { tool: 'web_search', says: /24|twenty.?four|yes|yeah|they did/i, max: 25 });
+await ask('did the bears win', { tool: 'web_search', says: /24|twenty.?four|yes|yeah|they did/i, max: 25 });
 await ask('is target open on thanksgiving', { tool: 'web_search', says: /closed|no|nope/i, max: 25 });
 await ask('how much is a ps5 right now', { tool: 'web_search', says: /449|450|499|500|749|750|four (hundred|forty|fifty)|five hundred|seven (hundred|forty|fifty)/i, max: 30 });
 await ask("what's in the news today", { tool: 'headlines', max: 40 });

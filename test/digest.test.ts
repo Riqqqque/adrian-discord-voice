@@ -113,7 +113,7 @@ describe('digest line', () => {
 });
 
 describe('since words', () => {
-  const tz = 'America/Denver';
+  const tz = 'America/Boise';
   it('reads as people talk', () => {
     expect(sinceWords(T0 - 2 * HOUR, T0, tz)).toBe('since earlier today');
     expect(sinceWords(T0 - 24 * HOUR, T0, tz)).toBe('since yesterday');

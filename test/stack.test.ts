@@ -350,7 +350,7 @@ describe('what an answer costs', () => {
   it.each(['a creator account', 'a priority-role member'])("%s isn't a guest: no share of their own", async (who) => {
     const CREATOR = '100000000000000070';
     const ROLE = '100000000000000080';
-    const r = await rig({ owners: [OWNER], identity: { creator: 'Rique', creatorIds: [CREATOR] }, priorityRoleIds: [ROLE], limits: { perUserPerHour: 0, dailyUsd: 1, monthlyUsd: 0, guestDailyUsd: 0.001 } });
+    const r = await rig({ owners: [OWNER], identity: { creator: 'Morgan', creatorIds: [CREATOR] }, priorityRoleIds: [ROLE], limits: { perUserPerHour: 0, dailyUsd: 1, monthlyUsd: 0, guestDailyUsd: 0.001 } });
     const id = who === 'a creator account' ? CREATOR : SAM;
     // Seen in voice or chat: discord.js keeps the member, Members intent or not.
     const members = r.client.guilds.cache.get(GUILD).members.cache as Map<string, unknown>;
@@ -3162,7 +3162,7 @@ describe('a ringing alarm', () => {
   const ringing = (dir: string) =>
     writeFileSync(
       join(dir, 'alarms.json'),
-      JSON.stringify({ version: 1, alarms: [{ id: 'al1', userId: OWNER, speaker: 'Rique', kind: 'alarm', label: '', at: Date.now() - 1000, base: Date.now() - 1000, time: '07:00', tz: 'UTC', enabled: true }], prefs: {}, sounds: [] }),
+      JSON.stringify({ version: 1, alarms: [{ id: 'al1', userId: OWNER, speaker: 'Morgan', kind: 'alarm', label: '', at: Date.now() - 1000, base: Date.now() - 1000, time: '07:00', tz: 'UTC', enabled: true }], prefs: {}, sounds: [] }),
     );
   const alarmsLeft = (dir: string) => JSON.parse(readFileSync(join(dir, 'alarms.json'), 'utf8')).alarms.length;
 

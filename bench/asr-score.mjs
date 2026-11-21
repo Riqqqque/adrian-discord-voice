@@ -40,7 +40,7 @@ function edits(a, b) {
   return d[a.length][b.length];
 }
 // Words that change what she does or who/what it's about.
-const KEYS = ['shows', 'netflix', 'pause', 'shoes', 'jeans', 'jei', 'modrinth', 'drake', 'frank ocean', 'spotify', 'ram', 'valorant', 'discord', 'oven', 'chrome', 'steam', 'sodium', 'fabric', 'denver', 'skip', 'youtube', 'minecraft', 'thirty', 'lock', 'tokyo', 'sam', 'downloads', 'chill', 'fl studio', 'auto tune', 'kendrick lamar', 'compound interest', 'milk', 'eggs', 'pasta', 'movie', 'joe rogan', 'mute', 'cpu', 'reddit', 'shut down', 'fortnite', 'xbox', 'weeknd', 'blinding lights', 'obs', 'leaderboard', 'japanese', 'coin', 'twenty', 'remember', 'cancel', 'next', 'calendar', 'twitch', 'xqc', 'storage', 'minimize', 'rain', 'lo fi', 'australia', 'twenty five'];
+const KEYS = ['shows', 'netflix', 'pause', 'shoes', 'jeans', 'jei', 'modrinth', 'drake', 'frank ocean', 'spotify', 'ram', 'valorant', 'discord', 'oven', 'chrome', 'steam', 'sodium', 'fabric', 'chicago', 'skip', 'youtube', 'minecraft', 'thirty', 'lock', 'tokyo', 'sam', 'downloads', 'chill', 'fl studio', 'auto tune', 'kendrick lamar', 'compound interest', 'milk', 'eggs', 'pasta', 'movie', 'joe rogan', 'mute', 'cpu', 'reddit', 'shut down', 'fortnite', 'xbox', 'weeknd', 'blinding lights', 'obs', 'leaderboard', 'japanese', 'coin', 'twenty', 'remember', 'cancel', 'next', 'calendar', 'twitch', 'xqc', 'storage', 'minimize', 'rain', 'lo fi', 'australia', 'twenty five'];
 const has = (words, k) => (' ' + words.join(' ') + ' ').includes(' ' + k + ' ');
 
 const files = readdirSync(`${BENCH}/results`).filter((f) => f.endsWith('.jsonl'));

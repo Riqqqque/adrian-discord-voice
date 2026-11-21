@@ -26,13 +26,13 @@ const [info, relay] = discordTools(
   { client, allowedGuilds: c.allowedGuilds, members: g.members, presences: g.presences, timezone: c.timezone },
   { limiter: new RelayLimiter(10, 5), isOwner: () => false, maxChars: 600 },
 );
-const ctx = { userId: asker, speaker: 'Rique', guildId: c.guildId };
+const ctx = { userId: asker, speaker: 'Morgan', guildId: c.guildId };
 for (const what of ['overview', 'voice', 'channels', 'roles', 'online', 'members']) {
   const out = await info.run({ what }, AbortSignal.timeout(15000), ctx).catch((e) => `ERROR ${e.message}`);
   console.log(`--- ${what} (${out.length} chars)\n${out.split('\n').slice(0, 4).join('\n')}`);
 }
 console.log('--- member (me):', (await info.run({ what: 'member', name: `<@${asker}>` }, AbortSignal.timeout(15000), ctx)).split('. ')[1]);
-console.log('--- DM context:', await info.run({ what: 'overview' }, AbortSignal.timeout(15000), { userId: asker, speaker: 'Rique' }).then((x) => x.split('\n')[0], (e) => e.message));
+console.log('--- DM context:', await info.run({ what: 'overview' }, AbortSignal.timeout(15000), { userId: asker, speaker: 'Morgan' }).then((x) => x.split('\n')[0], (e) => e.message));
 console.log('--- relay to a bot:', await relay.run({ member: `<@${client.user.id}>`, message: 'hi' }, AbortSignal.timeout(15000), ctx));
 await client.destroy();
 
@@ -59,7 +59,7 @@ let ok = 0;
 for (const [mode, q, want] of cases) {
   calls.length = 0;
   let out = '';
-  for await (const ch of o.ask(`u${ok}${q.length}`, 'Rique', q, AbortSignal.timeout(25000), undefined, { guildId: 'G', channelId: 'C' }, { text: mode === 'text' })) out += (out ? ' ' : '') + ch;
+  for await (const ch of o.ask(`u${ok}${q.length}`, 'Morgan', q, AbortSignal.timeout(25000), undefined, { guildId: 'G', channelId: 'C' }, { text: mode === 'text' })) out += (out ? ' ' : '') + ch;
   const got = `${calls.join(' ')} ${out}`;
   const pass = want.test(got);
   if (pass) ok++;

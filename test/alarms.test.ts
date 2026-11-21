@@ -11,13 +11,13 @@ import { ringLine } from '../src/app/alarm-ring.js';
 import { alarmState } from '../src/app/alarm-commands.js';
 import { FRAME_BYTES, Mixer } from '../src/voice/mixer.js';
 
-const TZ = 'America/Denver';
+const TZ = 'America/Boise';
 const ctx = { userId: 'u1', speaker: 'Sean', turn: 1 };
 const sig = () => AbortSignal.timeout(2000);
 
 /** A clock, a fake world, and the alarm tools on top. */
 function rig(opts: { place?: string | undefined; file?: string; start?: number } = {}) {
-  let now = opts.start ?? Date.UTC(2026, 10, 18, 20, 0); // Wed Nov 18 2026, 1 PM in Denver
+  let now = opts.start ?? Date.UTC(2026, 10, 18, 20, 0); // Wed Nov 18 2026, 1 PM in Chicago
   const rings: { place: string; plan: RingPlan; handle: RingHandle & { stopped: boolean; dead: boolean } }[] = [];
   const dms: { user: string; text: string; buttons: boolean }[] = [];
   const logs: string[] = [];
@@ -80,7 +80,7 @@ describe('alarm words', () => {
   });
 
   it('finds the next time, across both DST changes', () => {
-    // Spring forward: Sunday March 8 2026, 2 AM → 3 AM in Denver.
+    // Spring forward: Sunday March 8 2026, 2 AM → 3 AM in Chicago.
     const sat = Date.UTC(2026, 2, 7, 20); // Sat 1 PM MST
     const sun7 = nextAt('07:00', undefined, TZ, Date.UTC(2026, 2, 8, 12))!;
     expect(new Date(sun7).toISOString()).toBe('2026-03-08T13:00:00.000Z'); // 7 AM MDT

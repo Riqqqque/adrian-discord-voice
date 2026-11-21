@@ -18,7 +18,7 @@ const fake = (async (input: string | URL, init?: RequestInit) => {
 }) as typeof fetch;
 
 const tools = mediaTools(
-  { plex: { url: 'http://127.0.0.1:32400', token: 'plex-tok' }, sonarr: { url: 'http://127.0.0.1:8989', apiKey: 'son-key' }, radarr: { url: 'http://127.0.0.1:7878', apiKey: 'rad-key' }, timezone: 'America/Denver' },
+  { plex: { url: 'http://127.0.0.1:32400', token: 'plex-tok' }, sonarr: { url: 'http://127.0.0.1:8989', apiKey: 'son-key' }, radarr: { url: 'http://127.0.0.1:7878', apiKey: 'rad-key' }, timezone: 'America/Boise' },
   fake,
 );
 const run = (n: string, a: Record<string, unknown> = {}) => tools.find((t) => t.spec.name === n)!.run(a, sig(), ctx);

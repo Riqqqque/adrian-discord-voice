@@ -10,12 +10,12 @@ describe('cloud speech-to-text', () => {
       seen = { url, auth: (init.headers as Record<string, string>).authorization, form: init.body as FormData };
       return new Response(JSON.stringify({ text: ' Pause the show. ' }), { status: 200 });
     });
-    const text = await groqTranscribe('k', new Float32Array(1600).fill(0.1), 16_000, { prompt: sttPrompt(['Rique']) });
+    const text = await groqTranscribe('k', new Float32Array(1600).fill(0.1), 16_000, { prompt: sttPrompt(['Morgan']) });
     expect(text).toBe('Pause the show.');
     expect(seen!.url).toContain('api.groq.com/openai/v1/audio/transcriptions');
     expect(seen!.auth).toBe('Bearer k');
     expect(seen!.form.get('model')).toBe('whisper-large-v3-turbo');
-    expect(String(seen!.form.get('prompt'))).toContain('Rique');
+    expect(String(seen!.form.get('prompt'))).toContain('Morgan');
     const file = seen!.form.get('file') as Blob;
     const head = new DataView(await file.arrayBuffer());
     expect(head.getUint32(24, true)).toBe(16_000); // sample rate

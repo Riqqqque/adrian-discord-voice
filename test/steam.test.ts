@@ -30,7 +30,7 @@ const KEY = 'test-steam-key-abc';
 const sid = (n: number) => `7656119${String(9_000_000_000 + n)}`;
 
 const sig = () => AbortSignal.timeout(5_000);
-const me: ToolContext = { userId: ME, speaker: 'Rique' };
+const me: ToolContext = { userId: ME, speaker: 'Morgan' };
 const meText: ToolContext = { ...me, text: true };
 
 type Handler = (u: URL) => Response | Promise<Response> | undefined;
@@ -165,7 +165,7 @@ describe('whose Steam', () => {
   });
 
   it('never looks at someone else\'s account unless sharing is on and they linked one', async () => {
-    const names: Record<string, string> = { [ME]: 'Rique', [ALEX]: 'Alex', [SAM]: 'Sam' };
+    const names: Record<string, string> = { [ME]: 'Morgan', [ALEX]: 'Alex', [SAM]: 'Sam' };
     const nameOf = (id: string) => names[id] ?? 'someone';
     const accounts = { [ME]: MY_SID, [ALEX]: ALEX_SID };
     const seen: string[] = [];
@@ -181,7 +181,7 @@ describe('whose Steam', () => {
     expect(await closed.friends(me, '', `<@${ALEX}>`, sig())).toBe("I can only check your own Steam account, not anyone else's.");
     expect(seen).toEqual([]);
     // Their own name, "me" or "my" are their own account.
-    expect(await closed.friends(me, '', 'Rique', sig())).toBe('Your Steam friends list is empty.');
+    expect(await closed.friends(me, '', 'Morgan', sig())).toBe('Your Steam friends list is empty.');
     expect(await closed.friends(me, '', 'my', sig())).toBe('Your Steam friends list is empty.');
 
     const open = steam(fake.f, { accounts, nameOf, shareWithServer: true });
@@ -690,11 +690,11 @@ describe('through the orchestrator', () => {
     const fake = storeSteam({ 'elden ring': [hit(1245620, 'ELDEN RING')] }, { 1245620: item(1245620, 'ELDEN RING', { purchase_options: [option('ELDEN RING', '$59.99')] }) });
     const o = new ConversationOrchestrator(llm, new SessionMemory(), steamTools(steam(fake.f)), { spokenName: 'Adrian', writtenName: 'A.D.R.I.A.N.', timezone: 'UTC', firstEventTimeoutMs: 2000, maxTokens: 200, maxToolRounds: 2 });
     const said: string[] = [];
-    for await (const c of o.ask(ME, 'Rique', 'how much is elden ring', AbortSignal.timeout(5000))) said.push(c);
+    for await (const c of o.ask(ME, 'Morgan', 'how much is elden ring', AbortSignal.timeout(5000))) said.push(c);
     expect(said.join(' ')).toContain('Elden Ring is $59.99 on Steam.');
     expect(rounds).toBe(1);
     const wrote: string[] = [];
-    for await (const c of o.ask(ME, 'Rique', 'how much is elden ring', AbortSignal.timeout(5000), undefined, { channelId: '222222222222222222' }, { text: true })) wrote.push(c);
+    for await (const c of o.ask(ME, 'Morgan', 'how much is elden ring', AbortSignal.timeout(5000), undefined, { channelId: '222222222222222222' }, { text: true })) wrote.push(c);
     expect(wrote.join(' ')).toBe('ELDEN RING is $59.99 on Steam, not on sale.');
   });
 });

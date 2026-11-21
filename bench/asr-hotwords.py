@@ -6,7 +6,7 @@ import os, sys
 from tokenizers import Tokenizer
 
 BENCH = sys.argv[1]
-WORDS = ["Adrian", "Rique", "Spotify", "Discord", "Valorant", "Steam", "Chrome", "YouTube", "Netflix", "Modrinth",
+WORDS = ["Adrian", "Morgan", "Spotify", "Discord", "Valorant", "Steam", "Chrome", "YouTube", "Netflix", "Modrinth",
          "CurseForge", "Minecraft", "Fabric", "Forge", "Sodium", "JEI", "OBS", "FL Studio", "Auto-Tune", "Twitch",
          "Fortnite", "Xbox", "Reddit", "CPU", "GPU", "RAM", "Notepad", "Explorer", "Plex"]
 tk = Tokenizer.from_file(os.path.join(BENCH, "models", "bark", "tokenizer.json"))

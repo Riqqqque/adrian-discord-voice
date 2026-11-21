@@ -260,7 +260,7 @@ describe('what counts as asking about a note', () => {
     ['do you remember my wifi name', 'wifi guest name is Biscuit'],
     ['tell me about my landlord', note],
     // Another form of the same word, or a word that asks about the same thing.
-    ['where do I live again', 'lives in Denver'],
+    ['where do I live again', 'lives in Chicago'],
     ['where do I work', 'works at a pizza place'],
     ['what game do I play the most', 'plays Valorant'],
     ['do you remember what I do for a living', 'works at a pizza place'],
@@ -281,8 +281,8 @@ describe('what counts as asking about a note', () => {
     ['what is it', 'it is what it is'],
     ['what time is it', note],
     ["what's my landlord's name", 'wifi guest name is Biscuit'],
-    ['what do you know about me', 'lives in Denver'],
-    ['do you remember what I do for a living', 'lives in Denver'],
+    ['what do you know about me', 'lives in Chicago'],
+    ['do you remember what I do for a living', 'lives in Chicago'],
     ['what game should we play', 'is vegetarian'],
     ['where did I put my bed sheets', 'red car'],
     // Loose matches that would pull a private note into a shared call (review S5).

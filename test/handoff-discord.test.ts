@@ -5,7 +5,7 @@ import { pcDiscordTools, type PcDiscordOptions, watchDiscord } from '../src/feat
 import { MusicStarts } from '../src/features/handoff.js';
 
 const ME = '100000000000000099';
-const RIQUE = '100000000000000001';
+const MORGAN = '100000000000000001';
 const SAM = '100000000000000002';
 const GUILD = '900000000000000001';
 const OTHER_GUILD = '900000000000000002';
@@ -22,7 +22,7 @@ function client() {
 const message = (o: { author: string; bot?: boolean; content?: string; guildId?: string | null; channelId?: string; dm?: boolean; repliedTo?: string; recipient?: string; embeds?: string[] }) => ({
   system: false,
   author: { id: o.author, bot: o.bot ?? false, username: 'u', globalName: null },
-  member: { displayName: o.author === SAM ? 'Sam' : 'Rique' },
+  member: { displayName: o.author === SAM ? 'Sam' : 'Morgan' },
   content: o.content ?? '',
   embeds: (o.embeds ?? []).map((url) => ({ url })),
   attachments: new Collection(),
@@ -38,8 +38,8 @@ describe('watchDiscord', () => {
     const c = client();
     const w = watchDiscord(c as never, { readable: true, allowedGuilds: [], keepMs: 30 * 60_000 });
     c.emit(Events.MessageCreate, message({ author: SAM, content: 'look https://example.com/sam' }));
-    c.emit(Events.MessageCreate, message({ author: ME, bot: true, content: 'Here you go: https://example.com/guide', repliedTo: RIQUE, channelId: '800000000000000005' }));
-    expect(w.things.candidates(RIQUE, GUILD).map((t) => [t.by, t.url])).toEqual([
+    c.emit(Events.MessageCreate, message({ author: ME, bot: true, content: 'Here you go: https://example.com/guide', repliedTo: MORGAN, channelId: '800000000000000005' }));
+    expect(w.things.candidates(MORGAN, GUILD).map((t) => [t.by, t.url])).toEqual([
       ['her', 'https://example.com/guide'],
       ['other', 'https://example.com/sam'],
     ]);
@@ -49,9 +49,9 @@ describe('watchDiscord', () => {
   it('DMs: her answers count for the person on the other end', () => {
     const c = client();
     const w = watchDiscord(c as never, { readable: false, allowedGuilds: [], keepMs: 30 * 60_000 });
-    c.emit(Events.MessageCreate, message({ author: ME, bot: true, dm: true, recipient: RIQUE, content: 'https://example.com/dm' }));
-    c.emit(Events.MessageCreate, message({ author: RIQUE, dm: true, content: 'https://youtu.be/dQw4w9WgXcQ' }));
-    expect(w.things.candidates(RIQUE).map((t) => t.kind)).toEqual(['video', 'link']);
+    c.emit(Events.MessageCreate, message({ author: ME, bot: true, dm: true, recipient: MORGAN, content: 'https://example.com/dm' }));
+    c.emit(Events.MessageCreate, message({ author: MORGAN, dm: true, content: 'https://youtu.be/dQw4w9WgXcQ' }));
+    expect(w.things.candidates(MORGAN).map((t) => t.kind)).toEqual(['video', 'link']);
   });
 
   it('ignores servers it isn\'t allowed in, and links in embeds count', () => {
@@ -66,7 +66,7 @@ describe('watchDiscord', () => {
     const c = client();
     const w = watchDiscord(c as never, { readable: false, allowedGuilds: [], keepMs: 30 * 60_000 });
     c.emit(Events.MessageCreate, message({ author: SAM, content: '' }));
-    expect(w.things.hiddenSince(GUILD, RIQUE, -1)).toEqual({ channelId: GENERAL });
+    expect(w.things.hiddenSince(GUILD, MORGAN, -1)).toEqual({ channelId: GENERAL });
   });
 });
 
@@ -91,7 +91,7 @@ describe('pcDiscordTools', () => {
       voiceReady: () => false,
       isOwner: () => false,
       inHerCall: () => false,
-      nameOf: () => 'Rique',
+      nameOf: () => 'Morgan',
       announce: async () => true,
       ...o,
     };
@@ -115,7 +115,7 @@ describe('pcDiscordTools', () => {
 
   it('tell_call with no call and no server posts nowhere and says why', async () => {
     const [, tell] = pcDiscordTools(base()).tools;
-    const out = await tell!.run({ message: 'on in 5' }, new AbortController().signal, { userId: RIQUE, speaker: 'Rique', channelId: 'sat:desk', said: 'tell the call on in 5', turn: 1 });
+    const out = await tell!.run({ message: 'on in 5' }, new AbortController().signal, { userId: MORGAN, speaker: 'Morgan', channelId: 'sat:desk', said: 'tell the call on in 5', turn: 1 });
     expect(out).toBe("Not sent: you're not in a server I'm in.");
   });
 });

@@ -50,7 +50,7 @@ async function rig(opts: { heartbeatMs?: number; closeGraceMs?: number } = {}) {
       if (m === 'satellite server listening') listening();
     },
   };
-  const server = startSatelliteServer({ bind: '127.0.0.1', port, devices: d, log: log as never, welcome: () => ({ owner: 'Rique' }), onConnect: (c) => conns.push(c), ...opts });
+  const server = startSatelliteServer({ bind: '127.0.0.1', port, devices: d, log: log as never, welcome: () => ({ owner: 'Morgan' }), onConnect: (c) => conns.push(c), ...opts });
   await ready;
   /** Resolves once the server has answered the hello (its first message) or closed the socket. */
   const client = (hello: unknown, wsOpts: { autoPong?: boolean } = {}) =>
@@ -129,7 +129,7 @@ describe('satellite connection', () => {
     expect(bad.got).toContainEqual({ type: 'denied', reason: 'bad token' });
     expect(await bad.closed).toBe(1008);
     const good = await r.client({ type: 'hello', token: r.token, version: '0.1.0' });
-    expect(good.got[0]).toMatchObject({ type: 'welcome', name: 'Desk PC', owner: 'Rique' });
+    expect(good.got[0]).toMatchObject({ type: 'welcome', name: 'Desk PC', owner: 'Morgan' });
     expect(r.conns).toHaveLength(1);
     expect(r.conns[0]!.version).toBe('0.1.0');
     good.ws.close();
@@ -528,11 +528,11 @@ describe('satellite bad frames', () => {
 });
 
 describe('PC tools', () => {
-  const ctx = { userId: OWNER, speaker: 'Rique' };
+  const ctx = { userId: OWNER, speaker: 'Morgan' };
 
   it('say so when no PC is connected', async () => {
     const [apps] = pcTools({ pcFor: () => undefined });
-    expect(await apps!.run({ action: 'open', name: 'spotify' }, AbortSignal.timeout(1000), ctx)).toMatch(/No PC is connected for Rique/);
+    expect(await apps!.run({ action: 'open', name: 'spotify' }, AbortSignal.timeout(1000), ctx)).toMatch(/No PC is connected for Morgan/);
   });
 
   it("send the action to the asker's PC, and resolve YouTube videos first", async () => {
@@ -682,7 +682,7 @@ describe('an address on its way to a PC', () => {
     const seen: string[] = [];
     const pc = { action: async (_n: string, args: Record<string, unknown>) => (sent.push(args), { ok: true, result: 'Opened the page.' }) };
     const open = pcTools({ pcFor: () => pc as never, onCall: (_n, _a, r) => seen.push(r), ...(found ? { findUrl: async () => found } : {}) }).find((t) => t.spec.name === 'pc_open')!;
-    const run = (a: Record<string, unknown>) => open.run(a, AbortSignal.timeout(1000), { userId: OWNER, speaker: 'Rique' });
+    const run = (a: Record<string, unknown>) => open.run(a, AbortSignal.timeout(1000), { userId: OWNER, speaker: 'Morgan' });
     return { sent, seen, open, run };
   }
   const REFUSED = "Didn't happen: Only public http and https web addresses can be opened.";
@@ -692,7 +692,7 @@ describe('an address on its way to a PC', () => {
     expect(await r.run({ url })).toBe(REFUSED);
     expect(r.sent).toEqual([]);
     expect(r.seen).toEqual([REFUSED]);
-    expect(r.open.speak!({ url }, REFUSED, { userId: OWNER, speaker: 'Rique' })).toBeUndefined();
+    expect(r.open.speak!({ url }, REFUSED, { userId: OWNER, speaker: 'Morgan' })).toBeUndefined();
   });
 
   it('a public one goes through, spaces and all, since the PC trims them too', async () => {
@@ -727,17 +727,17 @@ describe('pc_open with a search', () => {
     const open = pcTools({ pcFor: () => pc as never, findUrl: async () => 'https://www.evil.example/x' }).find((t) => t.spec.name === 'pc_open')!;
     // The orchestrator hands run and speak the same object.
     const args: Record<string, unknown> = { search: 'steam login' };
-    const raw = await open.run(args, AbortSignal.timeout(1000), { userId: OWNER, speaker: 'Rique' });
+    const raw = await open.run(args, AbortSignal.timeout(1000), { userId: OWNER, speaker: 'Morgan' });
     expect(sent).toEqual([{ url: 'https://www.evil.example/x' }]);
-    expect(open.speak?.(args, raw, { userId: OWNER, speaker: 'Rique' })).toBe('Opening evil.example.');
+    expect(open.speak?.(args, raw, { userId: OWNER, speaker: 'Morgan' })).toBe('Opening evil.example.');
   });
 
   it('says the search page when no search service finds one', async () => {
     const pc = { action: async () => ({ ok: true, result: 'Opened the page.' }) };
     const open = pcTools({ pcFor: () => pc as never }).find((t) => t.spec.name === 'pc_open')!;
     const args: Record<string, unknown> = { search: 'jei mod' };
-    const raw = await open.run(args, AbortSignal.timeout(1000), { userId: OWNER, speaker: 'Rique' });
-    expect(open.speak?.(args, raw, { userId: OWNER, speaker: 'Rique' })).toBe('Opening google.com.');
+    const raw = await open.run(args, AbortSignal.timeout(1000), { userId: OWNER, speaker: 'Morgan' });
+    expect(open.speak?.(args, raw, { userId: OWNER, speaker: 'Morgan' })).toBe('Opening google.com.');
   });
 });
 
@@ -750,7 +750,7 @@ describe('power actions need their own yes', () => {
     const pc = { action: async (name: string, args: Record<string, unknown>) => (sent.push({ name, args }), result) };
     const tools = pcTools({ pcFor: (c) => (c.userId === OWNER ? (pc as never) : undefined), now: () => now, onPowerDown: (id, on) => (on === (pc as never) ? down.push(id) : undefined) });
     const sys = tools.find((t) => t.spec.name === 'pc_system')!;
-    const ctx = (said: string, o: Record<string, unknown> = {}) => ({ userId: OWNER, speaker: 'Rique', channelId: 'c1', said, turn: ++turn, ...o });
+    const ctx = (said: string, o: Record<string, unknown> = {}) => ({ userId: OWNER, speaker: 'Morgan', channelId: 'c1', said, turn: ++turn, ...o });
     const say = (a: Record<string, unknown>, said: string, o: Record<string, unknown> = {}) => sys.run(a, AbortSignal.timeout(1000), ctx(said, o));
     return { sys, sent, down, ctx, say, tick: (ms: number) => (now += ms) };
   }
@@ -988,7 +988,7 @@ describe('the PC tool and the countdown', () => {
     const sys = pcTools({ pcFor: () => pc as never, onPowerDown: (id, p) => events.push(['down', id, p]), onPowerCancelled: (id, p) => events.push(['off', id, p]) }).find((t) => t.spec.name === 'pc_system')!;
     return { sys, events, pc };
   }
-  const ctx = { userId: OWNER, speaker: 'Rique' };
+  const ctx = { userId: OWNER, speaker: 'Morgan' };
 
   it('reports a cancel the model made, with the PC that took it', async () => {
     const r = rig();

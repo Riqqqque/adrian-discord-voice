@@ -211,7 +211,7 @@ describe('memory that stays true', () => {
     });
     expect(parseChanges('{"update": [{"n": 9, "note": "x x x"}, {"n": 1.5, "note": "abc"}], "drop": [0, 7, "2"]}', 3)).toEqual({ add: [], update: [], drop: [] });
     // A note can't be both rewritten and dropped: the rewrite wins.
-    expect(parseChanges('{"update": [{"n": 1, "note": "lives in Denver"}], "drop": [1]}', 1).drop).toEqual([]);
+    expect(parseChanges('{"update": [{"n": 1, "note": "lives in Chicago"}], "drop": [1]}', 1).drop).toEqual([]);
     // The old reply shape still works.
     expect(parseChanges('["has a cat"]', 0)).toEqual({ add: ['has a cat'], update: [], drop: [] });
     expect(parseChanges('not json {', 2)).toEqual({ add: [], update: [], drop: [] });
@@ -241,9 +241,9 @@ describe('memory that stays true', () => {
   it('keeps a rewritten note of theirs as theirs, so a guess never pushes it out', async () => {
     const notes = new UserNotes(undefined);
     notes.add('a', 'lives in Ohio', 'told', 'g1');
-    expect(notes.replace('a', 'LIVES IN OHIO', 'lives in Denver')).toBe(true);
+    expect(notes.replace('a', 'LIVES IN OHIO', 'lives in Chicago')).toBe(true);
     for (let i = 0; i < 40; i++) notes.add('a', `guess ${i}`, 'learned');
-    expect(notes.of('a')).toContain('lives in Denver');
+    expect(notes.of('a')).toContain('lives in Chicago');
     // What she picked up may come from a DM: the rewrite no longer shows in that server.
     expect(notes.context('a', 'Sean', { userId: 'a', speaker: 'Sean', guildId: 'g1', said: 'hi' })).toEqual([]);
   });

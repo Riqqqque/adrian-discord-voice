@@ -29,8 +29,8 @@ const CASES = [
   {
     name: 'moved (a note they asked for)',
     notes: [['lives in Ohio', 'told'], ['works at a pizza place', 'learned']],
-    said: ['we finally moved to Denver last weekend, the drive was brutal'],
-    want: (n) => !n.includes('lives in Ohio') && n.some((x) => /denver/i.test(x)) && n.includes('works at a pizza place'),
+    said: ['we finally moved to Chicago last weekend, the drive was brutal'],
+    want: (n) => !n.includes('lives in Ohio') && n.some((x) => /chicago/i.test(x)) && n.includes('works at a pizza place'),
   },
   {
     name: 'plan called off',

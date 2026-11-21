@@ -18,7 +18,7 @@ class Echo implements LlmProvider {
 function rig(reply = 'Sure.') {
   const llm = new Echo(reply);
   const o = new ConversationOrchestrator(llm, new SessionMemory(16, 60_000), [], {
-    spokenName: 'Adrian', writtenName: 'A.D.R.I.A.N.', timezone: 'America/Denver', firstEventTimeoutMs: 5000, maxTokens: 100, maxToolRounds: 0, stablePrefix: true,
+    spokenName: 'Adrian', writtenName: 'A.D.R.I.A.N.', timezone: 'America/Boise', firstEventTimeoutMs: 5000, maxTokens: 100, maxToolRounds: 0, stablePrefix: true,
   });
   return { llm, o };
 }
