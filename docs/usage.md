@@ -25,7 +25,8 @@ The spoken name is "Adrian". Facts here are for version 0.17.1.
 - **Follow-ups.** After it answers, you can carry on without the name for about 8 seconds in the Discord call, or 20 seconds at a PC ("and what about tomorrow?"). If the follow-up clearly isn't for it (game callouts, talking to someone else), it stays silent.
 - **Silence after a follow-up** (next release): a PC's mic hears everyone near it, so words to someone in the room, on the phone or in another call, banter, passing her answer on ("she said ...") and talk about her stay silent; in a call, words that answer someone else do too. When she isn't sure, she answers only a question or an order. The trade-off: a statement meant for her ("I've already heard all of those", "thanks, that's what I figured") or a remark that could go either way ("huh, I always thought it was Sydney") may get silence. Say her name again and she answers. A silence closes the follow-up window.
 - **No follow-up after an order.** When it has *done* something ("play Drake", "set a timer"), it stops listening right away, so talking to someone else afterwards isn't taken as more for it. After a normal answer, or a question from it, you can carry on.
-- **Keep talking.** If you pause mid-request and carry on before it starts answering (within 12 seconds), the two parts are joined into one request.
+- **Keep talking.** If you pause mid-request and carry on before it starts answering (within 12 seconds), the two parts are joined into one request. With push-to-talk at a PC (next release, PC app 0.17.2), everything said while the key is down is one request, even after it has started answering; a part said after it already carried out an order waits its turn instead, so nothing is done twice.
+- **A maybe waits its turn** (next release). Her name said in a way that may be about her rather than to her (the name at the end, talk about her) never cuts an answer off: said by the person she is answering, it's judged once that answer ends, and it's never dropped from the line. Say "stop" or talk over her to cut in sooner.
 - **Misspellings.** Speech recognition spells unusual names oddly, so it accepts misspellings like "Adrien" and "Adrean".
 - **A friend called Adrian** (next release). The wake check reads words, not who is being spoken to, so in a call with someone of that name:
   - Questions to them that end in the name ("are you coming, Adrian?", "did you hit Adrian?") wake it loosely. The model is asked whether it was meant for it, with the whole sentence, and usually stays quiet, but each one costs a model call and ducks the music for a few seconds.
@@ -50,7 +51,7 @@ The spoken name is "Adrian". Facts here are for version 0.17.1.
 - **"Wait", "hold on", "hang on", "one sec":** from the person being answered (or with the name), these stop it talking but keep listening, so you can go on. With nothing to stop, they leave the music alone.
 - **"Stop listening":** ends the listening window and leaves the music playing.
 - **Everyday words:** "done", "quiet", "enough", "that's it" and the Spanish "para" and "ya" only stop it when the person being answered says them, or when they come with the name ("Adrian, quiet").
-- **Owners** can stop anyone's answer by saying the name, and go to the front of the line.
+- **Owners** can stop anyone's answer by saying the name, and go to the front of the line (from the next release only with a clear "Hey Adrian", not with a maybe).
 - **Priority roles** (`priorityRoleIds`) can interrupt anyone's answer.
 
 ## Things handled instantly (no model call, free)

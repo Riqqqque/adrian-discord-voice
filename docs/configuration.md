@@ -590,8 +590,10 @@ Each setting may only name a key meant for its job (`SECRET_PURPOSE` and `keyNam
 | `ADRIAN_SECRETS` | service, `tool.js` | Secrets file. Order: the config's `secretsFile`, then this variable, then `secrets.env` next to the config |
 | `ADRIAN_STATE` | service, `tool.js` | State directory (default `/var/lib/adrian`) |
 | `ADRIAN_MODELS` | service, `tool.js` | Models directory (default `<state>/models`) |
-| `ADRIAN_DOWNLOAD_CACHE` | `install.sh`, `upgrade-prep.sh`, the Docker `models` job | Reuse already-downloaded models and runtimes from this folder when their SHA-256 matches |
+| `ADRIAN_DOWNLOAD_CACHE` | `install.sh`, `upgrade-prep.sh`, the Docker `models` job | Reuse already-downloaded models and runtimes from this folder when their SHA-256 matches (any checksum the pin lists) |
+| `ADRIAN_DOWNLOAD_MIRRORS` | `install.sh`, `upgrade-prep.sh`, `adrian update`, the Docker `models` job | https mirrors to try after a file's own site, separated by spaces or commas, as `<mirror>/<file name>` (next release). `/opt/adrian/download-mirrors`, one URL per line, does the same and is read by the hourly update too. A mirror's file must still match a listed checksum; `http://` mirrors are skipped |
 | `ADRIAN_UPDATE_REPO` | `adrian update` | GitHub `owner/name` that releases come from (default: this repository) |
+| `ADRIAN_DETACH=0` | `adrian update` | Run a by-hand update in the foreground instead of as its own service |
 | `ADRIAN_VERSION`, `ADRIAN_PORT`, `TZ` | Docker Compose | Image version (required), host port for the admin page (default 8790), time zone written to the config |
 | `LOG_LEVEL=debug` | service | Debug logging |
 | `SAY="text"` | service, development | Speaks the text once after the voice link is ready and logs the timing |

@@ -57,7 +57,7 @@ Everything below is in the current release (0.17.1), except what is marked *(nex
 **Voice**
 - 54 built-in Kokoro voices run locally, plus a local Piper voice for Vietnamese. Speech is loudness-matched (about -16 LUFS).
 - Optional cloud voice for English (Speechify, model `simba-3.5`, voice `sabrina` by default) with a monthly character cap. It falls back to the local voice by itself when the cap is reached or the service fails. Its longer sentences start playing while they're still arriving, and the local voice then loads only when it's needed *(next release)*.
-- Times, units, symbols and links are said the way people say them ("7 o'clock", "season 3 episode 3", "modrinth.com"), and emoji aren't read out *(next release)*.
+- Times, units, symbols and links are said the way people say them ("7 o'clock", "season 3 episode 3", "modrinth.com", "4.5 out of 5", "won 3 to 1", "step 2 of 6"), and emoji aren't read out *(next release)*.
 
 **On your PC** (optional Windows app, see [docs/pc-app.md](docs/pc-app.md))
 - Listens through the PC's mic ("Hey Adrian", or hold Ctrl+Alt+Space), answers through its speakers in the same voice, and shows a small animated window. In the tray it uses about 5 MB of memory.
@@ -75,6 +75,8 @@ Everything below is in the current release (0.17.1), except what is marked *(nex
 **Running it**
 - Admin web page with a setup wizard, live status (latency, spend), settings, keys and logs. Loopback only by default. Its Status tab also shows what needs attention, what she costs (including the cloud voice, Groq and Tavily), how fast she answers and how reliable she is, kept across restarts *(next release)*.
 - The `adrian` command: status, logs, start/stop/restart, config, secret (keys), voice, check, doctor, setup-code, reset-admin, satellite (pair PCs), backup, restore, update, rollback, uninstall, and an optional hourly `auto-update` that waits until nobody is in its call and nothing is playing.
+- Fresh installs work again: both speech models were re-uploaded upstream in October and November 2026, so 0.17.1 stops at their checksum on a new server. The installer now accepts every upload of a file it knows, keeps the copy a server already has, says plainly when a site serves a file it doesn't know, and can try mirrors you name (`ADRIAN_DOWNLOAD_MIRRORS`) *(next release)*.
+- Updates by hand run as a service of their own, so logging out can't stop them; one cut off by a power cut is finished by the next run, and a rollback cut off halfway too *(next release)*.
 - Behaviour you may want to change: `mature` is `age-restricted` by default (swearing, crude humor and frank adult topics only in voice channels Discord marks as age-restricted; `off` or `always` are the other choices); `brain.fallback` answers when the main model fails (rate limit, outage); `brain.background` can run automatic memory on a local model.
 - Owners (by Discord user ID, plus the bot application's owner) can stop anyone, skip the line, and use the guarded tools.
 
@@ -101,7 +103,7 @@ Full numbers, how they were measured and how to spend less: [docs/costs.md](docs
 | CPU | 4 cores | 8 threads, recent desktop or server CPU |
 | Memory | 4 GB free (about 3.5 GB once the language voices load, as measured in 0.14.7 when they loaded at every start; since 0.15.4 they load on first use: about 1.5-1.6 GB after start, plus about 1.3 GB the first time someone speaks a language other than English; `sudo adrian config languages false` keeps it near 1.5 GB). The installer warns below 4 GB. | 8 GB+ |
 | Disk | About 3 GB free: 1 GB under `/opt` and 2 GB under `/var/lib` (the installer refuses less) | |
-| Other | `ffmpeg` for music and sounds, plus `curl`, `xz-utils`, `bzip2` and `iproute2` for the installer (`get.sh` installs them after asking; by hand: `sudo apt install ffmpeg curl xz-utils bzip2 iproute2`). Node.js 22 and the speech models are downloaded by the installer, pinned and checked against SHA-256. | |
+| Other | `ffmpeg` for music and sounds, plus `curl`, `xz-utils`, `bzip2` and `iproute2` for the installer (`get.sh` installs them after asking; by hand: `sudo apt install ffmpeg curl xz-utils bzip2 iproute2`). Node.js 22 and the speech models are downloaded by the installer, pinned and checked against SHA-256 (a model may list every upload of it that is known to be good). | |
 
 You also need:
 - A Discord account and a server where you can add a bot.
@@ -112,7 +114,7 @@ Docker is supported as an alternative to the native install (without the `adrian
 
 ## Quick start
 
-The full walkthrough, including creating the Discord bot and getting each key, is in **[docs/install.md](docs/install.md)**. The short version, on the Linux machine:
+The full walkthrough, including creating the Discord bot and getting each key, is in **[docs/install.md](docs/install.md)**. First time with Linux or Discord bots? The **[setup guides](docs/setup/README.md)** take it step by step, from creating the bot to backups, with what you should see after each command. The short version, on the Linux machine:
 
 ```bash
 # 1. Get the installer and run it: it installs the packages it needs (asking first),
@@ -161,6 +163,7 @@ Threat model and protections: [docs/security.md](docs/security.md). Reporting a 
 | [docs/tools.md](docs/tools.md) | Every model tool: purpose, arguments, guard rails, who may use it, cost notes |
 | [docs/costs.md](docs/costs.md) | Money per answer and per provider, free tiers, budgets, how to make it cheaper; machine cost |
 | [docs/configuration.md](docs/configuration.md) | Every config key and secret, with defaults |
+| [docs/setup/](docs/setup/README.md) | Step-by-step setup guides for first-timers: the Discord bot, keys, the server install and wizard, the PC app, updating, backups, troubleshooting by symptom |
 | [docs/install.md](docs/install.md) | Discord bot setup, keys, native and Docker install, the `adrian` command, updates, backups, uninstall |
 | [docs/pc-app.md](docs/pc-app.md) | The Windows PC app: turning it on, getting or building it, pairing, settings |
 | [docs/satellite.md](docs/satellite.md) | The PC connection protocol (WebSocket messages) |

@@ -31,6 +31,22 @@ their timing and cost, and today's spend.
   checks.
 - **"downloading X stopped":** the connection dropped. Run the same command
   again: every file that already finished is kept.
+- **"X downloaded at full size but doesn't match any checksum this version
+  knows":** the download site now serves a file this version doesn't know
+  (most likely a new upload), so running it again won't help. Install the
+  newest release, or name a mirror you trust with
+  `ADRIAN_DOWNLOAD_MIRRORS="https://..."` (its files must match a known
+  checksum too). Don't put the file in place by hand. 0.17.1 and older say
+  `checksum mismatch for ...` and can't be installed fresh any more: both
+  speech models were re-uploaded upstream in 2026, and the release after
+  0.17.1 knows both uploads. Step-by-step: [setup/07](setup/07-troubleshooting.md#a-download-doesnt-match-its-checksum).
+- **"... doesn't match its checksum, and it's smaller than it should be":** the
+  download was cut short or changed on the way; run the same command again.
+- **"NOT CHECKED: there's no ....sha256 next to the bundle":** put the
+  `.sha256` from the same Releases page next to the bundle. `--require-checksum`
+  refuses an unchecked bundle instead of warning.
+- **"an update of A.D.R.I.A.N. is running right now":** nothing was changed;
+  run the installer again once the update is done.
 - **"Can't reach HOST":** the server is offline, can't look up names, or is
   behind a proxy. Behind a proxy: `sudo https_proxy=http://PROXY:PORT bash get.sh`.
 - **ARM (a Raspberry Pi) or no systemd (WSL, a container):** only 64-bit
@@ -309,21 +325,36 @@ Other problems:
 
 ## Updates
 
+- **`adrian update` rolled back, "didn't come up healthy, but X wasn't healthy before the update either":** the bot was failing before the update (a bad token, say), so the update couldn't be judged and went back to how it was. Fix what `sudo adrian doctor` shows, then update again.
 - **`adrian update` rolled back:** the new version did worse than the old one: it wasn't up within 2 minutes, it came back in setup mode or out of her voice channel, or it crashed in the minute after. The log shows why: `sudo adrian logs`. The previous version is still running, under its old service file. A Discord voice outage during that minute can do this to a good release, so try `sudo adrian update` again once it's over.
 - **`version X can't run this config`:** the new release doesn't accept your `config.json`, and the message lists why. Nothing was changed. Fix those settings (see [configuration.md](configuration.md)), then update again.
 - **`update X skipped: it failed here in the last day`** (in `sudo adrian auto-update status`): auto-update leaves a version that failed alone for a day, so a bad release can't restart her every hour. `sudo adrian doctor` shows when it failed. `sudo adrian update` tries it right away, and a success clears it.
 - **Auto-update didn't run:** it waits while someone is in her call, music plays, or an alarm rings, is snoozed or is due within 5 minutes, and while `config.json` can't be loaded. `journalctl -u adrian-update` shows each run.
 - **Very old installs (0.14.9 and older)** can't fetch from GitHub: update once with a downloaded bundle (`sudo adrian update adrian-voice-<v>-linux-x64.tar.gz`).
 - **Something went wrong after an update:** `sudo adrian rollback` switches back to the previous release.
-- **The SSH connection dropped during `sudo adrian update`:** it carries on in
-  the background (from the release after the one that brought this). Check
-  with `sudo adrian status`, or read `/opt/adrian/update.log`.
+- **The SSH connection dropped during `sudo adrian update`, or you logged
+  out:** it carries on in the background as a service of its own
+  (`adrian-update-by-hand-...`; from the release after the one that brought
+  this). Follow it with `sudo tail -f /opt/adrian/update.log` (root only), or
+  check `sudo adrian status`. Running `sudo adrian update` again just follows
+  it. The hourly auto-update logs to `journalctl -u adrian-update` instead.
 - **"another update is already running":** only one runs at a time. Wait for it; the
   hourly auto-update skips while one runs.
-- **"only N MB free under /opt, and the update needs about 500 MB":** Nothing was changed; free space and run it again (auto-update waits).
+- **"only N MB free under /opt, and the update needs about 500 MB"** or **"not enough disk for X":** Nothing was changed; free space and run it again (auto-update waits). The check counts the speech models the new version still has to download.
 - **`status` or `doctor` says an update was cut off:** a power cut or kill
-  stopped one halfway. The next `sudo adrian update` (or the hourly check)
-  finishes it: it keeps a healthy new version and goes back otherwise.
+  stopped one halfway. The next `sudo adrian update`, `rollback` (or the
+  hourly check) finishes it: it keeps the new version only if it answers
+  healthy as itself, and goes back otherwise, also when the rollback itself
+  was cut off. A `rollback` that only finished the cut-off update says "The
+  cut-off update to X is undone ... run sudo adrian rollback again to go back
+  further."
+- **`adrian rollback` says "no previous version to roll back to":** there is
+  no older release on the server; nothing changed. (0.17.1 prints nothing.)
+- **A restore says "restored, but not started: port N ... is already used by
+  another program here":** the backup brought an admin port another program
+  uses on this machine. The files are restored. Stop that program and
+  `sudo adrian start`, or move her: run the installer again with `--port N`,
+  then `sudo adrian restart`. `doctor` names a taken port too.
 
 PC app updates:
 

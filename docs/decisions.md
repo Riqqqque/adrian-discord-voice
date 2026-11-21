@@ -179,6 +179,14 @@ If you have new data that contradicts an entry, change the code and this page in
 - **Chosen**: if the asker keeps talking within 12 s (`CONTINUE_MS`) and before she has started speaking, the new words join the active request (0.14.3, logged as `continued`).
 - **Instead of**: "replaced by newer request", which threw away the first half of what was said.
 - **Guard**: once a tool acted (`working`, `acted`), no continuation re-runs the order.
+- **Next release, push-to-talk**: the later parts of one held press (`HeardInput.more`) join the running request without the 12 s limit and even once she's audible (she may restart a sentence she had begun with the combined words); after a `working` or `acted` order they queue as a request of their own. Segments of one press reach the controller in order (`inOrder` in `stack.ts`), so a later part no longer replaces an earlier one still in its cloud listen. After a barge-in within a press, the next part is a request of its own. Tests: `test/controller.test.ts`, `test/stack.test.ts`, `test/ptt.test.ts`.
+
+### A loose wake waits instead of cutting an answer off
+
+- **Chosen** (next release): a loose wake (her name in the words, maybe about her rather than to her) never preempts. From the asker while their answer runs it is queued and judged when that answer ends; it never expires in the queue; an owner's loose wake doesn't preempt someone else (only a clear wake does); a clear request from the same person drops their waiting loose one.
+- **Instead of**: judging it beside the running answer, which needs a second model call in parallel, or letting it replace the answer before the judge has said it's for her.
+- **Cost**: "actually, Adrian, what's the time" from the asker comes after the running answer unless they say stop or talk over her (barge-in still works).
+- **Before changing**: the five loose-wake cases in `test/controller.test.ts`.
 
 ### Phrases answered without the model must be whole utterances
 
@@ -524,6 +532,14 @@ If you have new data that contradicts an entry, change the code and this page in
 
 - **Chosen**: Node, the models (Silero, Parakeet, Kokoro, Whisper, Piper, Smart Turn pinned to a commit) and yt-dlp are fetched from `packaging/downloads.sh` with their hashes, over HTTPS (TLS 1.2 or newer) only. Downloads give up on a stall, never on total time.
 - **Why**: supply chain, and slow lines.
+
+### Speech model checksums: every known upload
+
+- **Chosen** (next release): a model's checksum field in `downloads.sh` may list several checksums, comma-separated: every upload of that file this version knows is good, newest first. A model installed from any of them is kept, and its marker records the checksum actually fetched. A full-size file that matches none gets a plain error (the file on the site changed, running it again won't help, what to do); a short one is worth one more try. Optional https mirrors (`ADRIAN_DOWNLOAD_MIRRORS`, `/opt/adrian/download-mirrors`) are tried after the original site, and their files must match a listed checksum too.
+- **Why**: upstream replaced both speech-model archives in place (Kokoro on 2026-10-26, Parakeet on 2026-11-07), so every fresh install of 0.17.1 stops at the checksum, and its message hinted at tampering. The Kokoro archive is a re-pack: all 377 files byte-identical. The Parakeet one is a re-export of the same checkpoint by the same maintainer account (a second, independent copy on Hugging Face has the same per-file hashes), with the same wake decisions on 889 corpus clips (0 differences), WER within 0.1 point (19.0 vs 19.1%; 2.9 vs 2.8% on the speech-words bench) and the same CPU. Its cost: about 10 MB more memory per second of the longest clip decoded, kept (+0.17-0.19 GB after 20 s, +0.32 GB after 35 s). Re-pinning to the new file alone would have made every existing server download about 840 MB again.
+- **Instead of**: re-pinning to the new upload only; or fetching from a commit-pinned Hugging Face URL (immutable, but loose files rather than the tarball).
+- **Open**: a project mirror as a pre-release in the bot repo (immutable releases on), holding the exact pinned archives. About 1.5 GB; the release notes must credit NVIDIA for Parakeet (CC-BY-4.0, converted by sherpa-onnx) and point to espeak-ng's source for the GPL-3.0 data inside the Kokoro archive; the Piper Vietnamese voice's licence needs checking first. A release check comparing each pinned GitHub asset's API `digest` with the pins would catch the next re-upload before users do.
+- **Before changing**: `test/packaging.test.ts` ("model checksums and mirrors", "pinned model sizes"); `test-env/upgrade-old-pins-test.sh` proves a server on the old files downloads nothing.
 
 ### `Restart=always`
 

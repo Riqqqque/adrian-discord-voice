@@ -99,6 +99,13 @@ The word rule brought the median down, but on the real prompt (2026-11-01, `benc
   - `pc_media` has no game check (it acts on media sessions only).
 
   Reconcile these with the "nothing that messages a running game" rule.
+- **Alarm safety at the PC, open in PC app 0.17.1** (from the PC app's review; fixes are being prepared for a later PC app release):
+  - a Stop or Snooze sent over a link that died silently is lost, so the alarm rings again;
+  - an early ring after the PC's clock jumped (a dual-boot clock offset is a real trigger) can be stopped, and that stop can finish the real alarm; the server side already ignores answers for alarms that aren't due (next release), the app still needs a monotonic clock anchor;
+  - an answer can be forgotten while the server still lists the alarm as ringing;
+  - failed reconnects clear the queued backup beeps (about 15% of a ring);
+  - the speakers only open if a microphone works, so the backup alarm is silent with the mic off;
+  - `link.log` records TLS certificate names; a stalled link counts toward the lockout.
 - **App index**:
   - games from Battle.net, Xbox, EA, Ubisoft and Rockstar folders have no launcher entry (they open by name only through the Start menu);
   - `Pc::refresh()` has no caller, so new installs appear only after the 10-minute rebuild.
@@ -135,6 +142,24 @@ The word rule brought the median down, but on the real prompt (2026-11-01, `benc
 - **State files**: give `reminders.json`, `notes.json`, `heads-up.json` and `weekly-recap.json` the same protection as `alarms.json`. Today an unreadable file starts empty and the next save replaces it.
 - **`adrian doctor`** prints "limit 4096" for memory, while the unit's hard limit is `MemoryMax=5G`.
 - **Stale comments**: fix the header comments that predate features (see [../CONTRIBUTING.md](../CONTRIBUTING.md)).
+- **Left from the last code review** (each small, none harmful):
+  - a guarded PC chimes on other people's wakes in the call (only misleading; the fix is a timing heuristic);
+  - the dashboard says "the local voice stood in" even when the local voice failed too;
+  - the mixer's `speechShort` counter also counts normal gaps (a diagnostic only);
+  - a kept-open connection's `lastUsed` isn't reset after an aborted stream, so the next request after a barge-in may pay one handshake (about 100-200 ms);
+  - Whisper, Parakeet and Kokoro threads add up on a small machine (a tuning decision, already noted in earlier reviews), and cache warm-ups don't count against the guest share or the hourly limit (bounded: at most one prefix write per ~4.5 min, 20 an hour).
+- **Installer nits** (from the installer reviews, not fixed yet):
+  - `get.sh` asks "Install the system packages...?" through `/dev/tty`, which exists even without a terminal (cron, cloud-init, `ssh host cmd`), so there the default yes wins without asking;
+  - `get.sh` and the release download lack curl's `--proto '=https'` (GitHub only redirects to https today), and `get.sh` comes from `main`, not from a release tag, so a change to it goes live for new installs at once;
+  - a config with no `server.port` moves the admin page to 8791 on a re-run (the installer always writes one, so it's rare);
+  - `get.sh --version` with no number exits silently;
+  - `install.sh` (`sort -V`) and `adrian` disagree on pre-release tags such as `-rc1` (only matters once there are any);
+  - an unrelated missing file in a start error is explained as "Speech model files are missing", and doctor's ownership check lists `lost+found` when `/var/lib/adrian` is its own filesystem;
+  - the wizard's voice-access check doesn't check that the channel belongs to the chosen server, nor "Use Voice Activity";
+  - an update cut off between its note and the switch, re-run onto a version once rolled back from, is taken for a rollback under way (a window two commands wide);
+  - following a lock held by something other than a by-hand update (install.sh, rollback) shows the previous update's log and exit code;
+  - the lock probe in `status`, `doctor` and a follower holds the lock for an instant, now once a second while following, so an update that tries just then is told another one is running;
+  - the disk check before the switch sources the new release's `downloads.sh` as root before the as-the-service config check (not a new exposure: `upgrade-prep.sh` runs as root right after).
 
 ---
 
@@ -198,6 +223,7 @@ What doesn't work, or works with a catch, as of 0.17.1. Many of these have entri
 - **Groq's free tier**: after a 429 the cloud listen pauses 60 s for everyone. Groq gets no language hint, and for non-English speech the Whisper second pass can override its text.
 - **A friend called Adrian** (next release): questions to them ending in the name wake her loosely (a model call and a short music duck each; 9 of 10 in a probe). Stops phrased as questions, greetings alone, exclamations and game talk are left to them. See [usage.md](usage.md#waking-it).
 - **Calls the bot can't see** (other servers, DM calls, other apps) still drive a PC on speakers with its owner's rights (F1). Calls it can see make that PC push-to-talk only, unless the app says headphones; a USB DAC or dock that calls itself speakers needs the "These speakers are headphones" switch in the app (next release).
+- **Push-to-talk trade-offs** (next release): within one press, a later part restarts her answer with the combined words even once she's audible, so she may repeat a sentence she had begun; after a barge-in within a press the next part is a request of its own. A loose wake from the asker waits for their running answer, so "actually, Adrian, what's the time" comes after it unless they say stop or talk over her. The key-up cut trusts the quick VAD and an energy check: a very quiet word in the last half second before key-up can be dropped.
 - **"Louder" without her name**: said as a follow-up while nothing plays, it usually gets no answer. `next` is missing from `MUSICISH`, though the model still routes it to music.
 
 ### Answers and cost
@@ -211,6 +237,7 @@ What doesn't work, or works with a catch, as of 0.17.1. Many of these have entri
 
 ### Voice and music
 
+- **Slashes** (next release): a bare month/day at the end of a clause (`11/21.`) is read as a date and `x/5` or `x/10` as a rating, so "cut it into 1/8." would come out as "January 8th". "3/5 of" is still a fraction. Model text rarely writes either.
 - **The cloud voice is English only.** Kokoro is serialized across all rooms, so several rooms talking at once queue behind each other.
 - **Speechify characters are paid again on restart**: the short-line cache and a calibration line are re-fetched at each start.
 - **YouTube can break**:
@@ -258,7 +285,9 @@ What doesn't work, or works with a catch, as of 0.17.1. Many of these have entri
 - **Linux x86_64 with glibc and systemd only.** The installer has only `--mode native` and `--profile recommended`; there is no ARM build.
 - **Health proves less than it says**: it shows that she started and logged in. A voice failure and setup mode both count as healthy.
 - **Admin sessions are in memory**: restarting logs the admin out. There is one admin account and no roles. Settings saved in the admin page need a restart.
-- **The first update onto a release** runs the previous release's update checks (on the server and on PCs).
+- **The first update onto a release** runs the previous release's update checks (on the server and on PCs). For the update from 0.17.1 that means 0.17.1's health wait: a memory wait during that one update can still roll it back, and a failing bot's update is called "did worse". The disk check is the exception: it runs from the new release.
+- **New installs use more memory on long clips** (next release): the 2026 upload of Parakeet holds about 10 MB more per second of the longest clip decoded so far (+0.17-0.19 GB after 20 s, +0.32 GB after 35 s). Existing servers keep the 2025 files. If it matters, a mirror of the 2025 archive (verified as `5793d0fd…`) can be listed first.
+- **Mirrors and the preflight**: the installer's reachability check tests only the original download hosts, so behind a firewall that blocks github.com a mirror doesn't get past it. There is no project mirror yet (the plan, with the licences it must credit, is in [decisions.md](decisions.md#speech-model-checksums-every-known-upload)).
 
 ---
 
