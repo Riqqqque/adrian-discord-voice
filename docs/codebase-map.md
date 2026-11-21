@@ -232,6 +232,7 @@ What must stay true: ffmpeg only gets whitelisted network protocols (`http,https
 |---|---|---|---|---|
 | `handoff.ts` | 690 | What "that" means (recent links and songs per person), `pc_handoff` (`send_to_pc`, `music_to_pc`, `pc_to_call`), `tell_call`, who started the music in a room, `HANDOFF_RULE`. | `handoffTools`, `tellCallTool`, `LastThings`, `linksIn`, `noteMessage`, `MusicStarts`, `notingStarts`, `parsePlayers`, `callRequestFor`, `WindowLimiter`, `startsWithName`, `whichLine`, `confirmLine`, `HANDOFF_RULE` | `handoff.test.ts` (49) |
 | `handoff-discord.ts` | 172 | The Discord side: watches messages for links, builds `pc_handoff`, `tell_call` and `game_night` with the real client, per-feature gating. | `watchDiscord`, `pcDiscordTools` | `handoff-discord.test.ts` (7) |
+| `ignore.ts` | 214 | Owners tell her to ignore someone (everything, or only their music requests), timed or until undone; `ignore_person`; `ignored.json`. The checks sit in `stack.ts` (`heard`, local music, music tool wrapper), `textchat.ts`, `music-commands.ts` and `commands.ts`. | `IgnoreList`, `ignoreTool`, `musicRefusal`, `MAX_MINUTES` | `ignore.test.ts` (10), `music-commands.test.ts`, `textchat-read.test.ts` |
 | `textchannel.ts` | 76 | Picks the text channel for posts; visibility and post-permission checks; text that cannot ping. | `pickTextChannel`, `canSee`, `canPost`, `plainText`, `PostableChannel`, `ChannelChoice` | through `handoff.test.ts`, `gamenight.test.ts` |
 | `gamenight.ts` | 479 | `game_night`: who is free or playing, sign-ups (`game-night.json`), pings with cooldowns and order guards. | `gameNightTool`, `GameNightSignups`, `gameKey`, `sameGame`, `matchState`, `GAME_NIGHT_RULE` | `gamenight.test.ts` (30) |
 | `discordinfo.ts` | 447 | `server_info` lookups filtered to what the asker can see, and the `message_member` relay with read-backs and limits. | `discordTools`, `RelayLimiter`, `matchMembers`, `namesMember`, `allowedPings`, `describeActivity` | `discordinfo-tools.test.ts` (80), `discordinfo.test.ts` (5) |
@@ -642,6 +643,7 @@ All under the state folder (`ADRIAN_STATE`, default `/var/lib/adrian`), written 
 | `reminders.json` | `features/reminders.ts` |
 | `notes.json` | `features/notes.ts` |
 | `music-taste.json` | `features/taste.ts` |
+| `ignored.json` | `features/ignore.ts` |
 | `heads-up.json` | `features/headsup.ts` |
 | `weekly-recap.json` | `features/recap.ts` |
 | `game-night.json` | `features/gamenight.ts` |

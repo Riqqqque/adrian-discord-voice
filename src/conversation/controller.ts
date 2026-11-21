@@ -150,6 +150,22 @@ export class ConversationController {
     this.active?.ctl.abort();
   }
 
+  /** Drop one person's requests: their queued questions, open follow-ups and
+   *  the answer to them, if one is running (an owner told her to ignore them).
+   *  Announcements for them (a timer) stay. */
+  forget(userId: UserId): void {
+    for (let i = this.queue.length - 1; i >= 0; i--) {
+      const r = this.queue[i]!;
+      if (r.userId === userId && r.announce === undefined) this.queue.splice(i, 1);
+    }
+    this.followUpUntil.delete(userId);
+    this.expecting.delete(userId);
+    if (this.active?.userId === userId && this.active.announce === undefined) {
+      this.active.dropped = true;
+      this.active.ctl.abort();
+    }
+  }
+
   get queued(): number {
     return this.queue.length;
   }

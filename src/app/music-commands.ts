@@ -128,6 +128,8 @@ export interface MusicCommandDeps {
   prefix: string;
   /** Servers where commands work; empty: any. */
   allowedGuilds?: readonly string[];
+  /** Why an owner's ignore list refuses this person's music commands, if it does. */
+  refused?(userId: string): string | undefined;
 }
 
 const NO_MUSIC = "Music isn't set up on this bot.";
@@ -408,6 +410,12 @@ export function registerMusicCommands(d: MusicCommandDeps): { isCommand(m: Messa
     const custom = 'customId' in i ? i.customId : undefined;
     if (name !== 'play' && name !== 'music' && !custom?.startsWith('music:')) return;
     if (!i.inCachedGuild()) return;
+    const no = d.refused?.(i.user.id);
+    if (no) {
+      if (i.isAutocomplete()) void i.respond([]).catch(() => undefined);
+      else if (i.isRepliable()) void i.reply({ content: no, flags: MessageFlags.Ephemeral }).catch(() => undefined);
+      return;
+    }
     if (i.isAutocomplete() && i.commandName === 'play') {
       void complete(i);
       return;
@@ -431,6 +439,8 @@ export function registerMusicCommands(d: MusicCommandDeps): { isCommand(m: Messa
   client.on(Events.MessageCreate, (m) => {
     const c = typed(m);
     if (!c) return;
+    // Ignored: no answer at all, so typing commands at her gets them nothing.
+    if (d.refused?.(m.author.id)) return;
     const a = textAsker(m as Message<true>, d.prefix, log);
     run(c, a).catch(async (e: unknown) => {
       log.warn('music command failed', { error: (e as Error).message, via: 'text' });

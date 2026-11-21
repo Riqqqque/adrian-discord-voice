@@ -138,6 +138,7 @@ On the server, under `/var/lib/adrian` (mode 0750, service user only) and
 | What people asked to remember, and what was learned about them | `notes.json` |
 | Reminders, alarms, saved alarm sounds | `reminders.json`, `alarms.json`, `alarm-sounds/` |
 | Artists each person asks for, likes and dislikes | `music-taste.json` |
+| People an owner told her to ignore | `ignored.json` |
 | Paired PCs (token hashes) | `satellites.json` |
 | Items held while gaming | `held-while-gaming.json` |
 | Game-night sign-ups (who wants pings, for which games) | `game-night.json` |

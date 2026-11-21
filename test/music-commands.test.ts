@@ -155,7 +155,7 @@ describe('cards and text', () => {
 });
 
 /** The commands against a fake client: who is where, and the player. */
-function rig(o: { spot?: VoiceSpot; seat?: Seat; owners?: string[]; limited?: boolean; ready?: boolean; moves?: () => Promise<void> } = {}) {
+function rig(o: { spot?: VoiceSpot; seat?: Seat; owners?: string[]; limited?: boolean; ready?: boolean; moves?: () => Promise<void>; refused?: (id: string) => string | undefined } = {}) {
   const { p, src } = player();
   const client = new EventEmitter();
   let spot = o.spot;
@@ -184,6 +184,7 @@ function rig(o: { spot?: VoiceSpot; seat?: Seat; owners?: string[]; limited?: bo
     nameOf: (id) => (id === USER ? 'Sam' : id === OWNER ? 'Morgan' : 'Alex'),
     taste,
     started,
+    ...(o.refused ? { refused: o.refused } : {}),
   });
 
   type Sent = { content?: string; embeds?: unknown[]; components?: unknown[]; flags?: number; private?: boolean };
@@ -232,6 +233,29 @@ function rig(o: { spot?: VoiceSpot; seat?: Seat; owners?: string[]; limited?: bo
 }
 
 const at = (channelId: string, guildId = GUILD): VoiceSpot => ({ guildId, channelId });
+
+describe('ignored people', () => {
+  const refused = (id: string) => (id === USER ? 'An owner asked me not to take music requests from you.' : undefined);
+  it('get a private no for /play, /music and the buttons, and nothing plays', async () => {
+    const r = rig({ spot: at(CALL), refused });
+    for (const [kind, name, opts] of [
+      ['slash', 'play', { query: 'loud song' }],
+      ['slash', 'music skip', {}],
+      ['button', 'music:pause', {}],
+    ] as const) {
+      const out = await r.send(kind, name, opts);
+      expect(out.content).toMatch(/not to take music requests/);
+      expect(out.private).toBe(true);
+    }
+    expect(r.p.nowPlaying).toBeUndefined();
+    expect(r.seat).not.toHaveBeenCalled();
+  });
+  it('get no suggestions; others are unaffected', async () => {
+    const r = rig({ spot: at(CALL), refused });
+    expect((await r.send('auto', 'play', { query: 'lo' })).content).toBe('[]');
+    expect((await r.send('slash', 'music now', {}, FRIEND)).content ?? '').not.toMatch(/not to take music requests/);
+  });
+});
 
 describe('/play', () => {
   it('plays for someone in her call and shows the card with buttons', async () => {

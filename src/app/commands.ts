@@ -37,7 +37,11 @@ export interface CommandDeps {
   extraCommands?: readonly object[];
   /** Owners besides the app's owner: they may pull her out of a call too. */
   isOwner?(userId: string): boolean;
+  /** An owner told her to ignore this person: their commands get a short no. */
+  ignored?(userId: string): boolean;
 }
+
+export const IGNORED_REPLY = "An owner asked me to ignore your requests.";
 
 /** Who asks, where: a slash command or a message in a server. */
 export interface Asking {
@@ -96,6 +100,10 @@ export function registerVoiceCommands(d: CommandDeps): VoiceCommands {
 
   client.on(Events.InteractionCreate, (i) => {
     if (!i.isChatInputCommand() || !i.inCachedGuild()) return;
+    if ((i.commandName === 'join' || i.commandName === 'leave') && d.ignored?.(i.user.id)) {
+      void i.reply({ content: IGNORED_REPLY, flags: MessageFlags.Ephemeral }).catch(() => undefined);
+      return;
+    }
     const run = i.commandName === 'join' ? join(i) : i.commandName === 'leave' ? leave(i) : undefined;
     run?.catch(async (e: unknown) => {
       log.warn('command failed', { command: i.commandName, error: (e as Error).message });

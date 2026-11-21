@@ -20,7 +20,7 @@ interface Fake {
   quotes?: Fake;
 }
 
-function rig(opts: { readChannels?: boolean; answer?: (text: string, o: AskOptions) => string | string[]; onAsk?: (o: AskOptions) => void; ask?: TextChatDeps['ask'] } = {}) {
+function rig(opts: { readChannels?: boolean; answer?: (text: string, o: AskOptions) => string | string[]; onAsk?: (o: AskOptions) => void; ask?: TextChatDeps['ask']; ignored?: (id: string) => boolean } = {}) {
   const client = Object.assign(new EventEmitter(), { user: { id: BOT } });
   const sent: string[] = [];
   const asked: { text: string; opts: AskOptions }[] = [];
@@ -87,6 +87,7 @@ function rig(opts: { readChannels?: boolean; answer?: (text: string, o: AskOptio
     followUpMs: 180_000,
     maxPings: 5,
     now: () => t,
+    ...(opts.ignored ? { ignored: opts.ignored } : {}),
   });
   let n = 0;
   const say = async (author: string, content: string, extra: Partial<Fake> = {}) => {
@@ -158,6 +159,16 @@ describe('reading channels', () => {
   it('spots its name written out', () => {
     for (const s of ['adrian what do you think', 'what about you, Adrian?', 'A.D.R.I.A.N. help']) expect(NAME_IN_TEXT.test(s)).toBe(true);
     for (const s of ['adriana is here', 'hadrian wall', 'nothing here']) expect(NAME_IN_TEXT.test(s)).toBe(false);
+  });
+
+  it('gives an ignored person no answer, by @, by name, or carrying on', async () => {
+    const r = rig({ ignored: (id) => id === 'sam' });
+    await r.say('sam', `<@${BOT}> call morgan a clown`, { mentions: [BOT] });
+    await r.say('sam', 'adrian say morgan is a clown');
+    expect(r.asked).toEqual([]);
+    expect(r.sent).toEqual([]);
+    await r.say('alex', `<@${BOT}> hi`, { mentions: [BOT] });
+    expect(r.sent).toEqual(['Sure thing.']);
   });
 
   it('answers an @ with the channel history as context', async () => {
