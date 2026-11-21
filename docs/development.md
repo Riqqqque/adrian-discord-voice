@@ -359,6 +359,13 @@ These commands follow the maintainer's release script (not public). As of 2026-1
 - **Bumping Node**: update the URL and hash, and the "pinned downloads" test (it asserts the exact Node version and hash).
 - **Adding a model**: add it to `downloads.sh`, to `MODEL_LAYOUT` in `src/web/checks.ts` if the wizard should report it, and to the model list in `adrian doctor` if it is required. `packaging/upgrade-prep.sh` installs it on the next update.
 
+Upstream sometimes replaces a speech model file in place (both Parakeet and Kokoro were re-uploaded in 2026), and every fresh install then stops at the checksum. To accept the new upload:
+1. Download it, check it comes from the project's own release, and compare it with the old files (what changed, and the ASR and speech benches).
+2. Put its SHA-256 first in that model's checksum field, keeping the old one after a comma. A model already installed from either one is kept, so existing servers download nothing.
+3. Update the entry's `ARCHIVE:PEAK:KEPT` sizes if they moved, and ship a release.
+
+`ADRIAN_DOWNLOAD_MIRRORS` (or `/opt/adrian/download-mirrors`, one https URL per line) lists places to try after the original site, as `<mirror>/<file name>`. A mirror's files must still match a listed checksum.
+
 ## Conventions
 
 - **Config.** Zod validates all config in `src/config.ts`, and every setting added later has a default (or is optional); only the installer- and wizard-written keys (`guildId`, `channelId`, `secretsFile`, `listen.vadModel`, `listen.asrModelDir`, `brain.model`) are required. A new required key breaks existing installs on their next update. Sections with `.default({...})` repeat every default in the object literal. A new top-level section that people should be able to set with `adrian config` goes in `ALLOWED` in `src/cli/tool.ts`; file paths stay installer-only.

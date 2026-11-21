@@ -16,6 +16,7 @@ services:
     command: ["fetch-models", "/models"]
     environment:
       ADRIAN_DOWNLOAD_CACHE: ${ADRIAN_DOWNLOAD_CACHE:-}
+      ADRIAN_DOWNLOAD_MIRRORS: ${ADRIAN_DOWNLOAD_MIRRORS:-}
     volumes:
       - models:/models
     restart: "no"
