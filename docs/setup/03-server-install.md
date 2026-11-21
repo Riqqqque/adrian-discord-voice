@@ -315,7 +315,7 @@ A table shows the computer's processor, memory, free disk and whether the speech
    - `This bot is public` in yellow: go back to [01-discord-bot.md, step 1.3](01-discord-bot.md#13-make-the-bot-private) and switch Public Bot off. It still works meanwhile.
    - `Discord rejected the token (401)` or `That doesn't look like a bot token`: copy the token again. If in doubt, click **Reset Token** in the Developer Portal and paste the new one.
    - `That's a number, probably the Application ID` (newer versions): you copied the Application ID, a long number, instead of the token. The token is on the **Bot** page: press **Reset Token** and copy what it shows (a long text with two dots in it). Version 0.17.1 says `That doesn't look like a bot token` here.
-3. Click the **Invite link**. It opens Discord in a new tab.
+3. Under "Add the bot to your server with this link", click **Invite A.D.R.I.A.N.**. It opens Discord in a new tab.
    - Under **Add to Server**, choose your server and click **Continue**.
    - Check the list of permissions and click **Authorize**.
    - Discord may ask you to prove you're human. Do that yourself.
