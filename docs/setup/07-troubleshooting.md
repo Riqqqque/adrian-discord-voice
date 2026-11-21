@@ -53,9 +53,9 @@ Press Ctrl+C to stop watching. Each line looks like `{"t":"...","level":"info","
 | Everything stopped working after the router or server restarted | [The server's address changed](#the-servers-address-changed) |
 | Two PCs keep disconnecting, or orders go to the wrong PC | [Several PCs](#several-pcs) |
 | The installer or an update says the disk is full, or a download stopped | [The disk filled up, or a download stopped](#the-disk-filled-up-or-a-download-stopped) |
-| The installer says `checksum mismatch` or `doesn't match its pinned checksum` | [A download doesn't match its checksum](#a-download-doesnt-match-its-checksum) |
+| The installer says `doesn't match any checksum this version knows`, `doesn't match its checksum` or (0.17.1) `checksum mismatch` | [A download doesn't match its checksum](#a-download-doesnt-match-its-checksum) |
 | `sudo adrian start` or `restart` says `not healthy after 60 s` | [The bot is offline in Discord](#the-bot-is-offline-in-discord), step 1 |
-| A restore says `restored, but the service is not healthy` | [A port is already in use, or a firewall blocks it](#a-port-is-already-in-use-or-a-firewall-blocks-it) |
+| A restore says `restored, but not started: port ...`, `restored, but she can't start` or `restored, but the service is not healthy` | [A port is already in use, or a firewall blocks it](#a-port-is-already-in-use-or-a-firewall-blocks-it) |
 | It's slow, restarts by itself, or "out of memory" | [Low memory, or it keeps restarting](#low-memory-or-it-keeps-restarting) |
 | "Port already in use", or something can't connect at all | [A port is already in use, or a firewall blocks it](#a-port-is-already-in-use-or-a-firewall-blocks-it) |
 | An update failed or rolled back | [An update failed or rolled back](#an-update-failed-or-rolled-back) |
@@ -290,12 +290,13 @@ The installer checks every file it downloads against a fingerprint (a "checksum"
 1. **Run the same command once more.** A download that was cut off or damaged on the way gets fixed by downloading it again. Files that already finished are kept.
 2. **The same file fails again?** Then retrying won't help, however often you try. It almost always means the file on the download site was replaced with a newer copy, so it no longer matches the fingerprint this version expects. It's not your internet connection and not your computer, and nothing was installed wrong.
 
-**Known problem in version 0.17.1 and older:** two speech-model files were replaced on their download site in October and November 2026, and these versions still expect the old copies: `sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8.tar.bz2` (speech recognition) and `kokoro-multi-lang-v1_0.tar.bz2` (the built-in voices). A fresh install of these versions stops at one of these two files. The release after 0.17.1 knows both the old and the new copies, so it installs again. The Docker install downloads the same files, so it doesn't get around it. What to do:
+**Known problem in version 0.17.1 and older:** two speech-model files were replaced on their download site in October and November 2026, and these versions still expect the old copies: `sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8.tar.bz2` (speech recognition) and `kokoro-multi-lang-v1_0.tar.bz2` (the built-in voices). A fresh install of these versions stops at one of these two files. **Fresh installs work again from the release after 0.17.1 on:** it knows both the old and the new copies, so a server that already has the old ones keeps them and a new one gets the new ones. The Docker install of 0.17.1 downloads the same files, so it doesn't get around it. What to do:
 
-- Check the [releases page](https://github.com/Riqqqque/adrian-discord-voice/releases) for a version newer than 0.17.1, and install that one (step 5b of [03](03-server-install.md#5b-install-by-hand-works-with-every-version) picks the newest by itself).
-- If there's none yet, look in the project's issues on GitHub for "checksum", and open one if nobody has, with the file name from the message. Leave the half-finished install as it is: installing the fixed version later on top of it keeps the models that already finished, so it doesn't start from zero.
+- Install the newest release, which is newer than 0.17.1 (5a and 5b of [03](03-server-install.md#5-install-adrian) both pick the newest by themselves). Leave a half-finished 0.17.1 install as it is: installing the newer version on top of it keeps the models that already finished, so it doesn't start from zero.
+- If a newer version fails the same way with another file, the site replaced that one too: look in the project's issues on GitHub for "checksum", and open one if nobody has, with the file name from the message.
+- Newer versions can also try mirrors after the original site: `ADRIAN_DOWNLOAD_MIRRORS="https://..."` in front of the install command, or one https address per line in `/opt/adrian/download-mirrors`. Use only a mirror you trust. Its files must still match a checksum this version knows, so it can't bring in an unknown file.
 
-Don't try to get around the check by downloading the file yourself from somewhere else. It's what keeps a damaged or swapped file off your server.
+Don't try to get around the check by putting a file you downloaded yourself in place. It's what keeps a damaged or swapped file off your server.
 
 ## Low memory, or it keeps restarting
 
@@ -331,10 +332,10 @@ A "port" is a numbered door on the server that a program listens on. A.D.R.I.A.N
 | Admin page | the setup wizard and dashboard | 8790, or the next free one up to 8799 (`sudo adrian url` shows it) |
 | PC link | the PC app | 8791 |
 
-- **`ports 8790-8799 are all in use`** (installer): run the install command again with `--port 8800` (or another free number).
+- **`ports 8790-8799 are all taken by other programs`** (installer; 0.17.1 says `ports 8790-8799 are all in use`): run the install command again with `--port 8800` (or another free number).
 - **`port N is already used by another program`** (newer installers): leave `--port` out, or pick another number.
 - **The admin page got port 8791** because 8790 was taken: then the PC link can't use its usual 8791. The installer doesn't warn about this; you see it only in the `Admin UI:` line (`:8791/`). Move the PC link: `sudo adrian config satellite.port 8792`, `sudo adrian restart`, and use `:8792` in the PC app.
-- **The admin page's port is taken while it runs** (often right after restoring a backup on another computer, because the backup brings the old port): the service keeps restarting, a restore says `restored, but the service is not healthy`, and `sudo adrian doctor` only says `service not running` and `admin UI not responding`. Look in the log:
+- **The admin page's port is taken while it runs** (often right after restoring a backup on another computer, because the backup brings the old port): a restore says `restored, but not started: port ...` or `restored, but she can't start: port ... is taken by another program`, and `sudo adrian doctor` says `admin UI not responding: port ... is taken by another program`. Version 0.17.1 doesn't name it: the service keeps restarting, a restore says `restored, but the service is not healthy`, and doctor only says `service not running` and `admin UI not responding`. To see it in the log:
 
   ```bash
   sudo adrian logs | grep EADDRINUSE
@@ -350,15 +351,22 @@ A "port" is a numbered door on the server that a program listens on. A.D.R.I.A.N
 | Message | Meaning | Fix |
 |---|---|---|
 | `Version ... did worse than ...; rolling back.` | The new version didn't come up healthy, so the old one is back and running. | Look at `sudo adrian logs` for the reason. A Discord voice outage at that moment can cause it; try `sudo adrian update` again later. |
-| `rolled back to ..., but it is not healthy either: adrian logs` | The bot wasn't working before the update either (a bad token, for example), so the update couldn't prove the new version works. The new version isn't necessarily bad. | Fix the bot first ([The bot is offline in Discord](#the-bot-is-offline-in-discord)), then `sudo adrian update` again. |
+| `rolled back to ..., but it is not healthy either: adrian logs`, or (newer versions) `... wasn't healthy before the update either ..., so this doesn't show ... is worse` | The bot wasn't working before the update either (a bad token, for example), so the update couldn't prove the new version works. The new version isn't necessarily bad. | Fix the bot first ([The bot is offline in Discord](#the-bot-is-offline-in-discord)), then `sudo adrian update` again. |
 | `version ... is already installed` | That version is the one running now. | Nothing to do. |
-| `sudo adrian rollback` prints nothing | There is no older version on the server to go back to; nothing was changed. | Nothing to do: `sudo adrian version` shows what runs. |
+| `error: no previous version to roll back to` (0.17.1: `sudo adrian rollback` prints nothing) | There is no older version on the server to go back to; nothing was changed. | Nothing to do: `sudo adrian version` shows what runs. |
 | `warn  update ... failed here on ... and was undone` (in `sudo adrian doctor`) | A reminder of the last failed update. | Automatic updates retry it after a day, only if they're on. The line goes away after the next update that works. |
+| `update ... was tried here on ... and undone, but it couldn't be judged` (in `sudo adrian doctor`, newer versions) | The bot wasn't healthy before that update either. | Fix what doctor shows above it, then `sudo adrian update` again. |
+| `The cut-off update to ... is undone` (after `sudo adrian rollback`, newer versions) | An update was cut off (a power cut); the rollback finished undoing it and switched nothing else. | Nothing to do. Run `sudo adrian rollback` again only to go back one more version. |
 | `version ... can't run this config, so nothing was changed:` | A setting isn't accepted by the new version; the lines below name it. | Fix that setting ([../configuration.md](../configuration.md)), then update again. |
 | `update ... skipped: it failed here in the last day` (in `sudo adrian auto-update status`) | Automatic updates wait a day after a failure. | `sudo adrian update` tries it now. |
 | `couldn't reach GitHub ...` | No internet on the server, or GitHub is down. | Try later. Without internet: [05, special cases](05-updating.md#special-cases). |
-| `another update is already running` (newer versions) | The hourly automatic update is busy. | Wait a few minutes. |
-| `only ... MB free under /opt` (newer versions) | Not enough disk for the update. | [Free some space](#the-disk-filled-up-or-a-download-stopped). |
+| `another update is already running` (newer versions) | The hourly automatic update, or an update from another window, is busy. | Wait a few minutes. `sudo tail -f /opt/adrian/update.log` follows one started by hand; `journalctl -u adrian-update -f` the hourly one. |
+| `only ... MB free under /opt` or `not enough disk for ...` (newer versions) | Not enough disk for the update, or for the speech models it still has to download. Nothing was changed. | [Free some space](#the-disk-filled-up-or-a-download-stopped). |
+
+| `warning: NOT CHECKED: ...` (newer versions) | A release file given by hand has no `.sha256` next to it, so it wasn't checked. | Put the `.sha256` from the same releases page next to it. `--require-checksum` refuses such a file. |
+| `there's no bundle file ...` (newer versions) | The release file named isn't there (a typo, or another folder). | Run it in the folder that holds the file, or give its full path. |
+
+The log of an update started by hand (newer versions) is `/opt/adrian/update.log`; the hourly one's is `journalctl -u adrian-update`.
 
 More about updates and going back: [05-updating.md](05-updating.md).
 

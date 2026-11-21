@@ -55,9 +55,11 @@ sudo adrian update
 
 It takes one to four minutes. You should see `Downloading ...`, `Switching ... -> ...`, `Watching ... for a minute or two` and finally `Updated to 0.17.2.` (your version number). If there is nothing new: `Up to date (0.17.1).` If you name a release file that's already installed: `error: version 0.17.2 is already installed`; nothing was changed.
 
-**Fix the bot before you update it.** If the bot isn't working before the update (for example a wrong token: the admin page's Status tab shows `failed`), the update can't prove the new version is healthy, so it always rolls back and says the new version `did worse`. That doesn't mean the new version is bad. Fix the reason shown on the Status tab first ([07](07-troubleshooting.md#the-bot-is-offline-in-discord)), then update.
+**Fix the bot before you update it.** If the bot isn't working before the update (for example a wrong token: the admin page's Status tab shows `failed`), the update can't prove the new version is healthy, so it always rolls back. Version 0.17.1 then says the new version `did worse`; newer versions say `Version ... didn't come up healthy, but ... wasn't healthy before the update either (it was failed), so this doesn't show ... is worse.` Either way it doesn't mean the new version is bad. Fix the reason shown on the Status tab first ([07](07-troubleshooting.md#the-bot-is-offline-in-discord)), then update.
 
-Newer versions run the update in the background and only show it in your window, so a dropped SSH connection can't stop it halfway. They print `Updating in the background, so a dropped connection can't stop it halfway.` first. Ctrl+C then stops the watching, not the update. The full log is in `/opt/adrian/update.log`.
+Newer versions run the update in the background, as a service of its own, and only show it in your window, so neither a dropped SSH connection nor logging out can stop it halfway. They print `Updating in the background (as its own service, ...), so a dropped connection can't stop it halfway.` first, then `Its log: /opt/adrian/update.log (follow it from anywhere: sudo tail -f /opt/adrian/update.log)`. Ctrl+C then stops the watching, not the update. Running `sudo adrian update` again while one runs just follows it.
+
+A release file you downloaded yourself without its `.sha256` next to it still installs, with a `warning: NOT CHECKED: ...` line (newer versions). Add `--require-checksum` to refuse such a file instead.
 
 You can update while people are in the call, but the bot leaves and comes back during the switch, so pick a quiet moment.
 
@@ -67,9 +69,9 @@ To see the installed version: `sudo adrian version`.
 
 1. Downloads the new release and checks it against its published checksum. A mismatch stops it.
 2. Asks the new version whether it can run your settings. If not, it changes nothing and tells you why.
-3. Downloads any new speech models it needs.
+3. Checks there's room on the disk, then downloads any new speech models it needs. If the room is missing, an automatic update waits and one by hand says so; nothing is changed either way.
 4. Switches over, then watches the new version for a minute or two.
-5. If the new version does worse than the old one (doesn't start, falls back to setup mode, doesn't rejoin the voice channel, or crashes in that minute), it **switches back by itself** and tells you `Version ... did worse than ...; rolling back.` If the bot wasn't healthy before the update either, it also ends with `rolled back to ..., but it is not healthy either: adrian logs`; see [Fix the bot before you update it](#update-by-hand).
+5. If the new version does worse than the old one (doesn't start, falls back to setup mode, doesn't rejoin the voice channel, or crashes in that minute), it **switches back by itself** and tells you `Version ... did worse than ...; rolling back.` If the bot wasn't healthy before the update either, it ends with `rolled back to ..., but it is not healthy either: adrian logs` (newer versions: `rolled back to ..., but it is not healthy either, as before the update: sudo adrian doctor says why`); see [Fix the bot before you update it](#update-by-hand).
 
 It keeps the three newest versions on disk. Your settings, keys, memory and paired PCs are not touched. Everyone is logged out of the admin page, so log in again afterwards.
 
@@ -81,7 +83,7 @@ sudo adrian rollback
 
 You should see `Switching 0.17.2 -> 0.17.1` and `Rolled back to 0.17.1.`
 
-**It prints nothing and you're back at the prompt?** Then there's no older version on the server to go back to, and nothing was changed. That happens after the first install, before any update has worked, because an update that rolled back by itself removes the version that failed. `sudo adrian version` shows what runs.
+**It says `error: no previous version to roll back to`** (version 0.17.1 prints nothing and you're back at the prompt)? Then there's no older version on the server to go back to, and nothing was changed. That happens after the first install, before any update has worked, because an update that rolled back by itself removes the version that failed. `sudo adrian version` shows what runs.
 
 **If automatic updates are on,** the newer version comes back within about an hour. To stay on the older one until a fix is out, turn them off first:
 
@@ -94,7 +96,7 @@ and turn them on again later with `sudo adrian auto-update on`.
 
 After a failed update, automatic updates leave that version alone for a day, so a bad release can't restart her every hour. `sudo adrian update` by hand tries it again right away.
 
-After a failed update, `sudo adrian doctor` shows a `warn` line like `update 0.17.2 failed here on ... and was undone; auto-update tries it again a day later`. The retry only happens if automatic updates are on. The line goes away after the next update that works.
+After a failed update, `sudo adrian doctor` shows a `warn` line like `update 0.17.2 failed here on ... and was undone; auto-update tries it again a day later`. The retry only happens if automatic updates are on. The line goes away after the next update that works. If the bot wasn't healthy before that update either, newer versions say instead that the update `was tried here on ... and undone, but it couldn't be judged: the bot wasn't healthy before it either`.
 
 ### Special cases
 
@@ -105,12 +107,12 @@ After a failed update, `sudo adrian doctor` shows a `warn` line like `update 0.1
   ```
 
 - **Very old installs (0.14.9 and older)** can't download updates by themselves. Update once with a downloaded file as above; after that `sudo adrian update` works.
-- **Not enough free disk:** newer versions need about 500 MB free under `/opt` for an update, and say so if it's missing. See [07-troubleshooting.md](07-troubleshooting.md#the-disk-filled-up-or-a-download-stopped).
-- **The power went out during an update:** newer versions notice the next time an update runs (by hand or automatically). They keep the new version if it's healthy and go back to the old one if it isn't. `sudo adrian status` mentions an update that was cut off.
+- **Not enough free disk:** newer versions need about 500 MB free under `/opt` for an update, plus room for any speech model the new version still has to download, and say so if it's missing. See [07-troubleshooting.md](07-troubleshooting.md#the-disk-filled-up-or-a-download-stopped).
+- **The power went out during an update:** newer versions notice the next time an update runs (by hand, automatically, or `sudo adrian rollback`). They keep the new version only if it answers healthy as itself, and go back to the old one if it doesn't. `sudo adrian status` mentions an update that was cut off. A `sudo adrian rollback` that only finishes undoing a cut-off update says `The cut-off update to ... is undone, so she's on ... again. Nothing else was switched; run sudo adrian rollback again to go back further.`
 - **The one-step installer on an installed server:** `sudo bash get.sh` on a server that already has A.D.R.I.A.N. updates it instead of installing again.
 - **Docker:** build the new image, change `ADRIAN_VERSION` in `packaging/docker/.env`, and run `docker compose up -d`. Details: [../install.md](../install.md).
 
-The update protections above (running in the background, one update at a time, the disk check, recovery after a power cut) are carried out by the `adrian` command that is already installed. So they start working with the update **after** the one that brings them.
+The update protections above (running in the background, one update at a time, the disk check, recovery after a power cut) are carried out by the `adrian` command that is already installed. So they start working with the update **after** the one that brings them. One exception: the disk check runs inside the new release, so it already protects the first update away from 0.17.1.
 
 ## The PC app
 

@@ -78,7 +78,7 @@ It stops the bot, puts everything back, fixes the file permissions, and starts i
 
 It refuses a file that isn't an A.D.R.I.A.N. backup, or a damaged one (`can't read ...; is it a complete backup?`), before stopping anything. A damaged file may first print a line or two starting with `gzip:` or `tar:`; they mean the same thing. Copy the backup again (the copy was probably cut off) and try once more.
 
-If it says `restored, but the service is not healthy: adrian logs`, everything was put back but the bot didn't come up. Run `sudo adrian doctor`. If it only says `service not running` and `admin UI not responding`, look for `EADDRINUSE` in `sudo adrian logs`: see [the port note below](#on-a-new-computer-moving-the-server).
+If it says `restored, but the service is not healthy: adrian logs`, everything was put back but the bot didn't come up. Run `sudo adrian doctor`. If it says `restored, but not started: port ..., the admin port the backup brought, is already used by another program here` or `restored, but she can't start: port ... is taken by another program`, see [the port note below](#on-a-new-computer-moving-the-server). (Version 0.17.1 doesn't name the port: there, if doctor only says `service not running` and `admin UI not responding`, look for `EADDRINUSE` in `sudo adrian logs`.)
 
 ### On a new computer (moving the server)
 
@@ -90,7 +90,7 @@ If it says `restored, but the service is not healthy: adrian logs`, everything w
    sudo adrian restore ~/adrian-backup.tar.gz
    ```
 
-   **The backup brings the old server's admin-page port and `--lan` choice with it.** If another program on the new computer already uses that port, the restore ends with `restored, but the service is not healthy: adrian logs`, the service keeps restarting, and `sudo adrian logs` shows `EADDRINUSE` and `address already in use` with the port number (`sudo adrian doctor` doesn't name the reason). Move the admin page to a free port by running the install command again with `--port`, for example 8792:
+   **The backup brings the old server's admin-page port and `--lan` choice with it.** If another program on the new computer already uses that port, the restore puts everything back but doesn't start her, and says `restored, but not started: port ..., the admin port the backup brought, is already used by another program here.` with the port number. (If the port gets taken just as she starts, it says `restored, but she can't start: port ... is taken by another program`, and `sudo adrian doctor` says `admin UI not responding: port ... is taken by another program`. Version 0.17.1 only says `restored, but the service is not healthy: adrian logs`, and the log shows `EADDRINUSE`.) Move the admin page to a free port by running the install command again with `--port`, for example 8792:
 
    ```bash
    sudo adrian-$VER/packaging/install.sh --bundle adrian-voice-$VER-linux-x64.tar.gz --port 8792
