@@ -66,22 +66,41 @@ fi
 
 # --- system packages ------------------------------------------------------------
 pm=""; command -v apt-get >/dev/null && pm=apt; [ -z "$pm" ] && command -v dnf >/dev/null && pm=dnf
-missing=()
-for c in curl tar gzip sha256sum xz bzip2 ss ffmpeg; do
+# What the install can't do without, and ffmpeg, which only music needs. They go
+# in apart: ffmpeg isn't in every distribution's own sources (RHEL, Rocky and
+# Alma have none; Fedora's own is ffmpeg-free, and ffmpeg itself is in RPM
+# Fusion), and dnf refuses a whole install over one missing package.
+need=() want=()
+for c in curl tar gzip sha256sum xz bzip2 ss; do
   command -v "$c" >/dev/null && continue
   case "$pm:$c" in
-    apt:xz) missing+=(xz-utils) ;; apt:ss) missing+=(iproute2) ;; dnf:ss) missing+=(iproute) ;;
-    *:sha256sum) missing+=(coreutils) ;; *) missing+=("$c") ;;
+    apt:xz) need+=(xz-utils) ;; apt:ss) need+=(iproute2) ;; dnf:ss) need+=(iproute) ;;
+    *:sha256sum) need+=(coreutils) ;; *) need+=("$c") ;;
   esac
 done
+command -v ffmpeg >/dev/null || want+=(ffmpeg)
+missing=(${need[@]+"${need[@]}"} ${want[@]+"${want[@]}"})
+pkgs() { # pkgs PKG...: install them with this system's package manager
+  if [ "$pm" = apt ]; then DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "$@"; else dnf install -y -q "$@"; fi
+}
 if [ ${#missing[@]} -gt 0 ]; then
   if [ "$PACKAGES" = 1 ] && [ -n "$pm" ] && ask "Install the system packages A.D.R.I.A.N. needs (${missing[*]})?" y; then
-    say "Installing ${missing[*]}"
     if [ "$pm" = apt ]; then
       DEBIAN_FRONTEND=noninteractive apt-get update -qq || die "apt-get update failed: is this computer online? Then run the same command again."
-      DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${missing[@]}" || die "installing ${missing[*]} failed; the lines above say why. Fix that and run the same command again."
-    else
-      dnf install -y -q "${missing[@]}" || die "installing ${missing[*]} failed; the lines above say why. Fix that and run the same command again."
+    fi
+    if [ ${#need[@]} -gt 0 ]; then
+      say "Installing ${need[*]}"
+      pkgs "${need[@]}" || die "installing ${need[*]} failed; the lines above say why. Fix that and run the same command again."
+    fi
+    if [ ${#want[@]} -gt 0 ]; then
+      say "Installing ffmpeg (for music)"
+      if ! pkgs ffmpeg && ! { [ "$pm" = dnf ] && pkgs ffmpeg-free; }; then
+        if [ "$pm" = dnf ]; then
+          say "warning: ffmpeg isn't in this system's package sources (on Fedora, RHEL, Rocky or Alma it comes with RPM Fusion: https://rpmfusion.org). Everything else goes ahead; music stays off until ffmpeg is installed."
+        else
+          say "warning: ffmpeg couldn't be installed. Everything else goes ahead; music stays off until it is: sudo apt-get install ffmpeg"
+        fi
+      fi
     fi
   else
     say "warning: missing system packages: ${missing[*]}. The installer will say which ones it can't do without."

@@ -27,6 +27,10 @@ install -d -m 0750 -o adrian -g adrian "$VAR"
 # Root's from the start: install -d would hand an existing folder to the service
 # account until the chown below, long enough to plant a link for root to follow.
 install -d -m 0750 -o root -g adrian "$VAR/models"
+# Before anything is fetched or a bumped model's old copy goes: room for the
+# archives staged under /opt and for what they unpack to.
+short=$(disk_short "$OPT" "$VAR/models")
+[ -z "$short" ] || die "not enough disk for this version's downloads: ${short//$'\n'/; }. Free some space (for example: sudo apt-get clean) and run it again."
 install_models "$VAR/models" "$tmp"
 chown -R root:adrian "$VAR/models"
 chmod -R u=rwX,g=rX,o= "$VAR/models"

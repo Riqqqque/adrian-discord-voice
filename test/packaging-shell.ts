@@ -6,9 +6,11 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFile
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { gzipSync } from 'node:zlib';
 import { expect } from 'vitest';
 
-export const packaging = fileURLToPath(new URL('../packaging/', import.meta.url)).replaceAll('\\', '/');
+// ADRIAN_PACKAGING_UNDER_TEST points these tests at another copy (an older release's, say).
+export const packaging = (process.env.ADRIAN_PACKAGING_UNDER_TEST ?? fileURLToPath(new URL('../packaging/', import.meta.url))).replaceAll('\\', '/').replace(/\/?$/, '/');
 // On Windows a plain `bash` may be WSL's launcher.
 export const bash = process.platform === 'win32' ? join(process.env.ProgramFiles ?? 'C:\\Program Files', 'Git', 'bin', 'bash.exe') : 'bash';
 export const hasBash = spawnSync(bash, ['-c', 'tar --version && gzip --version'], { stdio: 'ignore' }).status === 0;
@@ -26,6 +28,25 @@ export const sh =(root: string, script: string, args: string[] = [], env: NodeJS
 export const link = (root: string, path: string) => sh(root, 'readlink "$1"', [path]).out.trim();
 /** Stand-ins for what a script expects of a real server. */
 export const server = 'id() { echo 0; }; install() { :; }; chown() { :; }; chmod() { :; }; systemctl() { :; }; export -f id install chown chmod systemctl;';
+
+/** One tar entry. Built by hand so a test can hold names a real backup never would. */
+export function entry(name: string, type = '0', link = ''): Buffer {
+  const h = Buffer.alloc(512);
+  const put = (s: string, at: number) => h.write(s, at, 'latin1');
+  put(name, 0);
+  put('0000600\0', 100);
+  put('0000000\0', 108);
+  put('0000000\0', 116);
+  put('00000000000\0', 124);
+  put('00000000000\0', 136);
+  put('        ', 148);
+  put(type, 156);
+  put(link, 157);
+  put('ustar\x0000', 257);
+  put(`${h.reduce((a, b) => a + b, 0).toString(8).padStart(6, '0')}\0 `, 148);
+  return h;
+}
+export const pack = (entries: Buffer[]) => gzipSync(Buffer.concat([...entries, Buffer.alloc(1024)]));
 
 // `adrian update`, judged against the version it replaces.
 export const OLD = '1.0.0';
@@ -66,6 +87,12 @@ export interface Release {
   failed?: string;
   /** And how long ago it was written. */
   failedHoursAgo?: number;
+  /** The update is killed (a power cut) during this restart: 1 is the switch's, 2 the rollback's. */
+  cutAtRestart?: number;
+  /** MB free on the disk (df), instead of the real figure. */
+  freeMb?: number;
+  /** The MODELS entries of the new release's downloads.sh (none by default). */
+  models?: string;
 }
 
 // The fake clock runs ten times as fast, so the waits can keep their real lengths.
@@ -76,11 +103,18 @@ export const stubs = `${server}
     cp "$3" "$4"
   }
   sleep() { echo "sleep $1" >>log; SECONDS=$((SECONDS + $1 * 10)); [ "$1" = 1 ] || : >watched; }
-  journalctl() { :; }
+  journalctl() { cat journal 2>/dev/null || :; } # her log, when a test gives her one
+  # Something else listening on her port (ss), when a test says so.
+  ss() { [ ! -f port-taken ] || echo 'LISTEN 0 511 127.0.0.1:8790 0.0.0.0:*'; }
+  # A restore extracts to /: never here.
+  tar() { if [ "$1" = -xzf ] && [ "$3" = -C ] && [ "$4" = / ]; then echo "restore extracted" >>log; return 0; fi; command tar "$@"; }
   systemctl() {
     case "$1" in
       show) [ -f watched ] && cat restarts 2>/dev/null || echo 0 ;;
-      restart) echo "restart under: $(cat adrian-voice.service)" >>log; [ ! -f no-starts ] && { [ ! -f bad-unit ] || ! grep -q ${NEW} adrian-voice.service; } ;;
+      restart) echo "restart under: $(cat adrian-voice.service)" >>log
+        local n=$(( $(cat restarts.n 2>/dev/null || echo 0) + 1 )); echo $n >restarts.n
+        [ "$(cat cut-at 2>/dev/null)" != "$n" ] || kill -9 $$
+        [ ! -f no-starts ] && { [ ! -f bad-unit ] || ! grep -q ${NEW} adrian-voice.service; } ;;
       daemon-reload) echo reload >>log; : >prepared ;;
     esac
   }
@@ -90,6 +124,9 @@ export const stubs = `${server}
     case "$1" in
       *releases/latest) printf '{"tag_name":"v${NEW}"}' ;;
       */api/health)
+        echo "$1" >>health.urls
+        # An IPv6 address without brackets is no address curl can reach.
+        case "$1" in *://[[]*) ;; *://*:*:*) return 3 ;; esac
         local f; f=health.$(basename "$(readlink -f opt/current)")
         if [ -f "$f.memory" ] && [ $SECONDS -lt "$(cat "$f.memory")" ]; then printf '%s' '{"ok":false,"state":"starting","waitingFor":"memory","voiceReady":false,"busy":false}'; return 0; fi
         [ ! -f prepared ] || [ ! -f "$f.prepared" ] || f=$f.prepared
@@ -101,12 +138,16 @@ export const stubs = `${server}
   }
   runuser() {
     case "$*" in
-      *" port") echo "http 127.0.0.1 8790" ;;
+      *" port") cat port.says 2>/dev/null || echo "http 127.0.0.1 8790" ;;
       *"releases/${NEW}/dist/cli/tool.js check") echo "asked ${NEW}" >>log; cat check.says; return "$(cat check.exit)" ;;
       *" check") echo "Config is complete." ;;
     esac
   }
-  export -f install sleep journalctl systemctl curl runuser
+  df() {
+    [ -f free-mb ] || { command df "$@"; return; }
+    printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\\nfs 1 1 %s 1%% /\\n' $(( $(cat free-mb) * 1024 ))
+  }
+  export -f install sleep journalctl ss tar systemctl curl runuser df
   exec bash adrian "$@"`;
 
 /** A server on the old version, with the new one out. */
@@ -136,7 +177,7 @@ exec "${process.execPath.replaceAll('\\', '/')}" "$@"\n`;
     'new/packaging/downloads.sh',
     readFileSync(`${packaging}downloads.sh`, 'utf8')
       .replace(/^NODE_VERSION=.*$/m, `NODE_VERSION=${r.prepFails ? NEW : OLD}`)
-      .replace(/^MODELS=\([\s\S]*?^\)$/m, 'MODELS=()'),
+      .replace(/^MODELS=\([\s\S]*?^\)$/m, `MODELS=(${r.models ?? ''})`),
   );
   const name = `adrian-voice-${NEW}-linux-x64.tar.gz`;
   expect(sh(root, `set -e; tar -czf "published/${name}" -C new .; cd published; sha256sum "${name}" >"${name}.sha256"`).code).toBe(0);
@@ -152,6 +193,8 @@ exec "${process.execPath.replaceAll('\\', '/')}" "$@"\n`;
   if (r.noStarts) put('no-starts', '');
   if (r.unitStuck) put('unit-stuck', '');
   if (r.markerStuck) mkdirSync(join(root, 'opt/update-failed'));
+  if (r.cutAtRestart) put('cut-at', String(r.cutAtRestart));
+  if (r.freeMb !== undefined) put('free-mb', String(r.freeMb));
   put('check.exit', String(r.check?.[0] ?? 0));
   put('check.says', r.check?.[1] ?? 'Config is complete.\n');
   const marker = join(root, 'opt/update-failed');

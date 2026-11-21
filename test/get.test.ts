@@ -9,7 +9,8 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
-const packaging = fileURLToPath(new URL('../packaging/', import.meta.url)).replaceAll('\\', '/');
+// ADRIAN_PACKAGING_UNDER_TEST points these tests at another copy (an older release's, say).
+const packaging = (process.env.ADRIAN_PACKAGING_UNDER_TEST ?? fileURLToPath(new URL('../packaging/', import.meta.url))).replaceAll('\\', '/').replace(/\/?$/, '/');
 const bash = process.platform === 'win32' ? join(process.env.ProgramFiles ?? 'C:\\Program Files', 'Git', 'bin', 'bash.exe') : 'bash';
 const hasBash = spawnSync(bash, ['-c', 'tar --version && gzip --version && sha256sum --version'], { stdio: 'ignore' }).status === 0;
 const work = mkdtempSync(join(tmpdir(), 'adrian-get-')).replaceAll('\\', '/');
@@ -33,6 +34,10 @@ interface Site {
   /** What uname -m says. */
   arch?: string;
   noSystemd?: boolean;
+  /** The package manager is dnf (Fedora), not apt. */
+  dnf?: boolean;
+  /** Packages dnf finds no match for (RHEL-family systems have no `ffmpeg`). */
+  notInRepo?: string[];
 }
 
 function site(s: Site = {}) {
@@ -61,9 +66,13 @@ function site(s: Site = {}) {
     uname() { if [ "$1" = -m ]; then echo "${s.arch ?? 'x86_64'}"; else echo Linux; fi; }
     install() { mkdir -p "\${@: -1}"; }
     apt-get() { echo "apt-get $*" >>"${root}/apt.log"; }
+    dnf() {
+      echo "dnf $*" >>"${root}/apt.log"
+      local p; for p; do case " ${(s.notInRepo ?? []).join(' ')} " in *" $p "*) echo "No match for argument: $p" >&2; return 1 ;; esac; done
+    }
     ss() { :; }
     command() {
-      if [ "$1" = -v ]; then case " ${(s.missing ?? []).join(' ')} " in *" $2 "*) return 1 ;; esac; [ "$2" = dnf ] && return 1; [ "$2" = apt-get ] && return 0; fi
+      if [ "$1" = -v ]; then case " ${(s.missing ?? []).join(' ')} " in *" $2 "*) return 1 ;; esac; [ "$2" = dnf ] && return ${s.dnf ? 0 : 1}; [ "$2" = apt-get ] && return ${s.dnf ? 1 : 0}; fi
       builtin command "$@"
     }
     curl() {
@@ -78,7 +87,7 @@ function site(s: Site = {}) {
         *) return 22 ;;
       esac
     }
-    export -f id uname install apt-get ss command curl`;
+    export -f id uname install apt-get dnf ss command curl`;
   const script = readFileSync(`${packaging}get.sh`, 'utf8')
     .replace(/^CLI=.*$/m, `CLI=${root}/adrian-cli`)
     .replace(/^OPT=.*$/m, `OPT=${root}/opt`)
@@ -155,10 +164,40 @@ describe.skipIf(!hasBash)('get.sh', { timeout: 60_000 }, () => {
     }
   });
 
-  it('installs the missing system packages first, by their package names', () => {
+  it('installs the missing system packages first, by their package names, and ffmpeg on its own', () => {
     const s = site({ missing: ['xz', 'bzip2', 'ss', 'ffmpeg'] });
     expect(s.run('--yes').code).toBe(0);
-    expect(s.read('apt.log')).toContain('apt-get install -y -qq xz-utils bzip2 iproute2 ffmpeg');
+    expect(s.read('apt.log')).toContain('apt-get install -y -qq xz-utils bzip2 iproute2\n');
+    expect(s.read('apt.log')).toContain('apt-get install -y -qq ffmpeg\n');
+  });
+
+  // dnf refuses a whole transaction over one "No match". RHEL, Rocky and Alma
+  // have no ffmpeg at all (seen on AlmaLinux 9); Fedora's own is ffmpeg-free.
+  it('goes ahead where dnf has no package called ffmpeg: ffmpeg-free instead', () => {
+    const s = site({ dnf: true, missing: ['xz', 'bzip2', 'ffmpeg'], notInRepo: ['ffmpeg'] });
+    const r = s.run('--yes');
+    expect(r.code).toBe(0);
+    const log = s.read('apt.log');
+    expect(log).toContain('dnf install -y -q xz bzip2\n');
+    expect(log).toContain('dnf install -y -q ffmpeg-free\n');
+    expect(s.read('installed-with').split('\n')[0]).toBe('1.1.0');
+  });
+
+  it('goes ahead without music when no ffmpeg can be had, and says so plainly', () => {
+    const s = site({ dnf: true, missing: ['ffmpeg'], notInRepo: ['ffmpeg', 'ffmpeg-free'] });
+    const r = s.run('--yes');
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("ffmpeg isn't in this system's package sources");
+    expect(r.out).toContain('music stays off until ffmpeg is installed');
+    expect(s.exists('installed-with')).toBe(true);
+  });
+
+  it('still stops when a package it needs fails, naming it', () => {
+    const s = site({ dnf: true, missing: ['bzip2', 'ffmpeg'], notInRepo: ['bzip2'] });
+    const r = s.run('--yes');
+    expect(r.code).not.toBe(0);
+    expect(r.err).toContain('installing bzip2 failed');
+    expect(s.exists('installed-with')).toBe(false);
   });
 
   it('installs no packages when told not to', () => {

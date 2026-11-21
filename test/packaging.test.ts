@@ -1,38 +1,20 @@
 // The shell side of restores and updates, run for real in bash: `adrian restore`
-// against throwaway archives, and the limits on model downloads. `adrian update`
-// itself is in packaging-update*.test.ts.
+// against throwaway archives, the limits on model downloads, and the checksums and
+// mirrors they are fetched with. `adrian update` itself is in packaging-update*.test.ts.
 
 import { spawn, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:https';
 import type { AddressInfo } from 'node:net';
 import { join } from 'node:path';
-import { gzipSync } from 'node:zlib';
 import { describe, expect, it, vi } from 'vitest';
-import { bash, hasBash, hasXz, link, moved, packaging, sandbox, server, sh, work } from './packaging-shell.js';
+import { bash, entry, hasBash, hasXz, link, moved, pack, packaging, sandbox, server, sh, work } from './packaging-shell.js';
 
 // Every test here starts bash (and tar, curl stand-ins...) several times, which
 // is slow on Windows and on a busy machine: the default 5 s is too short.
 vi.setConfig({ testTimeout: 60_000 });
 
-/** One tar entry. Built by hand so a test can hold names a real backup never would. */
-function entry(name: string, type = '0', link = ''): Buffer {
-  const h = Buffer.alloc(512);
-  const put = (s: string, at: number) => h.write(s, at, 'latin1');
-  put(name, 0);
-  put('0000600\0', 100);
-  put('0000000\0', 108);
-  put('0000000\0', 116);
-  put('00000000000\0', 124);
-  put('00000000000\0', 136);
-  put('        ', 148);
-  put(type, 156);
-  put(link, 157);
-  put('ustar\x0000', 257);
-  put(`${h.reduce((a, b) => a + b, 0).toString(8).padStart(6, '0')}\0 `, 148);
-  return h;
-}
-const pack = (entries: Buffer[]) => gzipSync(Buffer.concat([...entries, Buffer.alloc(1024)]));
 // Enough listing to overflow the pipe to grep on Linux too (64 KB there).
 const state = Array.from({ length: 5000 }, (_, i) => entry(`var/lib/adrian/state/file-${String(i).padStart(4, '0')}`));
 
@@ -374,5 +356,159 @@ describe('what memory she needs', () => {
     const install = readFileSync(`${packaging}install.sh`, 'utf8');
     expect(install).toContain('-gt $((4 * 1024 * 1024))');
     expect(install).toContain('less than 4 GB of memory');
+  });
+});
+
+describe('pinned model sizes', () => {
+  it('are there for every model, so the disk checks count it', () => {
+    const block = /^MODELS=\(([\s\S]*?)^\)$/m.exec(readFileSync(`${packaging}downloads.sh`, 'utf8'))![1]!;
+    const entries = block.split('\n').filter((l) => l.trim().startsWith('"'));
+    expect(entries.length).toBeGreaterThan(5);
+    for (const e of entries) expect(e, e).toMatch(/\|\d+:\d+:\d+"$/);
+  });
+});
+
+// Upstream replaces files in place now and then (both speech models did in
+// 2026). Every file still has to match a checksum listed in downloads.sh.
+describe.skipIf(!hasBash)('model checksums and mirrors', () => {
+  const OLD_FILE = 'the 2025 upload\n';
+  const NEW_FILE = 'the 2026 re-upload\n';
+  const sha = (s: string | Buffer) => createHash('sha256').update(s).digest('hex');
+  const BOTH = `${sha(NEW_FILE)},${sha(OLD_FILE)}`;
+  // Serves served/<host>/<file name>, whatever the path; logs every URL asked for.
+  const curl = `curl() {
+    local out= src= h
+    while [ $# -gt 0 ]; do case "$1" in -o) out=$2; shift ;; https://*|http://*) src=$1 ;; esac; shift; done
+    echo "$src" >>curl.log
+    h=$(sed -E 's#^https?://([^/]+)/.*#\\1#' <<<"$src")
+    [ -f "served/$h/$(basename "$src")" ] || return 22
+    cp "served/$h/$(basename "$src")" "$out"
+  };`;
+  function site(files: Record<string, string | Buffer>) {
+    const root = sandbox('dl');
+    for (const [path, body] of Object.entries(files)) {
+      mkdirSync(join(root, 'served', path, '..'), { recursive: true });
+      writeFileSync(join(root, 'served', path), body);
+    }
+    return root;
+  }
+  const run = (root: string, script: string, env: NodeJS.ProcessEnv = {}) =>
+    sh(root, `set -euo pipefail; . "${packaging}downloads.sh"; ${curl} ${script}`, [], { ADRIAN_MIRRORS_FILE: `${root}/no-mirrors`, ...env });
+  const asked = (root: string) => (existsSync(join(root, 'curl.log')) ? readFileSync(join(root, 'curl.log'), 'utf8').trim().split('\n') : []);
+
+  it('take a file matching any of the checksums listed, and say which one', () => {
+    const root = site({ 'up.example/m.bin': OLD_FILE });
+    const r = run(root, `fetch https://up.example/m.bin ${BOTH} m.bin; echo "matched $FETCHED_SHA"`);
+    expect(r.err).toBe('');
+    expect(r.out).toContain(`matched ${sha(OLD_FILE)}`);
+    expect(readFileSync(join(root, 'm.bin'), 'utf8')).toBe(OLD_FILE);
+  });
+
+  it('refuse a full-size file no checksum knows, and say plainly that running it again will not help', () => {
+    const changed = Buffer.alloc(2 * 1048576, 1); // 2 MB, as big as it should be
+    const root = site({ 'up.example/m.bin': changed });
+    const r = run(root, `fetch https://up.example/m.bin ${BOTH} m.bin 2`);
+    expect(r.code).toBe(1);
+    expect(r.err).toContain('m.bin downloaded at full size but doesn\'t match any checksum this version knows');
+    expect(r.err).toContain('the file on the download site is not one this version of A.D.R.I.A.N. knows (most likely it was replaced by a new upload)');
+    expect(r.err).toContain("Running the command again won't change that.");
+    expect(r.err).toContain('install the newest A.D.R.I.A.N. release');
+    expect(r.err).toContain(`SHA-256 ${sha(changed)}`);
+    expect(r.err).not.toContain('something between you and the site');
+    expect(existsSync(join(root, 'm.bin'))).toBe(false); // nothing of it is kept
+  });
+
+  it('say a download that came up short is worth one more try', () => {
+    const root = site({ 'up.example/m.bin': 'half a model' });
+    const r = run(root, `fetch https://up.example/m.bin ${BOTH} m.bin 300`);
+    expect(r.code).toBe(1);
+    expect(r.err).toContain("m.bin doesn't match its checksum, and it's smaller than it should be (0 MB of about 300 MB).");
+    expect(r.err).toContain('Running the same command again fixes a download that was cut short');
+    expect(r.err).toContain('If it fails the same way twice, the file on the download site is not one this version');
+  });
+
+  it('try the mirrors in order after the original site, https only, and take only a known file from them', () => {
+    const root = site({ 'up.example/m.bin': NEW_FILE + 'changed', 'bad.example/m.bin': 'not it either', 'good.example/m.bin': OLD_FILE });
+    const r = run(root, `fetch https://up.example/models/m.bin ${BOTH} m.bin; echo "matched $FETCHED_SHA"`, {
+      ADRIAN_DOWNLOAD_MIRRORS: 'http://plain.example/x https://bad.example/x https://good.example/models/',
+    });
+    expect(r.code).toBe(0);
+    expect(r.out).toContain(`matched ${sha(OLD_FILE)}`);
+    expect(r.out).toContain('Downloading m.bin from the mirror good.example');
+    expect(r.err).toContain('ignoring download mirror http://plain.example/x: only https:// mirrors are used');
+    expect(asked(root)).toEqual(['https://up.example/models/m.bin', 'https://bad.example/x/m.bin', 'https://good.example/models/m.bin']);
+  });
+
+  it('give up when no place has a known file, naming each', () => {
+    const root = site({ 'up.example/m.bin': 'changed', 'bad.example/m.bin': 'not it either' });
+    const r = run(root, `fetch https://up.example/m.bin ${BOTH} m.bin`, { ADRIAN_DOWNLOAD_MIRRORS: 'https://bad.example/x https://gone.example/x' });
+    expect(r.code).toBe(1);
+    expect(r.err).toContain('up.example gave 0 MB with SHA-256');
+    expect(r.err).toContain('bad.example gave 0 MB with SHA-256');
+    expect(r.err).toContain('downloading m.bin from gone.example stopped (curl error 22');
+  });
+
+  it("keep curl's exit code when nothing could be downloaded at all", () => {
+    const root = site({});
+    const r = run(root, `fetch https://up.example/m.bin ${BOTH} m.bin`);
+    expect(r.code).toBe(22);
+    expect(r.err).toContain('m.bin could not be downloaded (tried: up.example)');
+  });
+
+  it('read the mirrors from a file too, for the hourly update', () => {
+    const root = site({ 'up.example/m.bin': 'changed', 'good.example/m.bin': NEW_FILE });
+    writeFileSync(join(root, 'mirrors'), '# our own copy\nhttps://good.example/x\n');
+    const r = run(root, `fetch https://up.example/m.bin ${BOTH} m.bin`, { ADRIAN_MIRRORS_FILE: `${root}/mirrors` });
+    expect(r.code).toBe(0);
+    expect(asked(root)).toEqual(['https://up.example/m.bin', 'https://good.example/x/m.bin']);
+  });
+
+  it('take a cached file with any known checksum', () => {
+    const root = site({});
+    mkdirSync(join(root, 'cache'));
+    writeFileSync(join(root, 'cache/m.bin'), OLD_FILE);
+    const r = run(root, `fetch https://up.example/m.bin ${BOTH} m.bin; echo "matched $FETCHED_SHA"`, { ADRIAN_DOWNLOAD_CACHE: `${root}/cache` });
+    expect(r.out).toContain(`matched ${sha(OLD_FILE)}`);
+    expect(asked(root)).toEqual([]);
+  });
+
+  it('keep a model installed from either upload, and record the one each install got', () => {
+    const root = site({ 'up.example/m.bin': NEW_FILE });
+    mkdirSync(join(root, 'models'));
+    mkdirSync(join(root, 'tmp'));
+    writeFileSync(join(root, 'models/m.bin'), OLD_FILE);
+    writeFileSync(join(root, 'models/.m.bin.sha256'), `${sha(OLD_FILE)}\n`);
+    const models = `MODELS=("m.bin|https://up.example/m.bin|${BOTH}|file||400:400:400");`;
+    // Installed from the 2025 upload: kept, nothing downloaded, nothing left to make room for.
+    const kept = run(root, `${models} install_models "$PWD/models" "$PWD/tmp"; disk_needed "$PWD/opt" "$PWD/models"`);
+    expect(kept.code).toBe(0);
+    expect(asked(root)).toEqual([]);
+    expect(kept.out.trim().split(' ')[1]).toBe('0');
+    // A fresh install gets the 2026 one, and its marker says so.
+    rmSync(join(root, 'models/m.bin'));
+    const fresh = run(root, `${models} install_models "$PWD/models" "$PWD/tmp"`);
+    expect(fresh.code).toBe(0);
+    expect(readFileSync(join(root, 'models/m.bin'), 'utf8')).toBe(NEW_FILE);
+    expect(readFileSync(join(root, 'models/.m.bin.sha256'), 'utf8').trim()).toBe(sha(NEW_FILE));
+    // A marker from a file no list knows (an older pin) still means: fetch it again.
+    writeFileSync(join(root, 'models/.m.bin.sha256'), `${'0'.repeat(64)}\n`);
+    expect(run(root, `${models} disk_needed "$PWD/opt" "$PWD/models"`).out.trim().split(' ')[1]).toBe('400');
+  });
+
+  it('list both uploads of the two speech models that upstream replaced', () => {
+    const pins = readFileSync(`${packaging}downloads.sh`, 'utf8');
+    const entry = (name: string) => pins.split('\n').find((l) => l.trim().startsWith(`"${name}|`)) ?? '';
+    const shas = (name: string) => entry(name).split('|')[2]?.split(',') ?? [];
+    expect(shas('sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8')).toEqual([
+      '1495e91b59d7fc53ddca91f3431758ec99f8fa253fdb0e1e851be0f72b14b0f9',
+      '5793d0fd397c5778d2cf2126994d58e9d56b1be7c04d13c7a15bb1b4eafb16bf',
+    ]);
+    expect(shas('kokoro-multi-lang-v1_0')).toEqual([
+      '60703707bc05ccd48d60e1eb723f38b07d6e474795a0b6a588d7220400e0f7a4',
+      'c5f7e2d2caf082bc1d20fb70334a61d99d20b484500aad32e7cf84c128ea3298',
+    ]);
+    for (const l of pins.split('\n').filter((x) => /^\s+"[^"|]+\|https:/.test(x))) {
+      for (const s of l.split('|')[2]!.split(',')) expect(s, l).toMatch(/^[0-9a-f]{64}$/);
+    }
   });
 });

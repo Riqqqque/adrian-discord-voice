@@ -61,6 +61,32 @@ check "secret kept across updates" bash -c 'adrian secret list | grep -qx TEST_K
 check "setup code kept across updates" test -f /var/lib/adrian/setup-code
 check "bad checksum refused" bash -c 'cp /tmp/b/adrian-voice-0.1.1-test-linux-x64.tar.gz /tmp/x.tar.gz && echo "0000000000000000000000000000000000000000000000000000000000000000  x.tar.gz" > /tmp/x.tar.gz.sha256 && ! adrian update /tmp/x.tar.gz'
 check "same version refused" bash -c '! adrian update '"$BUNDLE"
+
+# By hand from a login session that then ends. Where logind has
+# KillUserProcesses=yes it stops the session's scope at logout, and everything
+# in it dies; that's done by hand here (logind itself is masked in this container).
+mk 0.1.3-test keep
+systemd-run --scope --unit=inst2-login --quiet bash -c 'ADRIAN_DETACH=1 adrian update /tmp/b/adrian-voice-0.1.3-test-linux-x64.tar.gz >/tmp/byhand.out 2>&1' >/dev/null 2>&1 &
+sleep 8
+unit=$(systemctl list-units --type=service --plain --no-legend 'adrian-update-by-hand-*' | awk '{print $1}' | head -n 1)
+echo "  by-hand update unit: ${unit:-none}, cgroup $(systemctl show -p ControlGroup --value "${unit:-none}" 2>/dev/null)"
+check "by-hand update runs as a unit of its own" test -n "$unit"
+check "  outside the login session" bash -c "systemctl show -p ControlGroup --value '$unit' | grep -q '^/system.slice/adrian-update-by-hand-'"
+systemctl stop inst2-login.scope
+for _ in $(seq 1 300); do
+  flock -n /opt/adrian/update.lock true && [ -z "$(systemctl list-units --plain --no-legend 'adrian-update-by-hand-*')" ] && break
+  sleep 1
+done
+sed 's/^/  | /' /opt/adrian/update.log | tail -4
+check "  it finished after the session was stopped" bash -c '[ "$(adrian version)" = 0.1.3-test ]'
+check "  healthy on 0.1.3-test" bash -c 'curl -fsS http://127.0.0.1:8790/api/health | grep -q "\"version\":\"0.1.3-test\""'
+check "  its log is its own and says so" bash -c 'head -n 1 /opt/adrian/update.log | grep -q "^== Update started" && grep -q "Updated to 0.1.3-test" /opt/adrian/update.log'
+check "  the terminal was told where the log is" grep -q 'sudo tail -f /opt/adrian/update.log' /tmp/byhand.out
+check "  update.log is 0600" bash -c '[ "$(stat -c %a /opt/adrian/update.log)" = 600 ]'
+# Why a unit of its own: setsid leaves the session's process group, not its scope.
+systemd-run --scope --unit=inst2-login2 --quiet bash -c 'setsid sleep 301 </dev/null >/dev/null 2>&1 & sleep 302' >/dev/null 2>&1 &
+sleep 2; systemctl stop inst2-login2.scope; sleep 1
+check "  (setsid alone would not have survived: stopping the scope kills it)" bash -c '! pgrep -f "[s]leep 301" >/dev/null'
 echo "  releases kept: $(ls /opt/adrian/releases | tr '\n' ' ')"
 
 adrian uninstall --yes >/dev/null 2>&1 && ok "uninstall" || bad "uninstall"
