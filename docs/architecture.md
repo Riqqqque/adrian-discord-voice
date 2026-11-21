@@ -418,6 +418,7 @@ State folder: `ADRIAN_STATE`, default `/var/lib/adrian`, owned by the service us
 | `reminders.json` | `src/features/reminders.ts` | Reminders | Starts empty; the next save replaces it |
 | `notes.json` | `src/features/notes.ts` | Per-person notes (told and learned) | Starts empty; the next save replaces it |
 | `music-taste.json` | `src/features/taste.ts` | Per-person artist plays, likes and dislikes; her own taste | |
+| `ignored.json` | `src/features/ignore.ts` | People an owner told her to ignore: id, name, scope, who said so, until when | Parse error: moved aside as `ignored.json.bad-<ms>`, starts empty |
 | `heads-up.json` | `src/features/headsup.ts` | When each person was last in the call, their heads-up choices | Starts empty |
 | `weekly-recap.json` | `src/features/recap.ts` | Counts for the last 3 weeks | Starts empty |
 | `game-night.json` | `src/features/gamenight.ts` | Game-night opt-ins | |

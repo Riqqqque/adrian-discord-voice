@@ -5,7 +5,7 @@
 
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle, Client, Events, GatewayIntentBits, type Message, Partials, type VoiceBasedChannel } from 'discord.js';
 import { dateFormat } from '../core/time.js';
-import { humansIn, registerVoiceCommands, type VoiceSpot } from './commands.js';
+import { humansIn, IGNORED_REPLY, registerVoiceCommands, type VoiceSpot } from './commands.js';
 import { MUSIC_COMMANDS, registerMusicCommands } from './music-commands.js';
 import prism from 'prism-media';
 import { FallbackLlm } from '../brain/fallback.js';
@@ -63,7 +63,8 @@ import { SOUND_RULE, soundTool } from '../features/sounds.js';
 import { eager } from '../core/eager.js';
 import { creatorLines, genderLines, memberLabel } from './identity.js';
 import { registerTextChat, splitReply } from './textchat.js';
-import { discordTools, RelayLimiter } from '../features/discordinfo.js';
+import { discordTools, matchMembers, type Named, RelayLimiter } from '../features/discordinfo.js';
+import { IgnoreList, ignoreTool, musicRefusal } from '../features/ignore.js';
 import { MusicTaste } from '../features/taste.js';
 import { deezerTopTracks, describe as trackName, ffmpegDecoder, MusicPlayer, musicRules, musicState, musicTools, PlexMusicSource, type MusicSource, whoAsked, YoutubeSource, YTM_API } from '../features/music.js';
 import { modelJudge, type QuizRoom, Quizzes } from '../features/quiz.js';
@@ -349,6 +350,15 @@ export async function startVoiceStack(
       return t.run(a, signal, ctx);
     },
   });
+  /** Music and sounds refuse anyone an owner said not to take music from. */
+  const noMusicFromIgnored = (t: Tool): Tool => ({
+    ...t,
+    run: async (a, signal, ctx) => {
+      const no = musicRefusal(ignored, ctx.userId);
+      if (no && (typeof t.acts === 'function' ? t.acts(a) : t.acts !== false)) throw new Error(no);
+      return t.run(a, signal, ctx);
+    },
+  });
   const sounds =
     music && ytForSounds
       ? {
@@ -532,6 +542,10 @@ export async function startVoiceStack(
     musicOk: !!music,
   });
   const notes = new UserNotes(stateDir ? join(stateDir, 'notes.json') : undefined);
+  /** People an owner told her to ignore (features/ignore.ts). */
+  const ignored = new IgnoreList(stateDir ? join(stateDir, 'ignored.json') : undefined, Date.now, (msg, data) => log.warn(msg, data));
+  /** What to tell someone whose music change the ignore list refuses, if it does. */
+  const refusedMusic = (id: UserId) => (ignored.get(id)?.scope === 'everything' ? IGNORED_REPLY : musicRefusal(ignored, id));
   const taste = new MusicTaste(stateDir ? join(stateDir, 'music-taste.json') : undefined, Date.now, (id) => isOwner(id));
   /** Playable links pasted in chat, for "play that link" (memory only). */
   const links = new RecentLinks();
@@ -661,6 +675,29 @@ export async function startVoiceStack(
       people: () => (rm.ui ? Number(rm.ui.isReady()) : spot && transport.isReady() ? humansIn(client.channels.cache.get(spot.channelId) as VoiceBasedChannel | undefined) : 0),
       nameOf: (id) => (nameOf(id) === 'someone' ? undefined : nameOf(id)),
     };
+  /** People a name (or ping code) could be: her call first, then the server's
+   *  members she knows, then Discord's member search. Bots left out. */
+  async function findPeople(said: string, guildId: string | undefined): Promise<{ id: UserId; name: string }[]> {
+    const named = (m: { id: string; displayName: string; user: { username: string } }): Named => ({ id: m.id, displayName: m.displayName, username: m.user.username, nickname: config.nicknames[m.id] ?? null });
+    const out = (ms: { id: string; displayName: string; user: { bot: boolean } }[]) => ms.filter((m) => !m.user.bot).map((m) => ({ id: m.id, name: config.nicknames[m.id] ?? m.displayName }));
+    const call = spot ? client.channels.cache.get(spot.channelId) : undefined;
+    if (call?.isVoiceBased()) {
+      const hit = matchMembers([...call.members.values()].filter((m) => !m.user.bot), said, named);
+      if (hit.length) return out(hit);
+    }
+    const g = client.guilds.cache.get(guildId ?? spot?.guildId ?? config.guildId ?? '');
+    if (!g) return [];
+    const cached = matchMembers([...g.members.cache.values()].filter((m) => !m.user.bot), said, named);
+    if (cached.length) return out(cached);
+    const q = said.trim().replace(/^<@!?(\d+)>$/, '$1').replace(/^@/, '').slice(0, 32);
+    if (!q) return [];
+    if (/^\d{15,22}$/.test(q)) {
+      const m = await g.members.fetch(q).catch(() => undefined);
+      return m ? out([m]) : [];
+    }
+    const found = await g.members.search({ query: q, limit: 10 }).catch(() => undefined);
+    return found ? out(matchMembers([...found.values()], said, named)) : [];
+  }
   /** Who's in the voice call, so it can talk about and to everyone by name. */
   function rosterLines(channelId: string | undefined, askerId: string): string[] {
     const any = channelId ? client.channels.cache.get(channelId) : undefined;
@@ -707,8 +744,22 @@ export async function startVoiceStack(
       tools.push(...reminders.tools(inEnglish).filter((t) => t.spec.name === 'set_reminder'));
       tools.push(...alarmToolList);
       tools.push(...notes.tools(inEnglish), ...games.tools());
-      if (music) tools.push(...musicTools((ctx) => roomFor(ctx).music, taste, (id) => (userLang.get(id) ?? 'en') === 'en').map((t) => inRoomOnly(notingStarts(t, musicStarts, (ctx) => roomFor(ctx).key))), ...taste.tools(inEnglish), inRoomOnly(quizzes.tool((ctx) => quizRoom(roomFor(ctx)))));
-      if (sounds) tools.push(inRoomOnly(soundTool(sounds)));
+      if (music) tools.push(...musicTools((ctx) => roomFor(ctx).music, taste, (id) => (userLang.get(id) ?? 'en') === 'en').map((t) => noMusicFromIgnored(inRoomOnly(notingStarts(t, musicStarts, (ctx) => roomFor(ctx).key)))), ...taste.tools(inEnglish), noMusicFromIgnored(inRoomOnly(quizzes.tool((ctx) => quizRoom(roomFor(ctx))))));
+      if (sounds) tools.push(noMusicFromIgnored(inRoomOnly(soundTool(sounds))));
+      tools.push(
+        ignoreTool({
+          list: ignored,
+          isOwner: (id) => isOwner(id),
+          isAppOwner: (id) => id === voiceCommands.ownerId(),
+          find: (name, ctx) => findPeople(name, ctx.guildId),
+          onIgnored: (id, scope) => {
+            log.info('ignoring', { user: id, scope });
+            if (scope !== 'everything') return;
+            controller.forget(id);
+            for (const r of satRooms.values()) r.ctl?.forget(id);
+          },
+        }),
+      );
       if (satEnabled)
         tools.push(
           ...pcTools({
@@ -875,7 +926,7 @@ export async function startVoiceStack(
         maxToolRounds: 3,
         context: (ctx) => [
           ...(config.nicknames[ctx.userId] ? [`Call ${ctx.speaker} "${config.nicknames[ctx.userId]}" when you address them; that's what they go by here.`] : []),
-          ...(isOwner(ctx.userId) ? ownerPrompt(ctx.speaker, ctx.userId) : []),
+          ...(isOwner(ctx.userId) ? [`${ctx.speaker} is one of your owners: what they tell you about who to listen to comes first.`, ...ownerPrompt(ctx.speaker, ctx.userId)] : []),
           ...(creator && !isCreator(ctx.userId) ? creatorLines(ctx.speaker, { creator, isCreator: false }) : []),
           ...(LANGS[userLang.get(ctx.userId) ?? 'en'].prompt ? [LANGS[userLang.get(ctx.userId) ?? 'en'].prompt] : []),
           // Mature mode by channel is per request; always/off is a constant (cached).
@@ -1008,6 +1059,11 @@ export async function startVoiceStack(
         const aboutHer = /\b(you|your|voice|talk|speak)\b/i.test(command);
         // With music on (or a quiz clip), "turn it up/down" means the music (unless it's about the voice).
         if ((rm.music?.nowPlaying || rm.music?.lent) && !aboutHer) {
+          const no = musicRefusal(ignored, userId);
+          if (no) {
+            await say(no);
+            return true;
+          }
           const to = rm.music.nudgeVolume(intent.dir);
           log.info('music volume', { to, by: userId });
           return true;
@@ -1035,6 +1091,11 @@ export async function startVoiceStack(
 
   /** "play X", "skip", "pause"...: answered without the model. */
   async function localMusic(rm: Room, userId: UserId, command: string, signal: AbortSignal, onWorking?: (on: boolean) => void): Promise<boolean> {
+    const refused = musicRefusal(ignored, userId);
+    if (refused && rm.music && (PLAY_THAT_LINK.test(command) || classifyMusic(command))) {
+      await rm.speaker.speak(fixed(refused), rm.speech, signal);
+      return true;
+    }
     if (rm.music && PLAY_THAT_LINK.test(command)) return playPastedLink(rm, userId, command, signal);
     const m = classifyMusic(command);
     const music = rm.music;
@@ -1625,6 +1686,12 @@ export async function startVoiceStack(
     }
   }
   async function heard(e: HeardEvent, p: { ptt: boolean; first: boolean }, stopsBefore: number): Promise<void> {
+    // An owner told her to ignore them: not a wake, a stop or a follow-up. Only
+    // their own ringing alarm still listens to them, since it rings for them.
+    if (ignored.blocks(e.userId, 'everything')) {
+      if (alarms.ringingFor(e.userId).length) alarmHeard(rm, e.userId, e.woke ? e.command || e.text : e.text, e.woke);
+      return;
+    }
     // Pressed: for her, not a maybe. Her name at the end ("what's the weather,
     // Adrian") needs no judge, and the cloud's words count without it.
     const pressedLoose = p.ptt && !!e.loose;
@@ -1825,6 +1892,7 @@ export async function startVoiceStack(
     client,
     log,
     handledElsewhere: (m) => musicCommands?.isCommand(m) ?? false,
+    ignored: (id) => ignored.blocks(id, 'everything'),
     ...(orchestrator
       ? {
           ask: (userId, name, text, place, signal, opts) => {
@@ -1870,7 +1938,7 @@ export async function startVoiceStack(
     historyMessages: config.textChat.historyMessages,
     followUpMs: config.textChat.followUpMinutes * 60_000,
   });
-  const voiceCommands = registerVoiceCommands({ client, log, current: () => spot, voiceReady: () => transport.isReady(), moveTo: (s) => moveTo(s), leave: () => moveTo(undefined), allowedGuilds: config.allowedGuilds, extraCommands: [...MUSIC_COMMANDS, ...ALARM_COMMANDS], isOwner: (id) => config.owners.includes(id) });
+  const voiceCommands = registerVoiceCommands({ client, log, current: () => spot, voiceReady: () => transport.isReady(), moveTo: (s) => moveTo(s), leave: () => moveTo(undefined), allowedGuilds: config.allowedGuilds, extraCommands: [...MUSIC_COMMANDS, ...ALARM_COMMANDS], isOwner: (id) => config.owners.includes(id), ignored: (id) => ignored.blocks(id, 'everything') });
   musicCommands = registerMusicCommands({
     client,
     log,
@@ -1893,6 +1961,7 @@ export async function startVoiceStack(
     nameOf: (id) => config.nicknames[id] ?? nameOf(id),
     taste,
     started: (id) => musicStarts.started(discordRoom.key, id),
+    refused: (id) => refusedMusic(id),
   });
   // Outside the home channel, leave after 10 minutes with nobody else there.
   let emptySince: number | undefined;

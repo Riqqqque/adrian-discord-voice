@@ -530,6 +530,7 @@ It can look things up about the server it's in, by voice or text: "who's online?
 | Heads-ups and the automatic morning briefing | `headsUp.people`, else owners |
 | Post the weekly recap now | Owners |
 | `/leave` or `/join` from outside a call that still has other people in it | Owners |
+| Make her ignore someone, or listen to them again | Owners (only the app owner for another owner; nobody for the app owner) |
 
 ## Owners
 
@@ -539,6 +540,15 @@ Optional flavor:
 - `ownerAck`: what an owner hears instead of "Yes?", for example `["Yes boss", "Yes, chief"]`. Answers to owners also start with it.
 - `ownerStopReply`: what it says after an owner stops it, for example `"Yes boss."`.
 - `ownerAffection`: extra warm and playful with owners. It uses the names from `ownerAck`.
+
+### Ignoring someone
+
+An owner can tell her to ignore someone, by voice or in text: "Adrian, ignore Sam", "stop listening to Sam for an hour", "don't take Sam's music requests", "listen to Sam again", "who are you ignoring?".
+
+- Ignored (the default): she doesn't hear them at all. No wake, no stop, no follow-up, no text chat answer. Their `/play`, `/music`, `/join` and `/leave` get a private "An owner asked me to ignore your requests." Whatever they were asking is dropped at once.
+- Music only: she won't play, skip, pause or change music or sounds for them; they can still talk to her.
+
+Only an owner can do this, and only an owner can undo it: what the ignored person says about it doesn't count. Nobody can make her ignore the app owner, and only the app owner can make her ignore another owner. It lasts until an owner says otherwise, or for the time they gave (up to a week), restarts included. Details: [tools.md](tools.md#ignore_person).
 
 ## Limits
 
@@ -625,6 +635,7 @@ Each feature that needs the model goes through one or more tools. Their argument
 | Your PC | `pc_apps`, `pc_windows`, `pc_open`, `pc_media`, `pc_volume`, `pc_system`, `pc_info`, `pc_clipboard`, `pc_screen` |
 | PC and Discord together | `pc_handoff`, `tell_call` |
 | The server and its people | `server_info`, `message_member` |
+| Ignoring someone | `ignore_person` |
 | Game nights | `game_night` |
 | Minecraft servers | `game_server_status`, `game_server_control`, `game_server_whitelist`, `game_server_say` |
 | Plex, Sonarr, Radarr | `plex_recently_added`, `plex_search`, `downloads`, `upcoming_episodes` |

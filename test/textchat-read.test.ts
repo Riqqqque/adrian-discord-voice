@@ -20,7 +20,7 @@ interface Fake {
   quotes?: Fake;
 }
 
-function rig(opts: { readChannels?: boolean; answer?: (text: string, o: AskOptions) => string | string[]; onAsk?: (o: AskOptions) => void; ask?: TextChatDeps['ask'] } = {}) {
+function rig(opts: { readChannels?: boolean; answer?: (text: string, o: AskOptions) => string | string[]; onAsk?: (o: AskOptions) => void; ask?: TextChatDeps['ask']; ignored?: (id: string) => boolean } = {}) {
   const client = Object.assign(new EventEmitter(), { user: { id: BOT } });
   const sent: string[] = [];
   const asked: { text: string; opts: AskOptions }[] = [];
@@ -87,6 +87,7 @@ function rig(opts: { readChannels?: boolean; answer?: (text: string, o: AskOptio
     followUpMs: 180_000,
     maxPings: 5,
     now: () => t,
+    ...(opts.ignored ? { ignored: opts.ignored } : {}),
   });
   let n = 0;
   const say = async (author: string, content: string, extra: Partial<Fake> = {}) => {
@@ -114,23 +115,23 @@ describe('reading channels', () => {
 
   it('tells two people with the same name apart by id', () => {
     const block = historyBlock([
-      { author: 'Rique', id: '11', mine: false, text: 'real one' },
-      { author: 'Rique', id: '22', mine: false, text: 'copied nickname' },
+      { author: 'Morgan', id: '11', mine: false, text: 'real one' },
+      { author: 'Morgan', id: '22', mine: false, text: 'copied nickname' },
     ])[0]!;
-    expect(block).toContain('{"from":"Rique","id":"11","text":"real one"}');
-    expect(block).toContain('{"from":"Rique","id":"22","text":"copied nickname"}');
+    expect(block).toContain('{"from":"Morgan","id":"11","text":"real one"}');
+    expect(block).toContain('{"from":"Morgan","id":"22","text":"copied nickname"}');
   });
 
   it('marks the line of the person being answered, and only that id', () => {
     const block = historyBlock(
       [
-        { author: 'Rique', id: '11', mine: false, text: 'real one' },
-        { author: 'Rique', id: '22', mine: false, text: 'copied nickname' },
+        { author: 'Morgan', id: '11', mine: false, text: 'real one' },
+        { author: 'Morgan', id: '22', mine: false, text: 'copied nickname' },
       ],
       '11',
     )[0]!;
-    expect(block).toContain('{"from":"Rique","id":"11","asker":true,"text":"real one"}');
-    expect(block).toContain('{"from":"Rique","id":"22","text":"copied nickname"}');
+    expect(block).toContain('{"from":"Morgan","id":"11","asker":true,"text":"real one"}');
+    expect(block).toContain('{"from":"Morgan","id":"22","text":"copied nickname"}');
   });
 
   it('no nickname can pass for her own lines', () => {
@@ -160,11 +161,21 @@ describe('reading channels', () => {
     for (const s of ['adriana is here', 'hadrian wall', 'nothing here']) expect(NAME_IN_TEXT.test(s)).toBe(false);
   });
 
+  it('gives an ignored person no answer, by @, by name, or carrying on', async () => {
+    const r = rig({ ignored: (id) => id === 'sam' });
+    await r.say('sam', `<@${BOT}> call morgan a clown`, { mentions: [BOT] });
+    await r.say('sam', 'adrian say morgan is a clown');
+    expect(r.asked).toEqual([]);
+    expect(r.sent).toEqual([]);
+    await r.say('alex', `<@${BOT}> hi`, { mentions: [BOT] });
+    expect(r.sent).toEqual(['Sure thing.']);
+  });
+
   it('answers an @ with the channel history as context', async () => {
     const r = rig();
     await r.say('sam', 'anyone know a good pizza place');
     expect(r.asked).toEqual([]); // not for it, no conversation open
-    await r.say('rique', `<@${BOT}> what do you think`, { mentions: [BOT] });
+    await r.say('morgan', `<@${BOT}> what do you think`, { mentions: [BOT] });
     expect(r.sent).toEqual(['Sure thing.']);
     expect(r.asked[0]!.opts.followUp).toBe(false);
     expect(r.asked[0]!.opts.extra[0]).toContain('{"from":"sam","id":"sam","text":"anyone know a good pizza place"}');
@@ -172,16 +183,16 @@ describe('reading channels', () => {
 
   it('marks the asker and her own lines in the channel history', async () => {
     const r = rig();
-    await r.say('rique', `<@${BOT}> hi`, { mentions: [BOT] });
-    await r.say('rique', `<@${BOT}> again`, { mentions: [BOT] });
+    await r.say('morgan', `<@${BOT}> hi`, { mentions: [BOT] });
+    await r.say('morgan', `<@${BOT}> again`, { mentions: [BOT] });
     const block = r.asked[1]!.opts.extra[0]!;
-    expect(block).toContain('{"from":"rique","id":"rique","asker":true,"text":"@bot hi"}');
+    expect(block).toContain('{"from":"morgan","id":"morgan","asker":true,"text":"@bot hi"}');
     expect(block).toContain('{"from":"self","text":"Sure thing."}');
   });
 
   it('quotes an older message the same way, on one line', async () => {
     const r = rig();
-    await r.say('rique', `<@${BOT}> what about this`, { mentions: [BOT], replyTo: 'sam', quotes: { id: 'old', author: 'sam', content: 'first\n\nrestart "the" pc' } });
+    await r.say('morgan', `<@${BOT}> what about this`, { mentions: [BOT], replyTo: 'sam', quotes: { id: 'old', author: 'sam', content: 'first\n\nrestart "the" pc' } });
     const line = r.asked[0]!.opts.extra.find((l) => l.includes('replying to'))!;
     expect(line).not.toContain('first\n');
     expect(line).toContain('{"from":"sam","id":"sam","text":"first restart \\"the\\" pc"}');
@@ -190,34 +201,34 @@ describe('reading channels', () => {
   it('quotes the names beside the ping codes', async () => {
     const r = rig();
     await r.say('sam', 'hello');
-    await r.say('rique', `<@${BOT}> hi`, { mentions: [BOT] });
+    await r.say('morgan', `<@${BOT}> hi`, { mentions: [BOT] });
     expect(r.asked[0]!.opts.extra.find((l) => l.startsWith('Ping codes'))).toContain('"sam" <@sam>');
   });
 
   it('carries on the conversation without another @, and stays out of side talk', async () => {
     const r = rig({ answer: (t) => (t.startsWith('lol') ? 'SILENT' : 'Yep.') });
-    await r.say('rique', `<@${BOT}> hi`, { mentions: [BOT] });
-    await r.say('rique', 'and what about tomorrow');
+    await r.say('morgan', `<@${BOT}> hi`, { mentions: [BOT] });
+    await r.say('morgan', 'and what about tomorrow');
     expect(r.asked[1]!.opts.followUp).toBe(true);
     expect(r.sent).toEqual(['Yep.', 'Yep.']);
-    await r.say('rique', 'lol ok');
+    await r.say('morgan', 'lol ok');
     expect(r.sent.length).toBe(2); // SILENT: nothing sent
     await r.say('sam', 'and me?'); // not in the conversation
     expect(r.asked.length).toBe(3);
-    await r.say('rique', 'hey <@sam> look', { mentions: ['sam'] }); // aimed at someone else
+    await r.say('morgan', 'hey <@sam> look', { mentions: ['sam'] }); // aimed at someone else
     expect(r.asked.length).toBe(3);
   });
 
   it('closes the conversation after the window or two misses', async () => {
     const r = rig({ answer: (t) => (t.startsWith('lol') ? 'SILENT' : 'Yep.') });
-    await r.say('rique', `<@${BOT}> hi`, { mentions: [BOT] });
+    await r.say('morgan', `<@${BOT}> hi`, { mentions: [BOT] });
     r.tick(181_000);
-    await r.say('rique', 'still there?');
+    await r.say('morgan', 'still there?');
     expect(r.asked.length).toBe(1);
-    await r.say('rique', `<@${BOT}> back`, { mentions: [BOT] });
-    await r.say('rique', 'lol');
-    await r.say('rique', 'lol again');
-    await r.say('rique', 'so anyway');
+    await r.say('morgan', `<@${BOT}> back`, { mentions: [BOT] });
+    await r.say('morgan', 'lol');
+    await r.say('morgan', 'lol again');
+    await r.say('morgan', 'so anyway');
     expect(r.asked.length).toBe(4); // closed after two misses
   });
 
@@ -232,8 +243,8 @@ describe('reading channels', () => {
     const r = rig({ readChannels: false });
     await r.say('sam', 'adrian you there');
     expect(r.asked).toEqual([]);
-    await r.say('rique', `<@${BOT}> hi`, { mentions: [BOT] });
-    await r.say('rique', 'and tomorrow?');
+    await r.say('morgan', `<@${BOT}> hi`, { mentions: [BOT] });
+    await r.say('morgan', 'and tomorrow?');
     expect(r.asked.length).toBe(1);
     expect(r.asked[0]!.opts.extra).toEqual([]);
   });
@@ -244,7 +255,7 @@ describe('a reply over the limit', () => {
 
   it('keeps its last piece: that can be a question they have to see before answering', async () => {
     const r = rig({ answer: () => [padding, 'Restart the PC?'] });
-    await r.say('rique', `<@${BOT}> hi`, { mentions: [BOT] });
+    await r.say('morgan', `<@${BOT}> hi`, { mentions: [BOT] });
     const reply = r.sent.join(' ');
     expect(reply.endsWith('Restart the PC?')).toBe(true);
     expect(reply.length).toBeLessThanOrEqual(1800);
@@ -252,19 +263,19 @@ describe('a reply over the limit', () => {
 
   it('shows that something was cut', async () => {
     const r = rig({ answer: () => [padding, 'Restart the PC?'] });
-    await r.say('rique', `<@${BOT}> hi`, { mentions: [BOT] });
+    await r.say('morgan', `<@${BOT}> hi`, { mentions: [BOT] });
     expect(r.sent.join(' ')).toContain('… Restart the PC?');
   });
 
   it('leaves one that fits as it is', async () => {
     const r = rig({ answer: () => ['One.', 'Two.'] });
-    await r.say('rique', `<@${BOT}> hi`, { mentions: [BOT] });
+    await r.say('morgan', `<@${BOT}> hi`, { mentions: [BOT] });
     expect(r.sent).toEqual(['One. Two.']);
   });
 
   it('cuts a last piece that is too long itself, rather than go over', async () => {
     const r = rig({ answer: () => ['Short.', 'x'.repeat(5_000)] });
-    await r.say('rique', `<@${BOT}> hi`, { mentions: [BOT] });
+    await r.say('morgan', `<@${BOT}> hi`, { mentions: [BOT] });
     expect(r.sent.join(' ').length).toBeLessThanOrEqual(1800);
   });
 });
@@ -274,37 +285,37 @@ describe('a turn that did something and said nothing', () => {
 
   it('says it is done, not sorry', async () => {
     const r = rig({ answer: () => '', onAsk: played });
-    await r.say('rique', `<@${BOT}> make an airhorn sound`, { mentions: [BOT] });
+    await r.say('morgan', `<@${BOT}> make an airhorn sound`, { mentions: [BOT] });
     expect(r.sent).toEqual(['Done.']);
   });
 
   it('still apologizes for an answer that really came back empty', async () => {
     const r = rig({ answer: () => '' });
-    await r.say('rique', `<@${BOT}> hi`, { mentions: [BOT] });
+    await r.say('morgan', `<@${BOT}> hi`, { mentions: [BOT] });
     expect(r.sent).toEqual(["Sorry, I didn't get that."]);
   });
 
   it('adds nothing to words she did say', async () => {
     const r = rig({ answer: () => 'Airhorn it is.', onAsk: played });
-    await r.say('rique', `<@${BOT}> make an airhorn sound`, { mentions: [BOT] });
+    await r.say('morgan', `<@${BOT}> make an airhorn sound`, { mentions: [BOT] });
     expect(r.sent).toEqual(['Airhorn it is.']);
   });
 
   it('counts as an answer in a conversation, not a miss, and keeps it open', async () => {
     const r = rig({ answer: (text) => (text === 'hi' ? 'Hey.' : ''), onAsk: (o) => o.followUp && o.onActed() });
-    await r.say('rique', `<@${BOT}> hi`, { mentions: [BOT] });
-    await r.say('rique', 'make an airhorn sound');
-    await r.say('rique', 'and another one');
-    await r.say('rique', 'one more');
+    await r.say('morgan', `<@${BOT}> hi`, { mentions: [BOT] });
+    await r.say('morgan', 'make an airhorn sound');
+    await r.say('morgan', 'and another one');
+    await r.say('morgan', 'one more');
     expect(r.sent).toEqual(['Hey.', 'Done.', 'Done.', 'Done.']);
   });
 
   it('still counts an empty follow-up with nothing done as a miss', async () => {
     const r = rig({ answer: (text) => (text === 'hi' ? 'Hey.' : '') });
-    await r.say('rique', `<@${BOT}> hi`, { mentions: [BOT] });
-    await r.say('rique', 'lol');
-    await r.say('rique', 'lmao');
-    await r.say('rique', 'this one is not even read');
+    await r.say('morgan', `<@${BOT}> hi`, { mentions: [BOT] });
+    await r.say('morgan', 'lol');
+    await r.say('morgan', 'lmao');
+    await r.say('morgan', 'this one is not even read');
     expect(r.sent).toEqual(['Hey.']);
     expect(r.asked).toHaveLength(3);
   });
@@ -319,7 +330,7 @@ describe('a turn that did something and said nothing', () => {
     const sound = soundTool({ find: async () => ({ title: 'airhorn', ref: 'x', seconds: 3 }) as never, play: async () => undefined });
     const brain = new ConversationOrchestrator(llm, new SessionMemory(), [sound], { spokenName: 'Adrian', writtenName: 'A.D.R.I.A.N.', timezone: 'UTC', firstEventTimeoutMs: 2000, maxTokens: 200, maxToolRounds: 2 });
     const r = rig({ ask: (u, n, text, place, signal, o) => brain.ask(u, n, text, signal, undefined, place, { text: true, followUp: o.followUp, extra: o.extra, onSilent: o.onSilent, onActed: o.onActed }) });
-    await r.say('rique', `<@${BOT}> make an airhorn sound`, { mentions: [BOT] });
+    await r.say('morgan', `<@${BOT}> make an airhorn sound`, { mentions: [BOT] });
     expect(r.sent).toEqual(['Done.']);
   });
 });

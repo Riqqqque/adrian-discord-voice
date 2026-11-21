@@ -91,6 +91,7 @@ Registration order, with everything enabled. 52 built-in tools, plus one per all
 | `pc_screen` | `satellite.enabled` | the same | no | no |
 | `server_info` | `serverInfo.enabled` | anyone, filtered to what they can see | no | no |
 | `message_member` | `serverInfo.enabled` and `messaging.enabled` | anyone | yes | read-back |
+| `ignore_person` | always (with a model) | owners | except `list` | yes |
 | `pc_handoff` | `satellite.enabled` and `handoff.enabled` | the asker, own PC | yes | yes |
 | `tell_call` | `handoff.enabled` and `handoff.tellCall.enabled` | a member of her server who isn't in her call | yes | yes |
 | `game_night` | `gameNight.enabled` | anyone; join and leave only change the asker | `ping`, `join`, `leave` | the ping question, "Pinged them.", and join and leave (next release) |
@@ -397,6 +398,19 @@ Files: `src/features/discordinfo.ts`, `gamenight.ts`, `handoff.ts`, `handoff-dis
 - **Weaker guard:** the "which one" and "open their link" questions are `asks` lines, but the answer is the model's next call with `choice`, kept for 3 minutes. It is not a checked next-turn yes. It only ever reaches the asker's own PC and only public web pages.
 
 ---
+
+### `ignore_person`
+
+File: `src/features/ignore.ts`. `action` (`ignore`, `listen_again`, `list`; required), `person` (a name as the owner said it, or a ping code `<@id>`), `scope` (`everything`, the default, or `music`), `minutes` (only when the owner gave a time; up to a week; left out means until an owner says otherwise).
+
+"Adrian, ignore Sam", "stop listening to Sam for an hour", "don't take Sam's music requests", "you can listen to Sam again", "who are you ignoring?". Only owners can use it; anyone else gets "only the bot's owners choose who I ignore", whatever they say. The app owner can't be ignored, and only the app owner can make her ignore another owner. Nobody can ignore themselves.
+
+- `everything`: nothing that person does reaches her. Their voice is dropped at the top of `heard()` in `src/app/stack.ts` (no wake, no stop, no follow-up; only their own ringing alarm still hears them). Text chat drops their messages and doesn't keep their links. `/play`, `/music`, the music buttons, `/join` and `/leave` answer "An owner asked me to ignore your requests." privately; typed `!` commands get no answer. Their running answer, queued questions and open follow-ups are dropped at once (`ConversationController.forget`).
+- `music`: music, sound and quiz tools refuse them (the model says why), and so do local "play X", "skip", "turn it up" with music on, "play that link", and the music slash and `!` commands. Everything else still works.
+
+Names are looked up in her call first, then the server (`findPeople` in stack.ts, using `matchMembers`). A name that fits several people gets "which one?". The list is kept in `ignored.json` in the state folder, so it survives restarts. Timed entries drop themselves. The tool's own line is what she says, with no second model call.
+
+**Cost:** one model call to understand the order; the change itself is free.
 
 ## Minecraft servers
 

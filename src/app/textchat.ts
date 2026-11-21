@@ -49,6 +49,8 @@ export interface TextChatDeps {
   links?: RecentLinks;
   /** Someone else answers this one (a typed command such as "!play x"). */
   handledElsewhere?(m: Message): boolean;
+  /** An owner told her to ignore this person: their messages get no answer. */
+  ignored?(userId: string): boolean;
   now?: () => number;
 }
 
@@ -191,6 +193,8 @@ export function registerTextChat(d: TextChatDeps): void {
   async function handle(m: Message): Promise<void> {
     const me = client.user;
     if (!me || m.author.bot || m.system) return;
+    // Not even their links are kept, so "play that link" can't play theirs.
+    if (d.ignored?.(m.author.id)) return;
     const dm = m.channel.type === ChannelType.DM;
     if (d.links && (dm || !d.allowedGuilds.length || d.allowedGuilds.includes(m.guildId ?? ''))) {
       const embedded = m.embeds.map((e) => e.url ?? '').join(' ');
