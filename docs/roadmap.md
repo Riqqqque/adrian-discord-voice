@@ -132,7 +132,6 @@ The word rule brought the median down, but on the real prompt (2026-11-01, `benc
 - `test/web.test.ts` fails under `--sequence.shuffle` (shared session state).
 - Add a bench for tone (how she sounds), and complete the prefix that `bench/cache-check.mjs` covers.
 - Benches hard-code the Claude Haiku model instead of following `brain.model`.
-- `test-env/update-test.sh` hard-codes base version `0.1.0`; read it from the bundle.
 
 ### Small fixes
 
