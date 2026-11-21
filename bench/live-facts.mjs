@@ -21,7 +21,7 @@ const SEARCH = [
   [/sunrise|sun ?rise|sun come up/i, '- Sunrise and sunset (published 2026-11-20): tomorrow sunrise 6:58 AM, sunset 4:37 PM.'],
   [/sunset|sun ?set|sun go(es)? down|dark/i, '- Sunrise and sunset today (published 2026-11-20): sunrise 6:57 AM, sunset 4:38 PM, civil twilight ends 5:06 PM.'],
   [/post office|usps|mail/i, '- Post office hours (published 2026-11-12): Monday to Friday 8:30 AM to 5:30 PM, Saturday 9 AM to 1 PM.'],
-  [/blackhawks|hockey|nhl/i, '- Blackhawks beat Stars 5-2 (published 2026-11-20): Chicago won last night at the United Center; Bedard had two goals.'],
+  [/blackhawks|hockey|nhl/i, '- Blackhawks beat Stars 5-2 (published 2026-11-20): Chicago won last night at the United Center; Bedardon had two goals.'],
   [/bears|nfl|football/i, '- Bears vs. Lions (published 2026-11-19): Chicago hosts Detroit this Sunday, kickoff 2:25 PM.'],
   [/egg/i, '- Egg prices (published 2026-11-18): a dozen large eggs average $3.17 at metro grocery stores this week.'],
   [/tesla|tsla/i, '- Tesla stock (published 2026-11-20): TSLA trades at $412.30, down 1.4% today.'],
