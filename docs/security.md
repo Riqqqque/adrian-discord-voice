@@ -41,11 +41,12 @@ To report a vulnerability, see [SECURITY.md](../SECURITY.md).
   - `MemoryDenyWriteExecute` is off on purpose: Node's JIT needs it.
 - Child processes (yt-dlp, ffmpeg) inherit all of it.
 - Releases and models are owned by root and read-only to the service.
-- The installer and the `adrian` command refuse to follow symbolic links in the service-owned directories, so a compromised service can't trick root into touching system files. They reject odd version names, verify the bundle checksum (always for downloads from GitHub; for a local bundle only when its `.sha256` sits next to it), refuse backups that contain links or paths outside the two data directories, and use private temp files. The failed-update marker is root-owned, so the service can't clear or plant it.
+- The installer and the `adrian` command refuse to follow symbolic links in the service-owned directories, so a compromised service can't trick root into touching system files. They reject odd version names, verify the bundle checksum (always for downloads from GitHub; for a local bundle only when its `.sha256` sits next to it; without one they warn NOT CHECKED, and `--require-checksum` refuses it), refuse backups that contain links or paths outside the two data directories, and use private temp files. The failed-update marker is root-owned, so the service can't clear or plant it.
 - Docker mode: read-only root filesystem, all capabilities dropped, `no-new-privileges`, CPU, memory and process limits, and the admin page published on loopback only.
 
 **Downloads**
-- Node.js, every speech model and yt-dlp are pinned by version and SHA-256, and fetched over HTTPS only (TLS 1.2 or newer). A bad hash stops the install.
+- Node.js, every speech model and yt-dlp are pinned by version and SHA-256, and fetched over HTTPS only (TLS 1.2 or newer). A bad hash stops the install. From the next release a model's pin may list several checksums (each upload of that file known to be good, after upstream re-uploaded both speech models in 2026), and optional mirrors (`ADRIAN_DOWNLOAD_MIRRORS`, https only) are tried after the original site; a file from anywhere must still match a listed checksum, so a mirror can make a download fail but can't bring in a file this version doesn't know.
+- A by-hand `adrian update` runs as its own systemd unit; proxy and mirror variables go to it through a root-only 0600 file that the unit deletes as it starts, not on its command line, where `systemctl show` would let any local user read a proxy password.
 - npm dependencies are pinned exactly (`package-lock.json`).
 
 **The admin page**

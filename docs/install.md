@@ -2,6 +2,8 @@
 
 This guide takes you from nothing to a bot talking in your voice channel. Plan on about 20 minutes, most of it creating the Discord bot and getting an API key. Every setting mentioned here is described in [configuration.md](configuration.md); what it costs to run is in [costs.md](costs.md).
 
+New to Linux or Discord bots? The [setup guides](setup/README.md) go through the same steps for a first-timer, with every command written out and what you should see after each one, plus [updating](setup/05-updating.md), [backups](setup/06-backup-restore-uninstall.md) and [troubleshooting](setup/07-troubleshooting.md) by symptom.
+
 - [Requirements](#requirements)
 - [1. Create the Discord bot](#1-create-the-discord-bot)
 - [2. Get a language-model key](#2-get-a-language-model-key)
@@ -38,6 +40,8 @@ The installer checks all of these before it changes anything. It lists every pro
 Ubuntu 24.04 and Debian 12 are the recommended systems. The wizard's Check step also warns under 4 CPU threads and under 2 GB of free disk.
 
 **Memory.** The service may use up to `MemoryHigh=4G` (the kernel throttles it above that) and `MemoryMax=5G` (hard limit). Whisper and the other languages' voices load the first time someone speaks a language other than English, not at start; a comment in `src/app/stack.ts` puts them at about 1.3 GB together. The installer's warning gives about 3.5 GB with the language voices on and about 1.5 GB with them off. To keep them out for good: `sudo adrian config languages false`.
+
+Fresh installs from the next release on get the 2026 upload of the Parakeet speech model (existing servers keep the one they have). It decodes the same words and wake decisions, but holds about 10 MB more per second of the longest clip decoded so far and keeps it: measured +0.17-0.19 GB after a 20 s clip and +0.32 GB after a 35 s one (about the longest at the defaults). That's within the limits above.
 
 With the cloud voice on (`cloudVoice`, Speechify), the local English voice (Kokoro, about 0.5 GB) isn't loaded at start either: it loads the first time the cloud voice can't speak (an outage, a timeout, a spent month) and then stays. In a maintainer measurement on Windows that took the bot from about 1.59 GB to about 1.10 GB after start; on a Linux server expect a similar drop (not measured there). The first stand-in sentence after a start then waits a few seconds for the load, once.
 
@@ -100,7 +104,7 @@ curl -fsSLO https://raw.githubusercontent.com/Riqqqque/adrian-discord-voice/main
 sudo bash get.sh
 ```
 
-`get.sh` installs the few system packages it needs (it asks first), finds the newest release, downloads it with its checksum, checks it, and runs the installer inside it. If something isn't ready (disk space, no internet, an unsupported computer), it lists everything to fix at once and changes nothing: fix it and run the same command again. Downloads that already finished are kept.
+`get.sh` installs the few system packages it needs (it asks first), finds the newest release, downloads it with its checksum, checks it, and runs the installer inside it. `ffmpeg` (for music) goes in on its own: where the system's own sources don't have it (RHEL, Rocky, Alma: it's in RPM Fusion), the install goes ahead with music off. If something isn't ready (disk space, no internet, an unsupported computer), it lists everything to fix at once and changes nothing: fix it and run the same command again. Downloads that already finished are kept.
 
 | `get.sh` option | Meaning |
 |---|---|
@@ -134,7 +138,7 @@ mkdir adrian-$VER && tar -xzf adrian-voice-$VER-linux-x64.tar.gz -C adrian-$VER
 sudo adrian-$VER/packaging/install.sh --bundle adrian-voice-$VER-linux-x64.tar.gz
 ```
 
-The installer checks the bundle against its `.sha256` again when that file sits next to the bundle, as it does here, before it changes anything (without one it warns; `get.sh` refuses a release without one). The bundle is about 40 MB (v0.17.1: 41,481,428 bytes).
+The installer checks the bundle against its `.sha256` again when that file sits next to the bundle, as it does here, before it changes anything (without one it prints a bold `NOT CHECKED` warning, and `--require-checksum` refuses instead; `get.sh` always checks). The bundle is about 40 MB (v0.17.1: 41,481,428 bytes).
 
 Installer options (`install.sh --help` prints them):
 
@@ -147,11 +151,12 @@ Installer options (`install.sh --help` prints them):
 | `--lan` | Let other machines on your network reach the admin page (default: this machine only). It prints a warning: the login then goes over plain HTTP unless you add `server.tls` |
 | `--no-lan` | This machine only again, after an install with `--lan` |
 | `--no-start` | Install but don't start the service |
+| `--require-checksum` | Refuse a bundle with no `.sha256` next to it (without the flag it installs with a warning) |
 | `--allow-downgrade` | Install a bundle older than the version already installed (refused otherwise) |
 | `--uninstall [--keep-data]` | Remove everything the installer added (`--keep-data` keeps `/etc/adrian` and `/var/lib/adrian`) |
 | `--mode native`, `--profile recommended` | The only values accepted so far (local speech, cloud language model) |
 
-Running the installer again is safe. It keeps your config, keys, port and LAN setting, and restarts the service on the new files. After `--uninstall --keep-data`, a new install reads the port and LAN setting back from the kept config.
+Running the installer again is safe. It keeps your config, keys, port and LAN setting, and restarts the service on the new files. That holds for an admin page on TLS (`server.tls`) or bound to one address too: it finds her where the config says and prints that address. If an update is running, the installer changes nothing and asks you to run it again afterwards. If an update was cut off, the installer takes its place. After `--uninstall --keep-data`, a new install reads the port and LAN setting back from the kept config.
 
 What it does:
 
@@ -317,9 +322,9 @@ sudo adrian update            # the newest release
 sudo adrian update --check    # only say whether there's a newer one
 ```
 
-`sudo adrian update` started from a terminal runs in the background in its own session, so a dropped SSH connection can't stop it halfway. The terminal just follows its log (`/opt/adrian/update.log`), and Ctrl+C stops the watching, not the update. `sudo ADRIAN_DETACH=0 adrian update` runs it in the foreground the old way. Only one update runs at a time: while one is under way, the hourly auto-update skips (and logs it), a second `sudo adrian update` says to wait, `rollback` waits for it, and `status` and `doctor` say an update is under way. Updates need about 500 MB free under `/opt`: without it nothing changes, the timer waits, and a manual update says what to free.
+`sudo adrian update` started from a terminal runs in the background as a service of its own (`adrian-update-by-hand-…`, through `systemd-run`; in its own session where systemd can't), so neither a dropped SSH connection nor logging out can stop it halfway. The terminal follows along, and Ctrl+C stops the watching, not the update. Its log is `/opt/adrian/update.log` (root only; `sudo tail -f /opt/adrian/update.log` from any terminal); the hourly check logs to `journalctl -u adrian-update`. Running `sudo adrian update` again while one runs just follows it. `sudo ADRIAN_DETACH=0 adrian update` runs it in the foreground the old way. Only one update runs at a time: while one is under way, the hourly auto-update skips (and logs it), a second `sudo adrian update` says to wait, `rollback` waits for it, and `status` and `doctor` say an update is under way. Updates need about 500 MB free under `/opt`, plus room for whatever speech models the new version still has to download: without it nothing changes, the timer waits, and a manual update says what to free.
 
-If an update was cut off anyway (a power cut, a kill), a note in `/opt/adrian/update-in-progress` remains. The next `sudo adrian update`, `rollback` or hourly check finishes the job: it keeps a healthy new version, rolls an unhealthy one back under its own service file, or undoes an update cut off before the switch. `status` and `doctor` show it meanwhile.
+If an update was cut off anyway (a power cut, a kill), a note in `/opt/adrian/update-in-progress` remains. The next `sudo adrian update`, `rollback` or hourly check finishes the job: it keeps a new version only if it answers healthy as itself (otherwise it restarts it once and checks again), rolls an unhealthy one back under its own service file, or undoes an update cut off before the switch. A failure found that way is remembered like any other, and a rollback cut off halfway is finished too. A `rollback` that only finished a cut-off update stops there and says so; run it again to go back further. `status` and `doctor` show it meanwhile.
 
 Every update:
 
@@ -338,19 +343,19 @@ Doing worse means one of these, which is why an update takes a few minutes:
 - it hasn't rejoined a voice channel, when the old version was in one;
 - any of that a minute later, with up to another minute to get back, or systemd had to restart it during that minute.
 
-If the old version wasn't answering at all, any healthy answer will do, so you can always update your way out of a broken version.
+If the old version wasn't answering at all, any healthy answer will do, so you can always update your way out of a broken version. If the old version was failing (a bad token, say) and the new one fails too, it still goes back, but says the update couldn't be judged rather than that the new version did worse, and `doctor` says the same.
 
 An automatic rollback brings back the old release and its service file; new models and the new Node.js stay. Auto-update then leaves that version alone for 24 hours, and `sudo adrian doctor` warns about it. `sudo adrian update` by hand tries it right away. A Discord voice outage during that minute can roll back a good release: it gets another try the next day, or update by hand once the outage is over. Auto-update also skips its run (and logs why) while `config.json` can't be read, and does nothing when GitHub can't be reached.
 
-No internet on the server? Download the bundle and its `.sha256` from the [Releases page](https://github.com/Riqqqque/adrian-discord-voice/releases) and run `sudo adrian update adrian-voice-VERSION-linux-x64.tar.gz` next to them. A local bundle is checked only when its `.sha256` file sits next to it, so keep the two together.
+No internet on the server? Download the bundle and its `.sha256` from the [Releases page](https://github.com/Riqqqque/adrian-discord-voice/releases) and run `sudo adrian update adrian-voice-VERSION-linux-x64.tar.gz` next to them. A local bundle is checked only when its `.sha256` file sits next to it, so keep the two together: without it the update warns `NOT CHECKED`, and `sudo adrian update FILE --require-checksum` refuses it.
 
 **Coming from 0.14.9 or older:** those versions' `adrian` can't download by itself yet. Update once the old way (download the bundle and `.sha256`, then `sudo adrian update FILE`); from then on `sudo adrian update` and auto-update work.
 
 **Coming from 0.15.2 or older:** an update runs the `adrian` that's already installed, so new checks start with the update after the one that brings them. That first update still rolls back only if the bot isn't healthy within 30 seconds. In general, any change to the update steps first applies on the update after the one that ships it: running in the background, the lock, the disk check and the cut-off note protect updates from the release that brings them, not the update that installs it.
 
-`sudo adrian rollback` goes back one version at any time. It switches only the release: the service file and models stay as they are (the old service file is in `/opt/adrian/adrian-voice.service.previous`). With auto-update on, the newest release comes back within about an hour, as soon as she isn't busy, so run `sudo adrian auto-update off` first and turn it on again when a fix is out. After an update or restart, the bot rejoins its home channel. Use `/join` to bring it back to another one.
+`sudo adrian rollback` goes back one version at any time (with no older version on the server, it says `no previous version to roll back to` and changes nothing). It switches only the release: the service file and models stay as they are (the old service file is in `/opt/adrian/adrian-voice.service.previous`). With auto-update on, the newest release comes back within about an hour, as soon as she isn't busy, so run `sudo adrian auto-update off` first and turn it on again when a fix is out. After an update or restart, the bot rejoins its home channel. Use `/join` to bring it back to another one.
 
-Back up before big changes: `sudo adrian backup ~/adrian-backup.tar.gz`. A restart logs you out of the admin page (sessions are kept in memory only).
+Back up before big changes: `sudo adrian backup ~/adrian-backup.tar.gz`. `sudo adrian restore FILE` puts one back; if the admin port the backup brings is taken by another program on this machine, it restores the files but doesn't start her, and says how to move her (`install.sh --port N`). A restart logs you out of the admin page (sessions are kept in memory only).
 
 **Music breaking:** YouTube changes things every few weeks, and the pinned yt-dlp then stops finding songs. Updating to a newer release (which pins a newer yt-dlp) fixes it.
 
