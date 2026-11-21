@@ -179,7 +179,7 @@ The token is stored encrypted for your Windows user only. After a successful sav
 
 ## 4.6 Using it
 
-- **Say "Hey Adrian, ..."** anywhere in the room. Or **hold Ctrl+Alt+Space** while you talk: then you don't need to say her name. Or type in the box at the bottom of the window and press Enter.
+- **Say "Hey Adrian, ..."** anywhere in the room. Or **hold Ctrl+Alt+Space** while you talk: then you don't need to say her name, and everything you say until you let go is one request, pauses included. Or type in the box at the bottom of the window and press Enter.
 - **Stop her:** say "stop", talk over her, click the square stop button, or press Escape in the window.
 - **Close the window** with the X: she keeps running in the tray. Click the tray icon to open the window again. Right-click the tray icon for **Show A.D.R.I.A.N.**, **Stop alarm**, **Snooze alarm** and **Quit**. In the tray she uses a few MB of memory and almost no CPU.
 - **In the bot's Discord call at the same time?** While you're in her voice channel and not muted, the call answers instead of the PC (so music plays for everyone), and the window says `Answering in the Discord call.` To talk to the PC alone, mute yourself in Discord, hold Ctrl+Alt+Space, or type.

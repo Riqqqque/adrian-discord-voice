@@ -112,7 +112,7 @@ If you see `Connection timed out` or `Connection refused`, check the address, th
 
 ## 5. Install A.D.R.I.A.N.
 
-There are two ways. Try 5a first. If its first command prints `curl: (22) The requested URL returned error: 404` (and the second then says `bash: get.sh: No such file or directory`), the one-step installer isn't published yet: use 5b, which works for every version.
+There are two ways. Use 5a, the one-step installer: two commands, and it fetches everything else itself. 5b does the same steps by hand, for when you'd rather see each one.
 
 ### 5a. The one-step installer
 
@@ -130,13 +130,15 @@ What it does, in order:
 3. Finds the newest release, downloads it with its checksum, and checks that the download is complete and unchanged.
 4. Runs the installer inside it, which downloads the speech models (about 2 GB) and starts the service.
 
-You can add installer options at the end, for example `sudo bash get.sh --lan` (see [step 6](#6-open-the-admin-page)).
+You can add installer options at the end, for example `sudo bash get.sh --lan` (see [step 6](#6-open-the-admin-page)). `--version` and a number from the [releases page](https://github.com/Riqqqque/adrian-discord-voice/releases) installs that release instead of the newest. If `ffmpeg` can't be installed from your system's own package sources, it says so and installs everything else; only music stays off until `ffmpeg` is there.
 
 If something isn't ready, it lists every problem at once, with what to do, and changes nothing. Fix them and run `sudo bash get.sh` again. Downloads that already finished are kept, so a second run is quicker.
 
 Go on to [What you should see](#what-you-should-see).
 
 ### 5b. Install by hand (works with every version)
+
+Use this instead of 5a if you want to do each step yourself. Version 0.17.1 can't be installed fresh any more (see [07](07-troubleshooting.md#a-download-doesnt-match-its-checksum)), so take the newest release, as the commands below do.
 
 On the server, run these lines one at a time.
 
@@ -216,13 +218,16 @@ sudo adrian setup-code
 **If you see something else:**
 
 - `This computer is not ready for A.D.R.I.A.N. yet. Nothing was changed. Fix:` followed by a list: do what each line says, then run the same command again.
-- `x86_64 only for now`, or a message about an ARM processor: this computer can't run it. See [step 1](#1-check-the-computer).
-- `systemd is not running`, or a message about WSL or a container: see [step 1](#1-check-the-computer) and [Docker instead](#docker-instead).
-- `missing command: ...` (version 0.17.1; newer versions list it under "not ready" above, as `Some tools this installer needs are missing`): run the `sudo apt install` line from [5b](#5b-install-by-hand-works-with-every-version), then the install command again.
-- `checksum mismatch for ...` (version 0.17.1) or `... doesn't match its pinned checksum` (newer versions): run the same command once more. If the same file fails again, retrying won't help: see [07-troubleshooting.md](07-troubleshooting.md#a-download-doesnt-match-its-checksum).
+- `runs only on 64-bit Intel or AMD computers (x86_64)`, or a message about an ARM processor (version 0.17.1: `x86_64 only for now`): this computer can't run it. See [step 1](#1-check-the-computer).
+- `systemd isn't running on this computer`, or a message about WSL or a container (version 0.17.1: `systemd is not running`): see [step 1](#1-check-the-computer) and [Docker instead](#docker-instead).
+- `Some tools this installer needs are missing` in the "not ready" list (version 0.17.1: `missing command: ...`): run the `sudo apt install` line from [5b](#5b-install-by-hand-works-with-every-version), then the install command again.
+- `... downloaded at full size but doesn't match any checksum this version knows`: the file on the download site was replaced, and running the command again won't help. `... doesn't match its checksum, and it's smaller than it should be`: the download was cut short; run the same command once more. Version 0.17.1 says `checksum mismatch for ...` in both cases. See [07-troubleshooting.md](07-troubleshooting.md#a-download-doesnt-match-its-checksum).
 - A download stopped halfway, or `Not enough free disk`: see [07-troubleshooting.md](07-troubleshooting.md#the-disk-filled-up-or-a-download-stopped).
-- `the service did not come up`: see [07-troubleshooting.md](07-troubleshooting.md#the-bot-is-offline-in-discord) and run `sudo adrian doctor`.
+- `The service did not come up` (version 0.17.1: `the service did not come up`): the lines above it are the service's log and say why; then see [07-troubleshooting.md](07-troubleshooting.md#the-bot-is-offline-in-discord) and run `sudo adrian doctor`.
+- `Port ... is taken by another program. Run this again with --port N`: another program took the admin page's port as she started. Run the install command again with `--port` and a free number, as it suggests.
+- `It ran out of memory`: see [07-troubleshooting.md](07-troubleshooting.md#low-memory-or-it-keeps-restarting).
 - `warning: less than 4 GB of memory`: it may still work, but read [07-troubleshooting.md](07-troubleshooting.md#low-memory-or-it-keeps-restarting).
+- `warning: NOT CHECKED: there's no ... .sha256 next to the bundle` (5b only): the checksum file isn't next to the release file, so the download wasn't checked. Download the `.sha256` too, as in 5b, and run the command again.
 
 ### What the installer did
 
@@ -235,7 +240,7 @@ So you know what's on your computer now:
 - a service called `adrian-voice` that starts with the computer and restarts by itself if it stops;
 - the `adrian` command, for managing it. Most of its commands need `sudo`.
 
-Running the installer again is meant to be safe: newer versions keep your settings, keys, port, `--lan` choice and admin account, and restart the service. It prints the same closing lines each time, including `Then follow the setup wizard`. If your setup is already done, ignore that line.
+Running the installer again is meant to be safe: newer versions keep your settings, keys, port, `--lan` choice and admin account, and restart the service. While an update is running, they change nothing and ask you to run them again afterwards; after an update that was cut off (a power cut, say), they finish the job in its place. It prints the same closing lines each time, including `Then follow the setup wizard`. If your setup is already done, ignore that line.
 
 ## 6. Open the admin page
 

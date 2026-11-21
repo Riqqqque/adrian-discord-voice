@@ -25,6 +25,7 @@ A few words you will see a lot:
 | Port | A number that says which program on a computer you want to reach. It goes after the address with a colon: `192.0.2.10:8790` means "the program on port 8790 of that computer". A.D.R.I.A.N. uses 8790 for the admin page and 8791 for the PC app. |
 | systemd | The part of Linux that starts programs when the computer boots and restarts them if they stop. Ubuntu and Debian have it built in. |
 | Tokens (in prices) | How language models measure text: a token is about three quarters of a word. Prices and free-tier limits are counted in them. Not the same as the bot token, which is a password. |
+| "Version 0.17.1" and "newer versions" | Where a message differs between versions, the guides quote both. "Newer versions" means every release after 0.17.1. `sudo adrian version` shows yours. An update's messages come from the version you update *from*, so your first update away from 0.17.1 still prints 0.17.1's wording. |
 
 ## What you need
 
