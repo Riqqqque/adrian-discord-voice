@@ -7,7 +7,7 @@ import { type DocOp, DocError, runOp } from './documents-ops.js';
 // Notices the libraries print that only say what isn't used: no canvas
 // (pages are never drawn), no font data (text only), XFA (refused anyway).
 const quiet = (out: (...a: unknown[]) => void) => (...a: unknown[]) => {
-  if (typeof a[0] === 'string' && /@napi-rs\/canvas|standardFontDataUrl|Removing XFA/.test(a[0])) return;
+  if (typeof a[0] === 'string' && /@napi-rs\/canvas|standardFontDataUrl|Removing XFA|Cannot polyfill/.test(a[0])) return;
   out(...a);
 };
 console.warn = quiet(console.warn.bind(console));
