@@ -6,7 +6,7 @@ The hands-on companion to [CONTRIBUTING.md](../CONTRIBUTING.md): how to set up a
 
 | Need | For |
 |---|---|
-| Node.js 22.12+ (production runs the 22.23.4 pinned in `packaging/downloads.sh`), 24, or 26+, and npm | everything. `engines.node` is `>=22.12.0`, but vitest 5 (`^22.12.0 \|\| ^24.0.0 \|\| >=26.0.0`) does not run on Node 23, 25 or anything below 22.12. |
+| Node.js 22.13+ (production runs the 22.23.4 pinned in `packaging/downloads.sh`), 24, or 26+, and npm | everything. `engines.node` is `>=22.13.0` (pdfjs-dist needs it), and vitest 5 (`^22.12.0 \|\| ^24.0.0 \|\| >=26.0.0`) does not run on Node 23, 25 or anything below 22.12. |
 | Linux x86_64 with glibc | running the bot with its speech models, benches that load them, and building release bundles. Typecheck and unit tests also run on Windows and macOS. |
 | `ffmpeg` on `PATH` | music, sound effects, alarm clips. Without it the bot runs but music stays off. |
 | bash, tar, gzip (and xz) | the shell-script suites in `test/packaging.test.ts`. On Windows they look for Git Bash at `%ProgramFiles%\Git\bin\bash.exe`; without it those suites are skipped. |

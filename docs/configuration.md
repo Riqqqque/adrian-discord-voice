@@ -222,7 +222,7 @@ A model whose key is missing is left out with a warning. An entry with `provider
   "provider": "anthropic", "model": "claude-haiku-5-5", "apiKeySecret": "ANTHROPIC_API_KEY", "priceInPerM": 1, "priceOutPerM": 5,
   "models": [
     { "name": "smart", "provider": "anthropic", "model": "claude-sonnet-5-5", "apiKeySecret": "ANTHROPIC_API_KEY", "priceInPerM": 3, "priceOutPerM": 15, "maxTokens": 4000, "ownersOnly": true, "about": "slower, for careful writing", "fallback": "main" },
-    { "name": "private", "baseUrl": "http://127.0.0.1:11434/v1", "model": "qwen3:8b", "local": true, "maxTokens": 4000, "about": "runs here; nothing leaves the house" }
+    { "name": "private", "baseUrl": "http://127.0.0.1:11434/v1", "model": "qwen3:8b", "local": true, "maxTokens": 4000, "about": "runs on this machine" }
   ],
   "routes": { "writing": "smart" },
   "lowBudget": { "model": "main", "atPercent": 80 }

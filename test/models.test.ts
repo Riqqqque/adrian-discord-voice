@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { isLocalBase, type ModelInfo, ModelPicker, modelTool } from '../src/brain/models.js';
 import { PocConfigSchema } from '../src/config.js';
+import { modelCommands } from '../src/app/model-commands.js';
 
 const OWNER = '100000000000000001';
 const GUEST = '200000000000000001';
@@ -88,6 +89,18 @@ describe('model picker', () => {
   it('switching and resetting are actions; which and list only look', () => {
     const acts = rig().tool.acts as (a: Record<string, unknown>) => boolean;
     expect([acts({ action: 'use' }), acts({ action: 'reset' }), acts({ action: 'which' }), acts({ action: 'list' })]).toEqual([true, true, false, false]);
+  });
+});
+
+describe('/model', () => {
+  it('builds for a full list with long descriptions', () => {
+    const many: ModelInfo[] = Array.from({ length: 13 }, (_, i) => ({ name: `m${i}`, model: `x-${i}`, local: false, ownersOnly: false, about: 'a'.repeat(80) }));
+    const [cmd] = modelCommands(new ModelPicker(many)) as { name: string; options: { name: string; options?: { choices?: { name: string }[] }[] }[] }[];
+    expect(cmd!.name).toBe('model');
+    expect(cmd!.options.map((o) => o.name)).toEqual(['list', 'which', 'use', 'reset']);
+    const choices = cmd!.options[2]!.options![0]!.choices!;
+    expect(choices).toHaveLength(13);
+    expect(Math.max(...choices.map((c) => c.name.length))).toBeLessThanOrEqual(100);
   });
 });
 

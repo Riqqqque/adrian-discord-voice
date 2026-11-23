@@ -3551,6 +3551,34 @@ describe('dictating a draft', () => {
     await r.stack.stop();
   });
 
+  it('reads a draft back by voice right after the answer, not after a time limit', async () => {
+    const r = await rig({ owners: [OWNER], writing: { enabled: true } });
+    mkdirSync(join(r.dir, 'writing'), { recursive: true });
+    writeFileSync(join(r.dir, 'writing', `${OWNER}.json`), JSON.stringify({ drafts: [{ id: 'a1', title: 'Notes', text: 'First line.\n\nSecond line.\n', private: false, created: 1, updated: 1, versions: [] }], current: 'a1' }));
+    r.steps.push({ parts: [toolCall('draft', JSON.stringify({ action: 'read', all: true })), usage(100, 10)] });
+    const t0 = Date.now();
+    r.heard(r.discordPipe, OWNER, 'hey adrian read my draft back', 'read my draft back');
+    await until(() => r.tts.calls.join(' ').includes('Second line.'), 'the readback', 5_000);
+    expect(Date.now() - t0).toBeLessThan(3_000);
+    expect(r.tts.calls.join(' ')).toContain('First line.');
+    expect(r.llmBodies).toHaveLength(1);
+    await r.stack.stop();
+  });
+
+  it("never speaks a private draft's words: they go to a DM", async () => {
+    const r = await rig({ owners: [OWNER], writing: { enabled: true } });
+    mkdirSync(join(r.dir, 'writing'), { recursive: true });
+    writeFileSync(join(r.dir, 'writing', `${OWNER}.json`), JSON.stringify({ drafts: [{ id: 'a1', title: 'Secret', text: 'Only for me.\n', private: true, created: 1, updated: 1, versions: [] }], current: 'a1' }));
+    r.steps.push({ parts: [toolCall('draft', JSON.stringify({ action: 'read' })), usage(100, 10)] });
+    r.heard(r.discordPipe, OWNER, 'hey adrian read it back', 'read it back');
+    await until(() => r.dms.sent.length === 1, 'the DM');
+    await until(() => r.stack.answers().length === 1, 'the answer');
+    expect((r.dms.sent[0] as unknown as { content: string }).content).toBe('**Secret**\nOnly for me.');
+    expect(r.tts.calls.join(' ')).not.toMatch(/Only for me/);
+    expect(r.tts.calls).toContain("Sent Secret to your DMs: it's a private draft.");
+    await r.stack.stop();
+  });
+
   it('is off without writing.enabled: no draft tool', async () => {
     const r = await rig({ owners: [OWNER] });
     r.heard(r.discordPipe, OWNER, 'hey adrian start a draft called notes', 'start a draft called notes');

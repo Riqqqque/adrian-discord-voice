@@ -731,8 +731,9 @@ export async function startVoiceStack(
   let modelSwitch: Tool | undefined;
   type Price = { in: number; cachedIn: number | undefined; out: number; claude: boolean };
   const brains = new Map<string, { orch: ConversationOrchestrator; dm: ConversationOrchestrator; price: Price; llm: LlmProvider; maxTokens: number | undefined; local: boolean }>();
-  /** The main model, for writing jobs (set with the brain). */
+  /** The main model, for writing jobs (set with the brain), and the same without its fallback. */
   let mainLlm: LlmProvider | undefined;
+  let mainOwn: LlmProvider | undefined;
   /** Drafts (features/writing.ts), when writing is on. */
   const writingStore = config.writing?.enabled ? new WritingStore(stateDir ? join(stateDir, 'writing') : undefined, Date.now, (m, f) => log.warn(m, f), config.writing.maxDraftChars) : undefined;
   /** Who is dictating into a draft right now, and where. */
@@ -899,6 +900,8 @@ export async function startVoiceStack(
           ? new AnthropicLlm({ model: p.model, apiKey: key ?? '', effort: p.effort })
           : new OpenAiCompatibleLlm({ baseUrl: p.baseUrl, model: p.model, ...(key ? { apiKey: key } : {}), ...(p.extraBody ? { extraBody: p.extraBody } : {}) });
       let llm: LlmProvider = makeLlm(brain, apiKey);
+      // Without brain.fallback around it: a private draft must never reach a cloud fallback.
+      mainOwn = llm;
       const fb = brain.fallback;
       const fbKey = fb?.apiKeySecret ? secrets.get(fb.apiKeySecret) : undefined;
       const fbUsable = !!fb && (!fb.apiKeySecret || !!fbKey);
@@ -1102,7 +1105,7 @@ export async function startVoiceStack(
           if (!name && !isLocalBase(b.baseUrl)) return 'Not done: a private draft needs a local model, and none is set up.';
         } else name = picker?.pick(ctx.userId, 'writing', isOwner(ctx.userId), spentShare()).name;
         const entry = name ? brains.get(name) : undefined;
-        const llm = entry?.llm ?? mainLlm;
+        const llm = entry?.llm ?? (privateDraft ? mainOwn : mainLlm);
         if (!llm) return "Not done: my language model isn't set up.";
         return {
           llm,
@@ -1112,14 +1115,34 @@ export async function startVoiceStack(
       },
       tell: async (ctx, text, o) => {
         const rm = ctx.channelId ? satRooms.get(ctx.channelId) : undefined;
+        const ctl = rm?.ctl ?? controller;
         const inCall = !ctx.text && (rm || (spot && ctx.channelId === spot.channelId));
+        const dm = async () => {
+          const parts = text.match(/[\s\S]{1,1900}(?=\s|$)|[\s\S]{1,1900}/g) ?? [];
+          for (const part of parts.slice(0, 6)) await client.users.send(ctx.userId, { content: part, allowedMentions: { parse: [] } });
+        };
+        // A private draft's words are never spoken: the cloud voice would get them.
+        if (inCall && o?.private) {
+          await dm().then(
+            () => void ctl.announce(ctx.userId, "Done; it's a private draft, so the details are in your DMs."),
+            () => void ctl.announce(ctx.userId, "Done, but I couldn't DM you the details."),
+          );
+          return;
+        }
         if (inCall) {
-          await (rm?.ctl ?? controller).announce(ctx.userId, o?.speech ?? text);
+          // In pieces she can say within an announcement's time, one after
+          // another; past a few minutes of it, the rest goes to a DM.
+          const speech = o?.speech ?? text;
+          const pieces = speech.match(/[^]{1,180}(?:[.!?](?=\s)|\n|$)|[^]{1,180}(?=\s)|[^]{1,180}/g)?.map((x) => x.trim()).filter(Boolean) ?? [];
+          const say = pieces.slice(0, 14);
+          void (async () => {
+            for (const p of say) if (!(await ctl.announce(ctx.userId, p))) return;
+            if (pieces.length > say.length) await dm().then(() => ctl.announce(ctx.userId, 'The rest is in your DMs.'), () => undefined);
+          })().catch(() => undefined);
           return;
         }
         // Text, or nowhere to say it: a DM, in pieces Discord takes.
-        const parts = text.match(/[\s\S]{1,1900}(?=\s|$)|[\s\S]{1,1900}/g) ?? [];
-        for (const part of parts.slice(0, 6)) await client.users.send(ctx.userId, { content: part, allowedMentions: { parse: [] } });
+        await dm();
       },
       sendFile: async (ctx, name, data, note) => {
         try {
@@ -2049,7 +2072,14 @@ export async function startVoiceStack(
     if (step.kind === 'done') {
       dictations.delete(d.userId);
       say(`Saved. ${step.words} words in ${draft?.title ?? 'your draft'}.`);
-    } else if (step.kind === 'read') say(forSpeech(step.text, words) || 'Nothing yet.');
+    } else if (step.kind === 'read') {
+      if (draft?.private)
+        void client.users.send(d.userId, { content: step.text.slice(0, 1900) || 'Nothing yet.', allowedMentions: { parse: [] } }).then(
+          () => say("It's a private draft: I sent it to your DMs."),
+          () => say("It's a private draft, and I couldn't DM you."),
+        );
+      else say(forSpeech(step.text, words) || 'Nothing yet.');
+    }
     else if (step.kind === 'scratched') say('Scratched.');
     else if (step.kind === 'nothing to scratch') say('Nothing to scratch.');
   }

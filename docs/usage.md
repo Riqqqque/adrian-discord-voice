@@ -564,7 +564,7 @@ When the bot's owner turns writing on (`writing.enabled`), she keeps drafts for 
 - **Your word list:** "always write QA for quality assurance". She writes it short and says it in full when reading back.
 - **A running log:** "log that I finished the audit two days early" whenever something happens, then "turn what I logged this quarter into a draft".
 - **Getting it out:** "send me the draft" (a file in your DMs, Markdown or plain text), "read it back".
-- **Private drafts:** "start a private draft" keeps it on a local model only (if the owner has one set up): dictation skips the cloud listen, and edits never go to a cloud model. What you ask her out loud still goes to the model answering you.
+- **Private drafts:** "start a private draft" keeps it on a local model only (if the owner has one set up): dictation skips the cloud listen, edits never go to a cloud model, and anything she would read out of it comes to your DMs instead, so the cloud voice never gets its words. What you ask her out loud still goes to the model answering you.
 
 **Documents:** send her a PDF, Word, text or Markdown file in Discord (a DM, or a message to her) and ask about it: "what does this lease say about pets?", "summarize it", "what fields does this form have?", "fill in my name as Jane Example", "change $120 to $95", "add Signed electronically at the bottom", "make this letter shorter", "turn it into a Word file", "make it a draft", "open it on my PC". She sends what she made to your DMs. She keeps your files for two weeks. Changing words in a PDF writes over them in a standard font and doesn't remove the old ones, so never use it to hide anything; password-protected PDFs and XFA forms can't be changed. A Word or PDF file she rewrites keeps its words and headings, not its look.
 
@@ -578,7 +578,7 @@ Only when the config lists more than one model (`brain.models`, see [configurati
 - "What model are you on?", "which models do you have?": she says.
 - `/model list`, `/model which`, `/model use`, `/model reset` do the same by command.
 
-The bot's owner decides which model does what by default (for example a careful one for writing, a local one for memory), who may switch (owners unless set otherwise), and which models are for owners only. Once most of the day's or month's budget is spent, people who aren't owners can be moved to a cheaper model by themselves. A model marked local runs on your own machine or network, so what it's sent stays there.
+The bot's owner decides which model does what by default (for example a careful one for writing, a local one for memory), who may switch (owners unless set otherwise), and which models are for owners only. Once most of the day's or month's budget is spent, people who aren't owners can be moved to a cheaper model by themselves. A model marked local runs on your own machine or network, so what it's sent stays there. Switching to it doesn't make the rest private: your conversation history goes back to the usual model when you switch back, and web search, the cloud voice and the cloud listen still work as set up.
 
 ## Limits
 

@@ -4,6 +4,14 @@
 import { parentPort } from 'node:worker_threads';
 import { type DocOp, DocError, runOp } from './documents-ops.js';
 
+// Notices the libraries print that only say what isn't used: no canvas
+// (pages are never drawn), no font data (text only), XFA (refused anyway).
+const quiet = (out: (...a: unknown[]) => void) => (...a: unknown[]) => {
+  if (typeof a[0] === 'string' && /@napi-rs\/canvas|standardFontDataUrl|Removing XFA/.test(a[0])) return;
+  out(...a);
+};
+console.warn = quiet(console.warn.bind(console));
+console.log = quiet(console.log.bind(console));
 const port = parentPort!;
 port.once('message', async (o: DocOp) => {
   try {
