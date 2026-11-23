@@ -284,6 +284,31 @@ The admin page offers only the presets, and only ever sends a stored key to the 
 
 The identity and nickname values go into the system prompt sent to the language model on every answer.
 
+### Writing (`writing`, optional block)
+
+Drafts written and edited with her by voice or text: see [usage.md](usage.md#writing-with-her). Off unless `enabled` is true; then the `draft` tool is added.
+
+| Key | Type | Default | What it does |
+|---|---|---|---|
+| `writing.enabled` | boolean | `false` | Turns it on |
+| `writing.people` | `owners`, `everyone` | `"owners"` | Who may keep drafts. Everyone only ever reaches their own |
+| `writing.maxTokens` | integer 500-16000 | `4000` | Longest answer from the writing model, when the main model writes. A listed model's own `maxTokens` wins |
+| `writing.maxDraftChars` | integer 1000-200000 | `30000` | Longest draft |
+| `writing.dictationIdleMinutes` | integer 1-60 | `10` | Dictation ends by itself after this long without a word |
+| `writing.templates` | list | `[]` | Templates anyone can start from: `name`, `sections` (`name`, optional `limit` in characters per bullet or paragraph), `bulletLimit`, `style` (rules as text). None are built in; people can also make their own by asking |
+
+Edits are made by the writing model: `brain.routes.writing` if more models are listed, else the main model. A draft marked private is only ever sent to a local model (`brain.models` with `local: true`, or the main model if its address is local); without one, private drafts can be dictated, typed and read but not edited.
+
+```json
+"writing": {
+  "enabled": true,
+  "people": "everyone",
+  "templates": [
+    { "name": "report", "sections": [{ "name": "Summary", "limit": 400 }, { "name": "Findings" }], "bulletLimit": 200, "style": ["No first person.", "Start each bullet with a verb."] }
+  ]
+}
+```
+
 ### Text chat (`textChat`)
 
 | Key | Type and range | Default | Effect | Example |

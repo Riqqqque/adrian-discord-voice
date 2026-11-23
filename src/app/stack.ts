@@ -3,7 +3,7 @@
 // controller's queue and interruption rules and the spend caps. Started by
 // main.ts once the config is complete, and restarted by the admin UI.
 
-import { ActionRowBuilder, ButtonBuilder, ButtonStyle, Client, Events, GatewayIntentBits, type Message, Partials, type VoiceBasedChannel } from 'discord.js';
+import { ActionRowBuilder, ButtonBuilder, ButtonStyle, Client, escapeMarkdown, Events, GatewayIntentBits, type Message, Partials, type VoiceBasedChannel } from 'discord.js';
 import { dateFormat } from '../core/time.js';
 import { humansIn, IGNORED_REPLY, registerVoiceCommands, type VoiceSpot } from './commands.js';
 import { MUSIC_COMMANDS, registerMusicCommands } from './music-commands.js';
@@ -25,6 +25,7 @@ import { matureContext } from '../brain/mature.js';
 import { LIMIT_MESSAGES, UsageLedger } from '../limits/usage-ledger.js';
 import { routeTools } from '../brain/tool-router.js';
 import { isLocalBase, type ModelInfo, type ModelJob, ModelPicker, modelTool } from '../brain/models.js';
+import { cleanTemplate, Dictation, forSpeech, STOP_DICTATING, type Template, writingContext, writingTool, type WritingDeps, WritingStore } from '../features/writing.js';
 import { PartyGames } from '../features/games.js';
 import { AutoMemory } from '../features/automemory.js';
 import { gameServerTool, pingMinecraft } from '../features/gameservers.js';
@@ -727,7 +728,13 @@ export async function startVoiceStack(
   /** The use_model tool, when there's a choice to make (also /model). */
   let modelSwitch: Tool | undefined;
   type Price = { in: number; cachedIn: number | undefined; out: number; claude: boolean };
-  const brains = new Map<string, { orch: ConversationOrchestrator; dm: ConversationOrchestrator; price: Price }>();
+  const brains = new Map<string, { orch: ConversationOrchestrator; dm: ConversationOrchestrator; price: Price; llm: LlmProvider; maxTokens: number | undefined; local: boolean }>();
+  /** The main model, for writing jobs (set with the brain). */
+  let mainLlm: LlmProvider | undefined;
+  /** Drafts (features/writing.ts), when writing is on. */
+  const writingStore = config.writing?.enabled ? new WritingStore(stateDir ? join(stateDir, 'writing') : undefined, Date.now, (m, f) => log.warn(m, f), config.writing.maxDraftChars) : undefined;
+  /** Who is dictating into a draft right now, and where. */
+  const dictations = new Map<UserId, Dictation>();
   let autoMemory: AutoMemory | undefined;
   /** MCP servers (home control), stopped with the stack. */
   let mcpLink: { stop: () => void } | undefined;
@@ -945,6 +952,7 @@ export async function startVoiceStack(
           ...rosterLines(ctx.channelId, ctx.userId),
           ...room.context(ctx.channelId, ctx.userId),
           ...notes.context(ctx.userId, ctx.speaker, ctx),
+          ...(writingStore ? writingContext(writingStore, ctx.userId, ctx.speaker, dictations.has(ctx.userId)) : []),
           ...headsUp.context(ctx.userId, ctx.speaker),
           ...games.context(ctx),
           ...(roomFor(ctx).music ? [musicState(roomFor(ctx).music!), ...quizzes.context(roomFor(ctx).key), ...linksLine(links.forPrompt(ctx.userId, ctx.guildId)), ...taste.context(ctx.userId, ctx.speaker)] : []),
@@ -1015,10 +1023,15 @@ export async function startVoiceStack(
             orch: new ConversationOrchestrator(l, sessions, tools, o),
             dm: new ConversationOrchestrator(l, sessions.dms(), tools, o),
             price: { in: m.priceInPerM, cachedIn: m.priceCachedInPerM, out: m.priceOutPerM, claude: m.provider === 'anthropic' },
+            llm: l,
+            maxTokens: m.maxTokens,
+            local: m.local,
           });
         }
         log.info('models ready', { models: choices.map((c) => c.name), routes: brain.routes ?? {}, switching: brain.switching });
       }
+      mainLlm = llm;
+      if (writingStore) tools.push(writingTool(writingDeps(writingStore)));
       orchestrator = new ConversationOrchestrator(llm, sessions, tools, brainOptions);
       dmOrchestrator = new ConversationOrchestrator(llm, sessions.dms(), tools, brainOptions);
       log.info('brain ready', { model: brain.model, fallback: fbUsable ? fb!.model : null, tools: tools.map((x) => x.spec.name) });
@@ -1037,13 +1050,74 @@ export async function startVoiceStack(
           1e6
       : 0;
   };
+  /** What the writing tool needs from the bot: the writing model, a way to talk to them, files. */
+  function writingDeps(store: WritingStore): WritingDeps {
+    const w = config.writing!;
+    return {
+      store,
+      templates: w.templates.map((t) => cleanTemplate(t)).filter((t): t is Template => !!t),
+      timezone: config.timezone,
+      refused: (ctx) => (w.people === 'owners' && !isOwner(ctx.userId) ? "Not done: drafts are for the bot's owners here." : undefined),
+      writer: (ctx, privateDraft) => {
+        const ok = mayAsk(ctx.userId);
+        if (!ok.ok) return LIMIT_MESSAGES[ok.reason];
+        const b = config.brain!;
+        let name: string | undefined;
+        if (privateDraft) {
+          // Only a local model ever sees a private draft: the writing route's if
+          // it's local, else the first local one, else the main one if it's local.
+          const route = picker?.pick(ctx.userId, 'writing', isOwner(ctx.userId), spentShare()).name;
+          name = route && brains.get(route)?.local ? route : [...brains].find(([, x]) => x.local)?.[0];
+          if (!name && !isLocalBase(b.baseUrl)) return 'Not done: a private draft needs a local model, and none is set up.';
+        } else name = picker?.pick(ctx.userId, 'writing', isOwner(ctx.userId), spentShare()).name;
+        const entry = name ? brains.get(name) : undefined;
+        const llm = entry?.llm ?? mainLlm;
+        if (!llm) return "Not done: my language model isn't set up.";
+        return {
+          llm,
+          maxTokens: entry?.maxTokens ? Math.max(entry.maxTokens, 500) : w.maxTokens,
+          spend: (u) => ledger.addCost(costUsd({ ...u, toolCalls: 0, ...(entry && name ? { model: name } : {}) }), ctx.userId),
+        };
+      },
+      tell: async (ctx, text, o) => {
+        const rm = ctx.channelId ? satRooms.get(ctx.channelId) : undefined;
+        const inCall = !ctx.text && (rm || (spot && ctx.channelId === spot.channelId));
+        if (inCall) {
+          await (rm?.ctl ?? controller).announce(ctx.userId, o?.speech ?? text);
+          return;
+        }
+        // Text, or nowhere to say it: a DM, in pieces Discord takes.
+        const parts = text.match(/[\s\S]{1,1900}(?=\s|$)|[\s\S]{1,1900}/g) ?? [];
+        for (const part of parts.slice(0, 6)) await client.users.send(ctx.userId, { content: part, allowedMentions: { parse: [] } });
+      },
+      sendFile: async (ctx, name, data, note) => {
+        try {
+          const m = await client.users.send(ctx.userId, { content: escapeMarkdown(note), files: [{ attachment: data, name }], allowedMentions: { parse: [] } });
+          return m.attachments.first()?.url ?? 'sent';
+        } catch {
+          return undefined;
+        }
+      },
+      dictate: (ctx, dr) => {
+        const rm = ctx.channelId ? satRooms.get(ctx.channelId) : undefined;
+        if (!rm && !(spot && ctx.channelId === spot.channelId)) return false;
+        dictations.set(ctx.userId, new Dictation(ctx.userId, dr.id, (rm ?? discordRoom).key, store));
+        return true;
+      },
+      stopDictating: (ctx) => void dictations.delete(ctx.userId),
+      log: (m, f) => log.warn(m, f),
+    };
+  }
+  /** Share of the tightest spend cap used so far (0-1). */
+  function spentShare(): number {
+    const l = config.limits;
+    return Math.max(l.dailyUsd > 0 ? ledger.todayUsd() / l.dailyUsd : 0, l.monthlyUsd > 0 ? ledger.monthUsd() / l.monthlyUsd : 0);
+  }
   /** Who answers this person's `job`: a listed model (brain.models), or the main one. */
   function brainFor(userId: UserId, job: ModelJob = 'chat'): { orch: ConversationOrchestrator; dm: ConversationOrchestrator; model?: string } | undefined {
     if (!orchestrator || !dmOrchestrator) return undefined;
     if (picker) {
-      const l = config.limits;
-      const spent = Math.max(l.dailyUsd > 0 ? ledger.todayUsd() / l.dailyUsd : 0, l.monthlyUsd > 0 ? ledger.monthUsd() / l.monthlyUsd : 0);
-      const m = picker.pick(userId, job, isOwner(userId), spent);
+      const m = picker.pick(userId, job, isOwner(userId), spentShare());
       const b = brains.get(m.name);
       if (b) return { orch: b.orch, dm: b.dm, model: m.name };
     }
@@ -1765,6 +1839,8 @@ export async function startVoiceStack(
       if (alarms.ringingFor(e.userId).length) alarmHeard(rm, e.userId, e.woke ? e.command || e.text : e.text, e.woke);
       return;
     }
+    /** Her name was said (push-to-talk alone doesn't count, below). */
+    const named = e.woke;
     // Pressed: for her, not a maybe. Her name at the end ("what's the weather,
     // Adrian") needs no judge, and the cloud's words count without it.
     const pressedLoose = p.ptt && !!e.loose;
@@ -1818,6 +1894,18 @@ export async function startVoiceStack(
       if (first?.kind === 'stop' && !first.weak) callOff(e.userId, ctl);
     }
     if (!rm.ui && !stop && (pcHasWords.get(e.userId) ?? 0) > performance.now()) return;
+    // Dictating into a draft (features/writing.ts): their words are the draft's,
+    // unless they say her name or stop. None of it reaches the logs, the room's
+    // talk, the recorder or her conversation.
+    const dict = dictations.get(e.userId);
+    // A weak stop word ("done", "okay that's enough") is more of the draft while she's quiet.
+    if (dict && !held && !named && dict.room === rm.key && (!stop || STOP_DICTATING.test(e.text.trim()) || (!!first?.weak && !ctl.busy))) {
+      if (writingStore!.now() - dict.lastAt > (config.writing?.dictationIdleMinutes ?? 10) * 60_000) dictations.delete(e.userId);
+      else {
+        await dictationHeard(rm, dict, e);
+        return;
+      }
+    }
     // The windows are judged from when they started talking, not when the words land.
     const startedAt = (e.vadClosedAt ?? e.segmentClosedAt) - e.audioSeconds * 1000;
     const forBot = e.woke || p.ptt || ctl.listeningTo(e.userId, startedAt);
@@ -1913,6 +2001,25 @@ export async function startVoiceStack(
     // keeps its subject); only the quick local answers take the words without her name.
     if (pressedLoose && e.woke && e.command.trim() && !classify(e.command) && !classifyMusic(e.command) && !isTimeQuestion(e.command)) e = { ...e, command: e.text };
     ctl.heard({ userId: e.userId, text: e.text, woke: e.woke, command: e.command, startedAt, ...(e.loose ? { loose: true } : {}), ...(more ? { more: true } : {}) });
+  }
+  /** Words for the draft they're dictating into, or one of dictation's own commands. */
+  async function dictationHeard(rm: Room, d: Dictation, e: HeardEvent): Promise<void> {
+    const store = writingStore!;
+    const draft = store.person(d.userId).drafts.find((x) => x.id === d.draftId);
+    let said = e.text;
+    // The cloud's words are better, but a private draft's never leave the house.
+    if (draft && !draft.private && e.samples && cloudSttFor(rm, d.userId)) said = (await (early.get(e.samples) ?? cloudListen(e.samples))) || said;
+    if (!said.trim()) return;
+    if (rm.ui) rm.ui.transcript('you', said);
+    const step = d.heard(said);
+    const say = (t: string) => void (rm.ctl ?? controller).announce(d.userId, t).catch(() => undefined);
+    const words = store.person(d.userId).words;
+    if (step.kind === 'done') {
+      dictations.delete(d.userId);
+      say(`Saved. ${step.words} words in ${draft?.title ?? 'your draft'}.`);
+    } else if (step.kind === 'read') say(forSpeech(step.text, words) || 'Nothing yet.');
+    else if (step.kind === 'scratched') say('Scratched.');
+    else if (step.kind === 'nothing to scratch') say('Nothing to scratch.');
   }
   // Before the question reaches it: after a long quiet Speechify stalls on the first sentence.
   // Connections to the providers too, after one closed while it was quiet (core/http.ts).

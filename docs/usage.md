@@ -531,6 +531,7 @@ It can look things up about the server it's in, by voice or text: "who's online?
 | Post the weekly recap now | Owners |
 | `/leave` or `/join` from outside a call that still has other people in it | Owners |
 | Make her ignore someone, or listen to them again | Owners (only the app owner for another owner; nobody for the app owner) |
+| Drafts, dictation, the writing log and word list | `writing.people`: owners by default, or everyone; each person only their own |
 | Switch which model answers you | `brain.switching`: owners by default; `ownersOnly` models are owners' only |
 
 ## Owners
@@ -550,6 +551,22 @@ An owner can tell her to ignore someone, by voice or in text: "Adrian, ignore Sa
 - Music only: she won't play, skip, pause or change music or sounds for them; they can still talk to her.
 
 Only an owner can do this, and only an owner can undo it: what the ignored person says about it doesn't count. Nobody can make her ignore the app owner, and only the app owner can make her ignore another owner. It lasts until an owner says otherwise, or for the time they gave (up to a week), restarts included. Details: [tools.md](tools.md#ignore_person).
+
+## Writing with her
+
+When the bot's owner turns writing on (`writing.enabled`), she keeps drafts for you: reports, reviews, applications, letters, statements, essays, anything with sections and length limits. Each person's drafts are their own.
+
+- **Start and dictate:** "Adrian, start a draft called quarterly review" (or "... using the report template"), then just talk. Say "new paragraph", "new bullet", "new section Results", "scratch that", "read it back", and "done" when you're finished. Pauses to think are fine; dictation waits.
+- **Edit by voice or text:** "make the second bullet shorter", "make it more formal", "add the numbers", "start each bullet with a verb", "proofread it", "undo that". She makes the change and tells you what changed and how long it is now.
+- **Versions:** "give me three versions of the opening line", then "use option two".
+- **Length:** "how long is it?", "am I over any limits?" A template's limits are counted in characters with spaces.
+- **Templates:** "make a template called report with sections summary and findings, bullets under 200 characters, no first person". The owner can also set shared ones.
+- **Your word list:** "always write QA for quality assurance". She writes it short and says it in full when reading back.
+- **A running log:** "log that I finished the audit two days early" whenever something happens, then "turn what I logged this quarter into a draft".
+- **Getting it out:** "send me the draft" (a file in your DMs, Markdown or plain text), "read it back".
+- **Private drafts:** "start a private draft" keeps it on a local model only (if the owner has one set up): dictation skips the cloud listen, and edits never go to a cloud model. What you ask her out loud still goes to the model answering you.
+
+In a voice call others can hear what she reads back, so ask for the draft in your DMs when that matters. Don't dictate anything you aren't allowed to share with the services this bot uses.
 
 ## Choosing a model
 
@@ -648,6 +665,7 @@ Each feature that needs the model goes through one or more tools. Their argument
 | PC and Discord together | `pc_handoff`, `tell_call` |
 | The server and its people | `server_info`, `message_member` |
 | Ignoring someone | `ignore_person` |
+| Writing drafts | `draft` |
 | Choosing a model | `use_model` |
 | Game nights | `game_night` |
 | Minecraft servers | `game_server_status`, `game_server_control`, `game_server_whitelist`, `game_server_say` |

@@ -3520,3 +3520,38 @@ describe('more than one model', () => {
     await r.stack.stop();
   });
 });
+
+describe('dictating a draft', () => {
+  it('after "start a draft", their words go into it without the model or the logs, and done ends it', async () => {
+    const r = await rig({ owners: [OWNER], writing: { enabled: true } });
+    r.steps.push({ parts: [toolCall('draft', JSON.stringify({ action: 'start', title: 'Notes' })), usage(100, 10)] });
+    r.heard(r.discordPipe, OWNER, 'hey adrian start a draft called notes', 'start a draft called notes');
+    await until(() => r.stack.answers().length === 1, 'the start');
+    expect(r.tts.calls.join(' ')).toMatch(/Started Notes\. I'm taking it down/);
+    const calls = r.llmBodies.length;
+    r.heard(r.discordPipe, OWNER, 'the first thing we did was plan the move.');
+    r.heard(r.discordPipe, OWNER, 'new paragraph');
+    r.heard(r.discordPipe, OWNER, 'then we shipped it.');
+    r.heard(r.discordPipe, OWNER, "I'm done.");
+    await until(() => r.tts.calls.some((t) => /^Saved\./.test(t)), 'the save');
+    expect(r.tts.calls.at(-1)).toBe('Saved. 13 words in Notes.');
+    expect(r.llmBodies).toHaveLength(calls);
+    const saved = JSON.parse(readFileSync(join(r.dir, 'writing', `${OWNER}.json`), 'utf8'));
+    expect(saved.drafts[0].text).toBe('The first thing we did was plan the move.\n\nThen we shipped it.');
+    expect(JSON.stringify(r.logged)).not.toMatch(/plan the move|shipped it/);
+    // Done: plain talk is just talk again, and someone else's never went in.
+    r.heard(r.discordPipe, OWNER, 'this is not for the draft');
+    r.heard(r.discordPipe, SAM, 'nor is this');
+    await sleep(50);
+    expect(JSON.parse(readFileSync(join(r.dir, 'writing', `${OWNER}.json`), 'utf8')).drafts[0].text).toBe(saved.drafts[0].text);
+    await r.stack.stop();
+  });
+
+  it('is off without writing.enabled: no draft tool', async () => {
+    const r = await rig({ owners: [OWNER] });
+    r.heard(r.discordPipe, OWNER, 'hey adrian start a draft called notes', 'start a draft called notes');
+    await until(() => r.stack.answers().length === 1, 'the answer');
+    expect((r.llmBodies[0].tools ?? []).map((t: any) => t.function.name)).not.toContain('draft');
+    await r.stack.stop();
+  });
+});

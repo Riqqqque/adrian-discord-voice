@@ -236,6 +236,32 @@ export const PocConfigSchema = z.object({
   ownerAck: z.array(z.string().min(1).max(40)).max(10).default([]),
   /** Be extra affectionate and devoted with owners. */
   ownerAffection: z.boolean().default(false),
+  /** Drafts written and edited with her by voice or text (features/writing.ts). Off unless turned on. */
+  writing: z
+    .object({
+      enabled: z.boolean().default(false),
+      /** Who may keep drafts: owners, or everyone (each only their own). */
+      people: z.enum(['owners', 'everyone']).default('owners'),
+      /** Longest answer from the writing model, tokens. */
+      maxTokens: z.number().int().min(500).max(16_000).default(4_000),
+      /** Longest draft, characters. */
+      maxDraftChars: z.number().int().min(1_000).max(200_000).default(30_000),
+      /** Dictation ends by itself after this long without a word, minutes. */
+      dictationIdleMinutes: z.number().int().min(1).max(60).default(10),
+      /** Templates everyone can start from: sections, limits, style rules. None are built in. */
+      templates: z
+        .array(
+          z.object({
+            name: z.string().min(1).max(40),
+            sections: z.array(z.object({ name: z.string().min(1).max(60), limit: z.number().int().min(10).max(20_000).optional() })).max(20).default([]),
+            bulletLimit: z.number().int().min(10).max(20_000).optional(),
+            style: z.array(z.string().min(1).max(160)).max(12).default([]),
+          }),
+        )
+        .max(20)
+        .default([]),
+    })
+    .optional(),
   /** Text chat: answer when @mentioned or replied to in a server, and in DMs. */
   textChat: z
     .object({

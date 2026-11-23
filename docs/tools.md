@@ -92,6 +92,7 @@ Registration order, with everything enabled. 52 built-in tools, plus one per all
 | `server_info` | `serverInfo.enabled` | anyone, filtered to what they can see | no | no |
 | `message_member` | `serverInfo.enabled` and `messaging.enabled` | anyone | yes | read-back |
 | `ignore_person` | always (with a model) | owners | except `list` | yes |
+| `draft` | `writing.enabled` | `writing.people` (owners by default), each person only their own drafts | except `list`, `read`, `count`, `log_list`, `words`, `templates` | yes |
 | `use_model` | `brain.models` lists a model and `brain.switching` isn't `off` | `brain.switching` (owners by default) | `use`, `reset` | yes |
 | `pc_handoff` | `satellite.enabled` and `handoff.enabled` | the asker, own PC | yes | yes |
 | `tell_call` | `handoff.enabled` and `handoff.tellCall.enabled` | a member of her server who isn't in her call | yes | yes |
@@ -412,6 +413,33 @@ File: `src/features/ignore.ts`. `action` (`ignore`, `listen_again`, `list`; requ
 Names are looked up in her call first, then the server (`findPeople` in stack.ts, using `matchMembers`). A name that fits several people gets "which one?". The list is kept in `ignored.json` in the state folder, so it survives restarts. Timed entries drop themselves. The tool's own line is what she says, with no second model call.
 
 **Cost:** one model call to understand the order; the change itself is free.
+
+### `draft`
+
+File: `src/features/writing.ts`. Only there when `writing.enabled` is on. One tool for everything about drafts; `action` is required:
+
+| Action | Does |
+|---|---|
+| `start` (`title`, `template`, `private`) | A new draft, from a template's sections if given. By voice it starts dictation too |
+| `open`, `list`, `rename`, `delete` | Which draft they're on, and the rest |
+| `dictate` | Voice only: what they say next goes into the draft (below) |
+| `add` (`text`, `bullet`) | Adds words or a bullet, as they said them |
+| `revise` (`instruction`), `proofread` | The writing model makes the change, in the background, and she says what changed and the new length |
+| `options` (`instruction` = which part, `n`), `choose` (`n`) | Versions of one part, then the one they pick goes in |
+| `undo` | Back one change (20 kept) |
+| `count` | Words and characters, and anything over the template's limits |
+| `read` (`all`) | By voice, the end (or all) is said; in text, the draft is sent as a DM |
+| `export` (`format` md or txt) | The draft as a file in their DMs |
+| `privacy` (`private`) | Keep a draft on local models only, or not |
+| `log` (`text`), `log_list` (`days`), `from_log` (`days`, `instruction`, `template`) | A running log of things they got done, and a new draft written from it |
+| `word` (`short`, `long`), `unword`, `words` | Their word list: written short, said in full |
+| `template` (`template`, `sections`, `bullet_limit`, `style`), `templates` | Their own templates, beside the config's |
+
+The draft's words never pass through the model that's talking: the tool's line is what she says (no second model call), edits and readbacks go out on their own (`tell`: said in their room, or a DM in text chat), and the request's prompt only names the draft they're on and whether options are waiting (`writingContext`). The writing model gets the draft as untrusted data, the template's rules and the word list, and answers with exact find/replace edits or the whole new text; a bullet left over its limit gets one more pass. Edits run for up to 3 minutes, one at a time per draft, and are charged to the person at the writing model's prices.
+
+**Dictation** is handled in `heard()` in `stack.ts` before anything else sees the words: no model call, no room talk, no `heard`/`pc heard` text, no recorder, no cloud second listen for a private draft. "New paragraph", "new line", "new bullet [words]", "new section [name]", "scratch that", "read it back", "read the whole thing back" and "done" (or "I'm done", "stop dictating", "that's it") are its own commands; her name or a clear stop still reach her as usual. It ends after `writing.dictationIdleMinutes` without a word.
+
+**Cost:** one model call to understand the request; each edit is one writing-model call (two if something is left over its limit). Dictation is free.
 
 ### `use_model`
 
