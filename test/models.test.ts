@@ -106,7 +106,7 @@ describe('/model', () => {
 
 describe('isLocalBase', () => {
   it('accepts loopback, private networks and local names', () => {
-    for (const u of ['http://127.0.0.1:11434/v1', 'http://localhost:8080', 'http://10.0.0.5/v1', 'http://192.168.1.20:11434', 'http://172.20.1.1', 'http://100.70.1.2', 'http://[::1]:11434', 'http://[fd00::5]/v1', 'http://gpu-box:8000', 'http://llm.lan', 'http://box.local'])
+    for (const u of ['http://127.0.0.1:11434/v1', 'http://localhost:8080', 'http://10.0.0.5/v1', 'http://192.168.1.20:11434', 'http://172.20.0.1', 'http://100.100.1.1', 'http://[::1]:11434', 'http://[fd00::5]/v1', 'http://gpu-box:8000', 'http://llm.lan', 'http://box.local'])
       expect([u, isLocalBase(u)]).toEqual([u, true]);
   });
   it('refuses public hosts', () => {
