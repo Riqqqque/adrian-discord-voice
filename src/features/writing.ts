@@ -559,6 +559,8 @@ export interface WritingDeps {
   /** Voice only: start taking their words into this draft. */
   dictate?(ctx: ToolContext, draft: Draft): boolean;
   stopDictating?(ctx: ToolContext): void;
+  /** A PDF or Word file of a draft (documents-ops.ts, on a worker). */
+  render?(format: 'pdf' | 'docx', title: string, text: string): Promise<Uint8Array>;
   log?(msg: string, data?: Record<string, unknown>): void;
 }
 
@@ -620,7 +622,7 @@ export function writingTool(d: WritingDeps): Tool {
           short: { type: 'string', description: 'word/unword: how it is written ("QA").' },
           long: { type: 'string', description: 'word: how it is said ("quality assurance").' },
           private: { type: 'boolean', description: 'start/privacy: keep this draft on local models only.' },
-          format: { type: 'string', enum: ['md', 'txt'], description: 'export: file type (default md).' },
+          format: { type: 'string', enum: ['md', 'txt', 'pdf', 'docx'], description: 'export: file type (default md; docx is Word).' },
           days: { type: 'number', description: 'log_list/from_log: how far back (default 90).' },
           all: { type: 'boolean', description: 'read: the whole draft, not just the end.' },
         },
@@ -771,10 +773,14 @@ export function writingTool(d: WritingDeps): Tool {
           const dr = pick();
           if (!dr) return nodraft;
           if (!d.sendFile) return 'Not done: I have no way to send files here.';
-          const fmt = args.format === 'txt' ? 'txt' : 'md';
-          const body = fmt === 'txt' ? dr.text.replace(/^#{1,3}\s+/gm, '').replace(/^[-*•]\s+/gm, '• ') : `# ${dr.title}\n\n${dr.text}`;
+          const fmt = args.format === 'txt' || args.format === 'pdf' || args.format === 'docx' ? args.format : 'md';
+          if ((fmt === 'pdf' || fmt === 'docx') && !d.render) return 'Not done: I can only send drafts as Markdown or text here.';
+          const body =
+            fmt === 'pdf' || fmt === 'docx'
+              ? Buffer.from(await d.render!(fmt, dr.title, dr.text))
+              : Buffer.from(fmt === 'txt' ? dr.text.replace(/^#{1,3}\s+/gm, '').replace(/^[-*•]\s+/gm, '• ') : `# ${dr.title}\n\n${dr.text}`, 'utf8');
           const name = `${dr.title.replace(/[^\w .-]+/g, '').trim().replace(/\s+/g, '-').slice(0, 60) || 'draft'}.${fmt}`;
-          const sent = await d.sendFile(ctx, name, Buffer.from(body, 'utf8'), `${dr.title} (${counts(dr.text).line})`);
+          const sent = await d.sendFile(ctx, name, body, `${dr.title} (${counts(dr.text).line})`);
           return sent ? `Sent ${name} to your DMs.` : "Not done: I couldn't DM you. Check that DMs from server members are on.";
         }
         case 'log': {

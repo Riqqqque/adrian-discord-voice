@@ -295,6 +295,7 @@ Drafts written and edited with her by voice or text: see [usage.md](usage.md#wri
 | `writing.maxTokens` | integer 500-16000 | `4000` | Longest answer from the writing model, when the main model writes. A listed model's own `maxTokens` wins |
 | `writing.maxDraftChars` | integer 1000-200000 | `30000` | Longest draft |
 | `writing.dictationIdleMinutes` | integer 1-60 | `10` | Dictation ends by itself after this long without a word |
+| `writing.documents` | boolean | `true` | Files sent to her in Discord (PDF, Word, text, Markdown): kept per person for two weeks, and the `document` tool to read, fill, edit and convert them. Needs `textChat` on to receive them |
 | `writing.templates` | list | `[]` | Templates anyone can start from: `name`, `sections` (`name`, optional `limit` in characters per bullet or paragraph), `bulletLimit`, `style` (rules as text). None are built in; people can also make their own by asking |
 
 Edits are made by the writing model: `brain.routes.writing` if more models are listed, else the main model. A draft marked private is only ever sent to a local model (`brain.models` with `local: true`, or the main model if its address is local); without one, private drafts can be dictated, typed and read but not edited.

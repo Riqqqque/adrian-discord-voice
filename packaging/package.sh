@@ -31,6 +31,9 @@ rm -rf src test tsconfig.json packaging/package.sh node_modules/.vite*
 rm -rf node_modules/@discordjs/opus/build-tmp-napi-v3
 # The bundle is Linux x64 only; onnxruntime-node ships every platform (~250 MB).
 find node_modules/onnxruntime-node/bin -mindepth 2 -maxdepth 3 -type d ! -path "*/linux" ! -path "*/linux/x64" -prune -exec rm -rf {} + 2>/dev/null || true
+# The PDF libraries: only what Node loads (pdf-lib's cjs and es builds, pdfjs's legacy build and its fonts).
+rm -rf node_modules/pdf-lib/dist node_modules/pdf-lib/ts3.4 node_modules/pdf-lib/src node_modules/pdfjs-dist/build node_modules/pdfjs-dist/web node_modules/pdfjs-dist/types
+find node_modules/pdf-lib node_modules/pdfjs-dist -name '*.map' -delete 2>/dev/null || true
 find node_modules -type d -empty -delete
 chmod 0755 . packaging/adrian packaging/install.sh packaging/upgrade-prep.sh  # mktemp dirs are 0700
 

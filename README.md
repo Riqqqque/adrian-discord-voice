@@ -44,6 +44,15 @@ Everything below is in the current release (0.17.1), except what is marked *(nex
 - Alarm buttons in a DM act only on the ring they were sent for, and a PC's late or early answer can't stop an alarm that hasn't rung yet *(next release)*.
 - Optional heads-up when someone joins after hours away, "what did I miss?", and a weekly recap post with counts only (no transcripts).
 
+**Writing and documents** (off until `writing.enabled`; owners only unless `writing.people` is `everyone`) *(next release)*
+- Drafts you write with it by voice or text: dictate ("new paragraph", "new bullet", "scratch that", "read it back", "done"; pauses to think are fine), then edit by asking ("make the second bullet shorter", "more formal", "give me three versions of the opening line", "proofread it", "undo that").
+- Templates with sections, length limits per bullet or section and style rules, with live character counts; a word list it writes short and says in full; a running log of what you got done that it turns into a draft.
+- Files you send it in Discord (PDF, Word, text, Markdown): ask about them, fill a PDF form, replace words, add a line, rewrite one, convert between PDF, Word, Markdown and text, or open it on your PC. Results come back to your DMs.
+- Private drafts are only ever edited by a local model, and dictation for them skips the cloud listen.
+
+**Models** *(next release)*
+- One model by default. List more (`brain.models`) and each job gets its own (a careful one for writing, a local one for memory), people can switch for a while ("use the smart model for this", `/model`), owners decide who may and which models are theirs only, and guests move to a cheaper model near the spend cap.
+
 **Integrations** (most need a key or a config entry before they appear)
 - Minecraft servers: status by server-list ping. With the Helix panel: start, stop and restart (stop and restart ask first), whitelist, and in-game chat, for owners and allow-listed people.
 - Steam: which friends are playing what, wishlist sales, store prices.
@@ -146,7 +155,7 @@ Every command is in [docs/install.md](docs/install.md); every setting, with its 
 ## Privacy in short
 
 - **Stays on your machine:** speech recognition, the built-in voices, alarms, notes and all state files. Audio is not stored or uploaded unless you turn on `cloudStt` (sends speech meant for it to Groq) or `satellite.recordDays` (keeps recordings of PC requests).
-- **Leaves your machine:** the transcribed request, the conversation so far, what others in the call said recently, who is in the call, and the asker's notes go to your language model. Searches go to Tavily, English replies to Speechify if the cloud voice is on, music searches to YouTube and Deezer. On request at the PC, what you copied or a picture of your screen goes to the model. The weather place goes to Open-Meteo; news feeds are fetched (NPR by default, `news.feeds`); Steam lookups go to Steam; the calendar's iCal address is fetched; the same prompts go to `brain.fallback` or `brain.background` if you configure them; MCP and Home Assistant servers you configure get the tool calls meant for them.
+- **Leaves your machine:** the transcribed request, the conversation so far, what others in the call said recently, who is in the call, and the asker's notes go to your language model. Searches go to Tavily, English replies to Speechify if the cloud voice is on, music searches to YouTube and Deezer. On request at the PC, what you copied or a picture of your screen goes to the model. The weather place goes to Open-Meteo; news feeds are fetched (NPR by default, `news.feeds`); Steam lookups go to Steam; the calendar's iCal address is fetched; the same prompts go to `brain.fallback` or `brain.background` if you configure them; MCP and Home Assistant servers you configure get the tool calls meant for them. With writing on, a draft goes to the writing model when you ask for an edit (only to a local one for a private draft), and a file you sent goes to the language model when you ask about it; dictation itself never does.
 - **Keys** live in `/etc/adrian/secrets.env` (mode 0600). The admin page can set keys but never shows them, and each setting can only use a key meant for its own job.
 - **Other services** are read-only unless you configure control: Helix server actions and MCP home control are opt-in and limited to owners, allow lists and a spoken yes where it matters.
 

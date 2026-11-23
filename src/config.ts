@@ -248,6 +248,8 @@ export const PocConfigSchema = z.object({
       maxDraftChars: z.number().int().min(1_000).max(200_000).default(30_000),
       /** Dictation ends by itself after this long without a word, minutes. */
       dictationIdleMinutes: z.number().int().min(1).max(60).default(10),
+      /** Files sent to her in Discord (PDF, Word, text, Markdown): read, fill, edit, convert. */
+      documents: z.boolean().default(true),
       /** Templates everyone can start from: sections, limits, style rules. None are built in. */
       templates: z
         .array(

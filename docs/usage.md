@@ -566,6 +566,8 @@ When the bot's owner turns writing on (`writing.enabled`), she keeps drafts for 
 - **Getting it out:** "send me the draft" (a file in your DMs, Markdown or plain text), "read it back".
 - **Private drafts:** "start a private draft" keeps it on a local model only (if the owner has one set up): dictation skips the cloud listen, and edits never go to a cloud model. What you ask her out loud still goes to the model answering you.
 
+**Documents:** send her a PDF, Word, text or Markdown file in Discord (a DM, or a message to her) and ask about it: "what does this lease say about pets?", "summarize it", "what fields does this form have?", "fill in my name as Jane Example", "change $120 to $95", "add Signed electronically at the bottom", "make this letter shorter", "turn it into a Word file", "make it a draft", "open it on my PC". She sends what she made to your DMs. She keeps your files for two weeks. Changing words in a PDF writes over them in a standard font and doesn't remove the old ones, so never use it to hide anything; password-protected PDFs and XFA forms can't be changed. A Word or PDF file she rewrites keeps its words and headings, not its look.
+
 In a voice call others can hear what she reads back, so ask for the draft in your DMs when that matters. Don't dictate anything you aren't allowed to share with the services this bot uses.
 
 ## Choosing a model
@@ -666,6 +668,7 @@ Each feature that needs the model goes through one or more tools. Their argument
 | The server and its people | `server_info`, `message_member` |
 | Ignoring someone | `ignore_person` |
 | Writing drafts | `draft` |
+| Documents you send her | `document` |
 | Choosing a model | `use_model` |
 | Game nights | `game_night` |
 | Minecraft servers | `game_server_status`, `game_server_control`, `game_server_whitelist`, `game_server_say` |

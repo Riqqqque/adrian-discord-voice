@@ -25,6 +25,8 @@ import { matureContext } from '../brain/mature.js';
 import { LIMIT_MESSAGES, UsageLedger } from '../limits/usage-ledger.js';
 import { routeTools } from '../brain/tool-router.js';
 import { isLocalBase, type ModelInfo, type ModelJob, ModelPicker, modelTool } from '../brain/models.js';
+import { attachedLine, docRunner, documentTool, DocumentStore, fetchAttachment } from '../features/documents.js';
+import { type DocInfo, kindOf, DOC_LIMITS } from '../features/documents-ops.js';
 import { cleanTemplate, Dictation, forSpeech, STOP_DICTATING, type Template, writingContext, writingTool, type WritingDeps, WritingStore } from '../features/writing.js';
 import { PartyGames } from '../features/games.js';
 import { AutoMemory } from '../features/automemory.js';
@@ -735,6 +737,9 @@ export async function startVoiceStack(
   const writingStore = config.writing?.enabled ? new WritingStore(stateDir ? join(stateDir, 'writing') : undefined, Date.now, (m, f) => log.warn(m, f), config.writing.maxDraftChars) : undefined;
   /** Who is dictating into a draft right now, and where. */
   const dictations = new Map<UserId, Dictation>();
+  /** Documents people sent her (features/documents.ts), with writing on. */
+  const docStore = writingStore && config.writing!.documents ? new DocumentStore(stateDir ? join(stateDir, 'documents') : undefined) : undefined;
+  const runDoc = docRunner();
   let autoMemory: AutoMemory | undefined;
   /** MCP servers (home control), stopped with the stack. */
   let mcpLink: { stop: () => void } | undefined;
@@ -1031,7 +1036,33 @@ export async function startVoiceStack(
         log.info('models ready', { models: choices.map((c) => c.name), routes: brain.routes ?? {}, switching: brain.switching });
       }
       mainLlm = llm;
-      if (writingStore) tools.push(writingTool(writingDeps(writingStore)));
+      if (writingStore) {
+        const wd = writingDeps(writingStore);
+        tools.push(writingTool(wd));
+        if (docStore)
+          tools.push(
+            documentTool({
+              store: docStore,
+              run: runDoc,
+              ...(wd.refused ? { refused: wd.refused } : {}),
+              writer: (ctx) => wd.writer(ctx, false),
+              drafts: writingStore,
+              tell: (ctx, t) => wd.tell(ctx, t),
+              sendFile: wd.sendFile!,
+              ...(satEnabled
+                ? {
+                    openOnPc: async (ctx, url) => {
+                      const pc = pcFor(ctx);
+                      if (!pc) return "Not done: your PC isn't connected.";
+                      const r = await pc.action('pc_open', { url });
+                      return r.ok ? undefined : `Not done: ${r.result.slice(0, 120)}`;
+                    },
+                  }
+                : {}),
+              log: (m, f) => log.warn(m, f),
+            }),
+          );
+      }
       orchestrator = new ConversationOrchestrator(llm, sessions, tools, brainOptions);
       dmOrchestrator = new ConversationOrchestrator(llm, sessions.dms(), tools, brainOptions);
       log.info('brain ready', { model: brain.model, fallback: fbUsable ? fb!.model : null, tools: tools.map((x) => x.spec.name) });
@@ -1105,6 +1136,7 @@ export async function startVoiceStack(
         return true;
       },
       stopDictating: (ctx) => void dictations.delete(ctx.userId),
+      ...(docStore ? { render: async (format: 'pdf' | 'docx', title: string, text: string) => (await runDoc(format === 'pdf' ? { op: 'makePdf', title, text } : { op: 'makeDocx', title, text })) as Uint8Array } : {}),
       log: (m, f) => log.warn(m, f),
     };
   }
@@ -2074,6 +2106,29 @@ export async function startVoiceStack(
     log,
     handledElsewhere: (m) => musicCommands?.isCommand(m) ?? false,
     ignored: (id) => ignored.blocks(id, 'everything'),
+    ...(docStore
+      ? {
+          attached: async (m: Message) => {
+            const files = [...m.attachments.values()].filter((a) => kindOf(a.name, a.contentType)).slice(0, 3);
+            if (!files.length) return [];
+            if (config.writing!.people === 'owners' && !isOwner(m.author.id)) return [`${m.member?.displayName ?? m.author.username} attached a file, but documents are for the bot's owners here.`];
+            const kept: { doc?: ReturnType<DocumentStore['add']>; name: string; problem?: string }[] = [];
+            for (const a of files) {
+              const kind = kindOf(a.name, a.contentType)!;
+              try {
+                if (a.size > DOC_LIMITS.bytes) throw new Error('it is over 20 MB');
+                const bytes = await fetchAttachment(a.url);
+                const info = (await runDoc({ op: 'read', kind, bytes })) as DocInfo;
+                kept.push({ name: a.name, doc: docStore.add(m.author.id, a.name, kind, bytes, { ...(info.pages ? { pages: info.pages } : {}), ...(info.fields?.length ? { fields: info.fields.length } : {}) }) });
+              } catch (e) {
+                kept.push({ name: a.name, problem: (e as Error).message.slice(0, 120) });
+              }
+            }
+            log.info('documents attached', { user: m.author.id, kept: kept.filter((k) => k.doc).length, refused: kept.filter((k) => !k.doc).length });
+            return [attachedLine(m.member?.displayName ?? m.author.username, kept)];
+          },
+        }
+      : {}),
     ...(orchestrator
       ? {
           ask: (userId, name, text, place, signal, opts) => {

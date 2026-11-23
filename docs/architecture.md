@@ -418,6 +418,7 @@ State folder: `ADRIAN_STATE`, default `/var/lib/adrian`, owned by the service us
 | `reminders.json` | `src/features/reminders.ts` | Reminders | Starts empty; the next save replaces it |
 | `notes.json` | `src/features/notes.ts` | Per-person notes (told and learned) | Starts empty; the next save replaces it |
 | `music-taste.json` | `src/features/taste.ts` | Per-person artist plays, likes and dislikes; her own taste | |
+| `documents/<id>/index.json`, `documents/<id>/<doc>.<ext>` | `src/features/documents.ts` | Files a person sent her (name, kind, size, pages, field count) and their bytes, two weeks | Parse error: index moved aside as `index.json.bad-<ms>`, starts empty |
 | `writing/<id>.json` | `src/features/writing.ts` | One person's drafts (text, 20 earlier versions, template, private flag), word list, writing log and templates | Parse error: moved aside as `<id>.json.bad-<ms>`, starts empty |
 | `ignored.json` | `src/features/ignore.ts` | People an owner told her to ignore: id, name, scope, who said so, until when | Parse error: moved aside as `ignored.json.bad-<ms>`, starts empty |
 | `heads-up.json` | `src/features/headsup.ts` | When each person was last in the call, their heads-up choices | Starts empty |

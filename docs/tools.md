@@ -93,6 +93,7 @@ Registration order, with everything enabled. 52 built-in tools, plus one per all
 | `message_member` | `serverInfo.enabled` and `messaging.enabled` | anyone | yes | read-back |
 | `ignore_person` | always (with a model) | owners | except `list` | yes |
 | `draft` | `writing.enabled` | `writing.people` (owners by default), each person only their own drafts | except `list`, `read`, `count`, `log_list`, `words`, `templates` | yes |
+| `document` | `writing.enabled` and `writing.documents` | as `draft`, each person only their own files | except `list`, `read`, `fields` | except `read`, `fields` |
 | `use_model` | `brain.models` lists a model and `brain.switching` isn't `off` | `brain.switching` (owners by default) | `use`, `reset` | yes |
 | `pc_handoff` | `satellite.enabled` and `handoff.enabled` | the asker, own PC | yes | yes |
 | `tell_call` | `handoff.enabled` and `handoff.tellCall.enabled` | a member of her server who isn't in her call | yes | yes |
@@ -440,6 +441,28 @@ The draft's words never pass through the model that's talking: the tool's line i
 **Dictation** is handled in `heard()` in `stack.ts` before anything else sees the words: no model call, no room talk, no `heard`/`pc heard` text, no recorder, no cloud second listen for a private draft. "New paragraph", "new line", "new bullet [words]", "new section [name]", "scratch that", "read it back", "read the whole thing back" and "done" (or "I'm done", "stop dictating", "that's it") are its own commands; her name or a clear stop still reach her as usual. It ends after `writing.dictationIdleMinutes` without a word.
 
 **Cost:** one model call to understand the request; each edit is one writing-model call (two if something is left over its limit). Dictation is free.
+
+### `document`
+
+Files: `src/features/documents.ts` (store, tool, attachment fetch), `documents-ops.ts` (what can be done to the bytes), `documents-worker.ts` (one worker thread per job, 45 s and 768 MB at most). A PDF, Word (.docx), text or Markdown file attached to a message to her (a DM, an @mention or a reply) is fetched from Discord's file hosts only (https, 20 MB at most, counted while it streams), read on the worker, and kept in `documents/<id>/` for two weeks (20 files or 100 MB per person; the oldest go first). The request's prompt gets one line naming what came (`attachedLine`), never its contents.
+
+| Action | Does |
+|---|---|
+| `list` | Their files |
+| `read` (`name`) | The text (PDFs by page, up to 15,000 characters) and form field names, wrapped as untrusted data, for the model to answer from |
+| `fields` | A PDF form's fields, types, choices and current values |
+| `fill` (`values`: field to value) | Fills a PDF form (names matched loosely), and says which it couldn't find or fill |
+| `replace` (`find`, `replace`) | PDF: covers the words with a white box and writes the new ones over in Helvetica (only words in one piece on one line; the old words stay in the file underneath, so this never hides anything). Word: inside one run, keeping the rest. Text: every match |
+| `add_text` (`text`, `where` top, bottom or new page, `page`) | A line on a PDF page, or a new last page |
+| `rewrite` (`instruction`) | The writing model rewrites the text in the background; the result is a new file of the same kind (PDF and Word lose the original's layout) |
+| `to_draft` | Makes it a draft, for the `draft` tool |
+| `convert` (`format` pdf, docx, md, txt) | Same words, new format |
+| `open_on_pc` | DMs the file and opens Discord's link on their PC (`pc_open`) |
+| `delete` | Removes it |
+
+Every result goes to their DMs as a new file (also kept as their newest document). Refused, with the reason said: encrypted or password PDFs, XFA forms (checked in the catalog, since pdf-lib silently drops XFA when it opens a form), files over the limits, scanned pages with no text. Characters Helvetica can't write become "?". The draft tool's `export` also writes PDF and Word through the same worker.
+
+**Cost:** reading and editing files is free; answering about one costs a normal answer with the text in it, and `rewrite` costs one writing-model call.
 
 ### `use_model`
 

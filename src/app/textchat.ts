@@ -51,6 +51,8 @@ export interface TextChatDeps {
   handledElsewhere?(m: Message): boolean;
   /** An owner told her to ignore this person: their messages get no answer. */
   ignored?(userId: string): boolean;
+  /** Files on a message to her (documents): kept, and a line about them for the prompt. */
+  attached?(m: Message): Promise<string[]>;
   now?: () => number;
 }
 
@@ -211,7 +213,8 @@ export function registerTextChat(d: TextChatDeps): void {
     const followUp = !direct && d.readChannels && (continuing(m, me.id) || NAME_IN_TEXT.test(m.content));
     if (!direct && !followUp) return;
 
-    const text = questionText(m.content, me.id)
+    const files = !!d.attached && (m.attachments?.size ?? 0) > 0;
+    const text = (questionText(m.content, me.id) || (files ? 'I sent you a file.' : ''))
       .replace(/<@!?(\d+)>/g, (_, id: string) => `@${m.mentions.members?.get(id)?.displayName ?? m.mentions.users.get(id)?.username ?? 'someone'}`)
       .slice(0, d.maxQuestionChars);
     // Never let a reply ping @everyone, roles or other people.
@@ -247,7 +250,7 @@ export function registerTextChat(d: TextChatDeps): void {
     // A follow-up may not be for it: no typing until it starts answering.
     if (direct) startTyping();
     try {
-      const extra = await channelContext(m);
+      const extra = [...(files ? await d.attached!(m).catch(() => []) : []), ...(await channelContext(m))];
       let silent = false;
       let acted = false;
       let reply = '';
