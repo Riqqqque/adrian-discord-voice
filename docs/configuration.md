@@ -191,6 +191,44 @@ Runs background jobs (automatic memory) on another model, typically a local one,
 | `brain.background.priceInPerM` | USD per 1M tokens | `0` | `0` |
 | `brain.background.priceOutPerM` | USD per 1M tokens | `0` | `0` |
 
+### More models and switching (`brain.models`, optional list)
+
+Leave it out and nothing changes: the main model answers everything, and there's no `use_model` tool or `/model` command. List models here and the main model becomes one choice among them, under the name `brain.mainName` (default `main`). Each kind of job can have its own model (`brain.routes`), and people can switch for a while by voice, text or `/model` ("use the smart model for this", "switch to private", "what model are you on", "go back to normal"). A switch lasts until they switch back or don't talk to her for half an hour.
+
+Each entry takes the same provider fields as the main model, plus:
+
+| Key | Type | Default | Notes |
+|---|---|---|---|
+| `name` | lowercase name, up to 24 characters | required | What people call it: `smart`, `fast`, `private` |
+| `provider`, `baseUrl`, `model`, `effort`, `apiKeySecret`, `extraBody` | as for `brain` | as for `brain` (`apiKeySecret` `""`) | |
+| `priceInPerM`, `priceCachedInPerM`, `priceOutPerM` | USD per 1M tokens | `0` | Required (not both 0) unless `local` is true, so spend caps count it |
+| `maxTokens` | integer 32-16000 | `brain.maxTokens` | Longest answer. Writing wants more than voice |
+| `local` | boolean | `false` | Runs on this machine or your own network. Checked: `baseUrl` must be loopback, a private address or a local name (`localhost`, `*.local`, `*.lan`, a bare name). Free, and may only fall back to another local model |
+| `ownersOnly` | boolean | `false` | Only owners may switch to it |
+| `about` | text, up to 80 characters | (unset) | Said when someone asks which models there are |
+| `fallback` | a listed name or `brain.mainName` | (unset) | Tried when this one fails before answering |
+
+| Key | Type | Default | What it does |
+|---|---|---|---|
+| `brain.mainName` | lowercase name | `"main"` | The main model's name in the list |
+| `brain.routes.chat`, `.writing`, `.background` | model names | (main model) | Which model does that job by default. `background` is automatic memory, when `brain.background` isn't set; a local one there never hands memory to a cloud model |
+| `brain.switching` | `owners`, `everyone`, `off` | `"owners"` | Who may switch. `off` keeps the routes and drops the tool and `/model` |
+| `brain.lowBudget.model`, `.atPercent` | name, 10-100 | (unset), `80` | Once that share of `limits.dailyUsd` or `limits.monthlyUsd` is spent, people who aren't owners get this model |
+
+A model whose key is missing is left out with a warning. An entry with `provider: "anthropic"` caches its prompt the way the main model does; only the main model's cache is warmed ahead of a question.
+
+```json
+"brain": {
+  "provider": "anthropic", "model": "claude-haiku-5-5", "apiKeySecret": "ANTHROPIC_API_KEY", "priceInPerM": 1, "priceOutPerM": 5,
+  "models": [
+    { "name": "smart", "provider": "anthropic", "model": "claude-sonnet-5-5", "apiKeySecret": "ANTHROPIC_API_KEY", "priceInPerM": 3, "priceOutPerM": 15, "maxTokens": 4000, "ownersOnly": true, "about": "slower, for careful writing", "fallback": "main" },
+    { "name": "private", "baseUrl": "http://127.0.0.1:11434/v1", "model": "qwen3:8b", "local": true, "maxTokens": 4000, "about": "runs here; nothing leaves the house" }
+  ],
+  "routes": { "writing": "smart" },
+  "lowBudget": { "model": "main", "atPercent": 80 }
+}
+```
+
 ### Presets and examples
 
 The admin page's presets (`LLM_PRESETS` in `src/web/checks.ts`, prices marked there as verified 2026-10-14/15):

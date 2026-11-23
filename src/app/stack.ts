@@ -24,6 +24,7 @@ import { RoomTalk } from '../conversation/room.js';
 import { matureContext } from '../brain/mature.js';
 import { LIMIT_MESSAGES, UsageLedger } from '../limits/usage-ledger.js';
 import { routeTools } from '../brain/tool-router.js';
+import { isLocalBase, type ModelInfo, type ModelJob, ModelPicker, modelTool } from '../brain/models.js';
 import { PartyGames } from '../features/games.js';
 import { AutoMemory } from '../features/automemory.js';
 import { gameServerTool, pingMinecraft } from '../features/gameservers.js';
@@ -44,6 +45,7 @@ import { AlarmClock, ringWord } from '../features/alarms.js';
 import { ALARM_RULE, alarmTools } from '../features/alarm-tools.js';
 import { patternFromPcm } from '../features/alarm-tones.js';
 import { previewIn, ringIn, type RingerDeps } from './alarm-ring.js';
+import { modelCommands, registerModelCommands } from './model-commands.js';
 import { ALARM_COMMANDS, alarmButtons, alarmState, registerAlarmCommands, saveClip } from './alarm-commands.js';
 import { join } from 'node:path';
 import { type ClosedBy, endsDangling, type HeardEvent, ListeningPipeline, type TurnOptions } from '../listen/pipeline.js';
@@ -720,6 +722,12 @@ export async function startVoiceStack(
 
   let orchestrator: ConversationOrchestrator | undefined;
   let dmOrchestrator: ConversationOrchestrator | undefined;
+  /** Listed models (brain.models): unset when there are none. */
+  let picker: ModelPicker | undefined;
+  /** The use_model tool, when there's a choice to make (also /model). */
+  let modelSwitch: Tool | undefined;
+  type Price = { in: number; cachedIn: number | undefined; out: number; claude: boolean };
+  const brains = new Map<string, { orch: ConversationOrchestrator; dm: ConversationOrchestrator; price: Price }>();
   let autoMemory: AutoMemory | undefined;
   /** MCP servers (home control), stopped with the stack. */
   let mcpLink: { stop: () => void } | undefined;
@@ -896,7 +904,10 @@ export async function startVoiceStack(
       }
       if (config.autoMemory) {
         // A background model (a local one, say) learns; the main one steps in when it's down.
-        const bg = brain.background;
+        // brain.background, or a listed model routed to background jobs. A
+        // listed local one never hands memory to a cloud model.
+        const listedBg = !brain.background && brain.routes?.background ? brain.models?.find((m) => m.name === brain.routes!.background) : undefined;
+        const bg = brain.background ?? listedBg;
         const bgKey = bg?.apiKeySecret ? secrets.get(bg.apiKeySecret) : undefined;
         if (bg?.apiKeySecret && !bgKey) log.warn('background model has no key; memory uses the main model', { secret: bg.apiKeySecret });
         const bgLlm = bg && (!bg.apiKeySecret || bgKey) ? makeLlm(bg, bgKey) : undefined;
@@ -909,7 +920,7 @@ export async function startVoiceStack(
           (inTok, outTok, model, userId) =>
             ledger.addCost(bgLlm && bg && model === bgLlm.model && model !== llm.model ? (inTok * bg.priceInPerM + outTok * bg.priceOutPerM) / 1e6 : (inTok * brain.priceInPerM + outTok * brain.priceOutPerM) / 1e6, userId),
           4,
-          bgLlm ? llm : undefined,
+          bgLlm && !listedBg?.local ? llm : undefined,
         );
         if (bgLlm) log.info('memory model', { model: bgLlm.model });
       }
@@ -961,6 +972,53 @@ export async function startVoiceStack(
           ...pcDiscord.rules,
         ],
       };
+      // More models (brain/models.ts), only when brain.models lists some: one
+      // orchestrator each, sharing memory, tools and turn counts (a yes on
+      // another model still follows its question); `brainFor` picks.
+      if (brain.models?.length) {
+        brainOptions.turns = new Map();
+        const raw = new Map<string, LlmProvider>([[brain.mainName, llm]]);
+        const choices: ModelInfo[] = [{ name: brain.mainName, model: brain.model, local: isLocalBase(brain.baseUrl), ownersOnly: false }];
+        const usable = brain.models.filter((m) => {
+          const key = m.apiKeySecret ? secrets.get(m.apiKeySecret) : undefined;
+          if (m.apiKeySecret && !key) {
+            log.warn('listed model has no key; leaving it out', { model: m.name, secret: m.apiKeySecret });
+            return false;
+          }
+          raw.set(m.name, makeLlm(m, key));
+          choices.push({ name: m.name, model: m.model, local: m.local, ownersOnly: m.ownersOnly, ...(m.about ? { about: m.about } : {}) });
+          return true;
+        });
+        const known = (n: string | undefined) => (n && raw.has(n) ? n : undefined);
+        const chat = known(brain.routes?.chat);
+        const writing = known(brain.routes?.writing);
+        const background = known(brain.routes?.background);
+        const low = known(brain.lowBudget?.model);
+        picker = new ModelPicker(choices, {
+          routes: { ...(chat ? { chat } : {}), ...(writing ? { writing } : {}), ...(background ? { background } : {}) },
+          switching: brain.switching,
+          ...(low ? { lowBudget: { model: low, at: brain.lowBudget!.atPercent / 100 } } : {}),
+        });
+        if (choices.length > 1 && brain.switching !== 'off') {
+          modelSwitch = modelTool({ picker, isOwner: (id) => isOwner(id), onSwitch: (userId, m) => log.info('model switched', { user: userId, model: m?.name ?? brain.mainName }) });
+          tools.push(modelSwitch);
+        }
+        const { warmer: _cachedMainOnly, ...rest } = brainOptions;
+        for (const m of usable) {
+          const fbName = known(m.fallback);
+          const own = raw.get(m.name)!;
+          const l = fbName
+            ? new FallbackLlm(own, raw.get(fbName)!, (err) => log.warn('listed model failed; using its fallback', { model: m.name, fallback: fbName, error: err.message.slice(0, 200) }), Math.round(brain.firstEventTimeoutMs * 0.6))
+            : own;
+          const o: OrchestratorOptions = { ...rest, stablePrefix: m.provider === 'anthropic', maxTokens: m.maxTokens ?? brain.maxTokens };
+          brains.set(m.name, {
+            orch: new ConversationOrchestrator(l, sessions, tools, o),
+            dm: new ConversationOrchestrator(l, sessions.dms(), tools, o),
+            price: { in: m.priceInPerM, cachedIn: m.priceCachedInPerM, out: m.priceOutPerM, claude: m.provider === 'anthropic' },
+          });
+        }
+        log.info('models ready', { models: choices.map((c) => c.name), routes: brain.routes ?? {}, switching: brain.switching });
+      }
       orchestrator = new ConversationOrchestrator(llm, sessions, tools, brainOptions);
       dmOrchestrator = new ConversationOrchestrator(llm, sessions.dms(), tools, brainOptions);
       log.info('brain ready', { model: brain.model, fallback: fbUsable ? fb!.model : null, tools: tools.map((x) => x.spec.name) });
@@ -968,15 +1026,29 @@ export async function startVoiceStack(
   }
 
   // Claude: cache reads cost 0.1x input, cache writes (5-minute) 1.25x.
-  const claude = brain?.provider === 'anthropic';
-  const costUsd = (u: Usage) =>
-    brain
-      ? ((u.inputTokens - u.cachedTokens - u.cacheWriteTokens) * brain.priceInPerM +
-          u.cachedTokens * (brain.priceCachedInPerM ?? (claude ? brain.priceInPerM * 0.1 : brain.priceInPerM)) +
-          u.cacheWriteTokens * brain.priceInPerM * (claude ? 1.25 : 1) +
-          u.outputTokens * brain.priceOutPerM) /
-        1e6
+  const mainPrice: Price | undefined = brain ? { in: brain.priceInPerM, cachedIn: brain.priceCachedInPerM, out: brain.priceOutPerM, claude: brain.provider === 'anthropic' } : undefined;
+  const costUsd = (u: Usage) => {
+    const p = (u.model ? brains.get(u.model)?.price : undefined) ?? mainPrice;
+    return p
+      ? ((u.inputTokens - u.cachedTokens - u.cacheWriteTokens) * p.in +
+          u.cachedTokens * (p.cachedIn ?? (p.claude ? p.in * 0.1 : p.in)) +
+          u.cacheWriteTokens * p.in * (p.claude ? 1.25 : 1) +
+          u.outputTokens * p.out) /
+          1e6
       : 0;
+  };
+  /** Who answers this person's `job`: a listed model (brain.models), or the main one. */
+  function brainFor(userId: UserId, job: ModelJob = 'chat'): { orch: ConversationOrchestrator; dm: ConversationOrchestrator; model?: string } | undefined {
+    if (!orchestrator || !dmOrchestrator) return undefined;
+    if (picker) {
+      const l = config.limits;
+      const spent = Math.max(l.dailyUsd > 0 ? ledger.todayUsd() / l.dailyUsd : 0, l.monthlyUsd > 0 ? ledger.monthUsd() / l.monthlyUsd : 0);
+      const m = picker.pick(userId, job, isOwner(userId), spent);
+      const b = brains.get(m.name);
+      if (b) return { orch: b.orch, dm: b.dm, model: m.name };
+    }
+    return { orch: orchestrator, dm: dmOrchestrator };
+  }
 
   const { maxRequestChars, usageFile: _usageFile, ...limits } = config.limits;
   ledger.setLimits(limits);
@@ -1290,7 +1362,8 @@ export async function startVoiceStack(
       const question = command.length > maxRequestChars ? command.slice(0, maxRequestChars) : command;
       let finished!: () => void;
       modelDone = new Promise((r) => (finished = r));
-      const gen = orchestrator.ask(userId, nameOf(userId), question, signal, (u) => (usage = u), rm.place(), {
+      const chosen = brainFor(userId)!;
+      const gen = chosen.orch.ask(userId, nameOf(userId), question, signal, (u) => (usage = chosen.model ? { ...u, model: chosen.model } : u), rm.place(), {
         followUp,
         ...(followUp && loose ? { loose: true } : {}),
         ...(rm.ui ? { desk: true } : {}),
@@ -1871,6 +1944,7 @@ export async function startVoiceStack(
     moving = p.catch(() => undefined);
     return p;
   };
+  if (modelSwitch) registerModelCommands({ client, log, tool: modelSwitch, ignored: (id) => (ignored.blocks(id, 'everything') ? IGNORED_REPLY : undefined) });
   registerAlarmCommands({
     client,
     log,
@@ -1896,12 +1970,13 @@ export async function startVoiceStack(
     ...(orchestrator
       ? {
           ask: (userId, name, text, place, signal, opts) => {
-            const o = place.guildId ? orchestrator! : dmOrchestrator!;
+            const chosen = brainFor(userId)!;
+            const o = place.guildId ? chosen.orch : chosen.dm;
             return (async function* () {
               let usage: Usage | undefined;
               let silent = false;
               try {
-                yield* o.ask(userId, name, text, signal, (u) => (usage = u), place, {
+                yield* o.ask(userId, name, text, signal, (u) => (usage = chosen.model ? { ...u, model: chosen.model } : u), place, {
                   text: true,
                   followUp: opts.followUp,
                   extra: opts.extra,
@@ -1938,7 +2013,7 @@ export async function startVoiceStack(
     historyMessages: config.textChat.historyMessages,
     followUpMs: config.textChat.followUpMinutes * 60_000,
   });
-  const voiceCommands = registerVoiceCommands({ client, log, current: () => spot, voiceReady: () => transport.isReady(), moveTo: (s) => moveTo(s), leave: () => moveTo(undefined), allowedGuilds: config.allowedGuilds, extraCommands: [...MUSIC_COMMANDS, ...ALARM_COMMANDS], isOwner: (id) => config.owners.includes(id), ignored: (id) => ignored.blocks(id, 'everything') });
+  const voiceCommands = registerVoiceCommands({ client, log, current: () => spot, voiceReady: () => transport.isReady(), moveTo: (s) => moveTo(s), leave: () => moveTo(undefined), allowedGuilds: config.allowedGuilds, extraCommands: [...MUSIC_COMMANDS, ...ALARM_COMMANDS, ...(picker && modelSwitch ? modelCommands(picker) : [])], isOwner: (id) => config.owners.includes(id), ignored: (id) => ignored.blocks(id, 'everything') });
   musicCommands = registerMusicCommands({
     client,
     log,

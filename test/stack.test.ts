@@ -3466,3 +3466,57 @@ describe('cache warm-up hooks', () => {
     }
   });
 });
+
+describe('more than one model', () => {
+  const BRAIN = { provider: 'openai', baseUrl: 'http://llm.test/v1', model: 'fake', apiKeySecret: 'LLM_API_KEY', priceInPerM: 1, priceOutPerM: 5, totalTimeoutMs: 5000, firstEventTimeoutMs: 3000, search: {} };
+  const MODELS = {
+    owners: [OWNER],
+    brain: { ...BRAIN, models: [{ name: 'smart', baseUrl: 'http://llm.test/v1', model: 'smart-1', apiKeySecret: 'LLM_API_KEY', priceInPerM: 10, priceOutPerM: 50 }] },
+  };
+
+  it('without a list nothing changes: no use_model tool, every call on the main model', async () => {
+    const r = await rig();
+    r.heard(r.discordPipe, SAM, 'hey adrian use the smart model', 'use the smart model');
+    await until(() => r.stack.answers().length === 1, 'the answer');
+    expect(r.llmBodies[0].model).toBe('fake');
+    expect((r.llmBodies[0].tools ?? []).map((t: any) => t.function.name)).not.toContain('use_model');
+    expect(r.logged.some((l) => l.m === 'models ready')).toBe(false);
+    await r.stack.stop();
+  });
+
+  it("an owner switches by voice; their next answer comes from that model at its prices, and others' don't", async () => {
+    const r = await rig(MODELS);
+    expect(r.logged.find((l) => l.m === 'models ready')?.f.models).toEqual(['main', 'smart']);
+    r.steps.push({ parts: [toolCall('use_model', JSON.stringify({ action: 'use', model: 'smart' })), usage(100, 10)] });
+    r.heard(r.discordPipe, OWNER, 'hey adrian use the smart model', 'use the smart model');
+    await until(() => r.stack.answers().length === 1, 'the switch');
+    expect(r.tts.calls).toContain('Okay, using smart for you now.');
+    expect(r.llmBodies).toHaveLength(1);
+    r.steps.push({ parts: [text('Four.'), usage(1000, 100)] });
+    r.heard(r.discordPipe, OWNER, 'hey adrian what is two plus two', 'what is two plus two');
+    await until(() => r.stack.answers().length === 2, 'the answer');
+    expect(r.llmBodies[1].model).toBe('smart-1');
+    expect(r.stack.answers()[1]!.costUsd).toBeCloseTo((1000 * 10 + 100 * 50) / 1e6, 6);
+    r.steps.push({ parts: [text('Lima.'), usage(1000, 100)] });
+    // Past the window where a second person's wake reads as the same wake.
+    const real = performance.now.bind(performance);
+    vi.spyOn(performance, 'now').mockImplementation(() => real() + 2_000);
+    r.heard(r.discordPipe, SAM, 'hey adrian capital of peru', 'capital of peru');
+    await until(() => r.stack.answers().length === 3, "Sam's answer");
+    expect(r.llmBodies[2].model).toBe('fake');
+    expect(r.stack.answers()[2]!.costUsd).toBeCloseTo((1000 * 1 + 100 * 5) / 1e6, 6);
+    await r.stack.stop();
+  });
+
+  it("a guest can't switch: the tool says so and nothing changes", async () => {
+    const r = await rig(MODELS);
+    r.steps.push({ parts: [toolCall('use_model', JSON.stringify({ action: 'use', model: 'smart' })), usage(100, 10)] });
+    r.heard(r.discordPipe, SAM, 'hey adrian use the smart model', 'use the smart model');
+    await until(() => r.stack.answers().length === 1, 'the refusal');
+    expect(r.tts.calls.join(' ')).toMatch(/only the bot's owners switch models/);
+    r.heard(r.discordPipe, SAM, 'hey adrian capital of peru', 'capital of peru');
+    await until(() => r.stack.answers().length === 2, 'the answer');
+    expect(r.llmBodies.at(-1).model).toBe('fake');
+    await r.stack.stop();
+  });
+});

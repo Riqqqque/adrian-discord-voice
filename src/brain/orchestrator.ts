@@ -41,6 +41,9 @@ export interface OrchestratorOptions {
   stableLines?: string[];
   /** Cache warm-ups (with stablePrefix): `prewarm()` sends one, and every answer tells it the prefix is warm. Can be shared. */
   warmer?: CacheWarmer;
+  /** Turn counts, shared by orchestrators that answer the same people (one
+   *  per model), so a yes on another model still follows its question. */
+  turns?: Map<string, number>;
 }
 
 export interface Usage {
@@ -49,6 +52,8 @@ export interface Usage {
   cacheWriteTokens: number;
   outputTokens: number;
   toolCalls: number;
+  /** Which listed model answered (brain/models.ts); unset: the main one. */
+  model?: string;
 }
 
 export function systemPrompt(o: OrchestratorOptions, speaker: string, today: string, toolNames: string[] = [], extra: string[] = []): string {
@@ -145,12 +150,13 @@ export class ConversationOrchestrator {
     private readonly o: OrchestratorOptions,
   ) {
     this.sayAs = o.creator ? [[o.creator.name, o.creator.spoken]] : [];
+    this.turns = o.turns ?? new Map();
   }
 
   private readonly sayAs: [string, string][];
   /** Turns so far, per person and place (ToolContext.turn). A turn that was cut
    *  off counts twice, which voids anything it asked. */
-  private readonly turns = new Map<string, number>();
+  private readonly turns: Map<string, number>;
 
   /** A chunk as it goes out: rewritten for speech, or as written for a text chat. */
   private out(chunk: string, text?: boolean): string {

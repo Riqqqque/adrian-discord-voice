@@ -531,6 +531,7 @@ It can look things up about the server it's in, by voice or text: "who's online?
 | Post the weekly recap now | Owners |
 | `/leave` or `/join` from outside a call that still has other people in it | Owners |
 | Make her ignore someone, or listen to them again | Owners (only the app owner for another owner; nobody for the app owner) |
+| Switch which model answers you | `brain.switching`: owners by default; `ownersOnly` models are owners' only |
 
 ## Owners
 
@@ -549,6 +550,16 @@ An owner can tell her to ignore someone, by voice or in text: "Adrian, ignore Sa
 - Music only: she won't play, skip, pause or change music or sounds for them; they can still talk to her.
 
 Only an owner can do this, and only an owner can undo it: what the ignored person says about it doesn't count. Nobody can make her ignore the app owner, and only the app owner can make her ignore another owner. It lasts until an owner says otherwise, or for the time they gave (up to a week), restarts included. Details: [tools.md](tools.md#ignore_person).
+
+## Choosing a model
+
+Only when the config lists more than one model (`brain.models`, see [configuration.md](configuration.md#more-models-and-switching-brainmodels-optional-list)). Without that list she uses one model, as always.
+
+- "Use the smart model for this", "switch to private", "use something faster": she switches for you until you say "go back to normal" or stop talking to her for half an hour.
+- "What model are you on?", "which models do you have?": she says.
+- `/model list`, `/model which`, `/model use`, `/model reset` do the same by command.
+
+The bot's owner decides which model does what by default (for example a careful one for writing, a local one for memory), who may switch (owners unless set otherwise), and which models are for owners only. Once most of the day's or month's budget is spent, people who aren't owners can be moved to a cheaper model by themselves. A model marked local runs on your own machine or network, so what it's sent stays there.
 
 ## Limits
 
@@ -603,6 +614,7 @@ Hard limits stay in every mode: no sexual roleplay or explicit sexual content, n
 | `/leave` | Leaves voice. Use `/join` to bring it back. From outside a call that has people in it, only owners can. |
 | `/play`, `/music` | Music by text: see [Music commands in text](#music-commands-in-text). |
 | `/alarm` | Alarms and timers by text, in servers and in DMs. See below. Replies are visible only to you. |
+| `/model` | Only when more models are set up: `list`, `which`, `use name`, `reset`. Replies are visible only to you. See [Choosing a model](#choosing-a-model). |
 
 `/alarm` subcommands. They run the same code as spoken requests, without the model, so they work even with no language model set up:
 
@@ -636,6 +648,7 @@ Each feature that needs the model goes through one or more tools. Their argument
 | PC and Discord together | `pc_handoff`, `tell_call` |
 | The server and its people | `server_info`, `message_member` |
 | Ignoring someone | `ignore_person` |
+| Choosing a model | `use_model` |
 | Game nights | `game_night` |
 | Minecraft servers | `game_server_status`, `game_server_control`, `game_server_whitelist`, `game_server_say` |
 | Plex, Sonarr, Radarr | `plex_recently_added`, `plex_search`, `downloads`, `upcoming_episodes` |

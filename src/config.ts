@@ -4,6 +4,7 @@
 
 import { readFileSync } from 'node:fs';
 import { z } from 'zod';
+import { isLocalBase } from './brain/models.js';
 import { parseSteamAccount } from './features/steam.js';
 
 const snowflake = z.string().regex(/^\d{17,20}$/, 'must be a Discord ID (17-20 digits)');
@@ -158,6 +159,65 @@ export const PocConfigSchema = z.object({
           extraBody: z.record(z.string(), z.unknown()).optional(),
         })
         .optional(),
+      /** More models to choose from (brain/models.ts). Unset: only the main one,
+       *  exactly as before. The main model goes by `mainName` in that list. */
+      models: z
+        .array(
+          z.object({
+            name: z.string().regex(/^[a-z][a-z0-9-]{0,23}$/, 'a short lowercase name, like smart or private'),
+            provider: z.enum(['openai', 'anthropic']).default('openai'),
+            baseUrl: z.url().default('https://api.anthropic.com'),
+            model: z.string().min(1),
+            effort: z.enum(['low', 'medium', 'high']).default('low'),
+            apiKeySecret: keyName('llm').default(''),
+            extraBody: z.record(z.string(), z.unknown()).optional(),
+            /** USD per 1M tokens. Required for a cloud model, so spend caps see it. */
+            priceInPerM: z.number().min(0).default(0),
+            priceCachedInPerM: z.number().min(0).optional(),
+            priceOutPerM: z.number().min(0).default(0),
+            /** Longest answer, tokens (writing wants more than voice). Unset: brain.maxTokens. */
+            maxTokens: z.number().int().min(32).max(16_000).optional(),
+            /** Runs on this machine or network: checked from baseUrl, free, and never falls back to the cloud. */
+            local: z.boolean().default(false),
+            /** Only owners may switch to it. */
+            ownersOnly: z.boolean().default(false),
+            /** Said when someone asks which models there are. */
+            about: z.string().max(80).optional(),
+            /** Another listed model (or the main one) to try when this one fails before answering. */
+            fallback: z.string().optional(),
+          }),
+        )
+        .max(12)
+        .optional(),
+      mainName: z.string().regex(/^[a-z][a-z0-9-]{0,23}$/).default('main'),
+      /** Which model does each kind of job (names from `models`, or mainName). */
+      routes: z.object({ chat: z.string().optional(), writing: z.string().optional(), background: z.string().optional() }).optional(),
+      /** Who may switch models: owners, everyone, or off (routes only). */
+      switching: z.enum(['owners', 'everyone', 'off']).default('owners'),
+      /** Once this share of the daily or monthly cap is spent, people who aren't owners use `model`. */
+      lowBudget: z.object({ model: z.string(), atPercent: z.number().min(10).max(100).default(80) }).optional(),
+    })
+    .superRefine((b, ctx) => {
+      if (!b.models?.length) return;
+      const names = new Set([b.mainName]);
+      for (const [i, m] of b.models.entries()) {
+        if (names.has(m.name)) ctx.addIssue({ code: 'custom', path: ['models', i, 'name'], message: `the name ${m.name} is used twice` });
+        names.add(m.name);
+        if (m.local && !isLocalBase(m.baseUrl)) ctx.addIssue({ code: 'custom', path: ['models', i, 'local'], message: 'local models need a loopback or private-network baseUrl' });
+        if (!m.local && m.priceInPerM === 0 && m.priceOutPerM === 0)
+          ctx.addIssue({ code: 'custom', path: ['models', i, 'priceInPerM'], message: 'a cloud model needs its prices (priceInPerM, priceOutPerM) so spend caps count it; set local: true for a model on your own machine' });
+      }
+      const known = (n: string | undefined, path: (string | number)[]) => {
+        if (n !== undefined && !names.has(n)) ctx.addIssue({ code: 'custom', path, message: `no model called ${n}` });
+      };
+      for (const [i, m] of b.models.entries()) {
+        known(m.fallback, ['models', i, 'fallback']);
+        const fb = b.models.find((x) => x.name === m.fallback);
+        if (m.local && m.fallback && (m.fallback === b.mainName || (fb && !fb.local)))
+          ctx.addIssue({ code: 'custom', path: ['models', i, 'fallback'], message: 'a local model may only fall back to another local model' });
+      }
+      for (const job of ['chat', 'writing', 'background'] as const) known(b.routes?.[job], ['routes', job]);
+      known(b.lowBudget?.model, ['lowBudget', 'model']);
     })
     .optional(),
   /** Answer in Spanish, Chinese, Japanese and Vietnamese too (needs the Whisper model). */

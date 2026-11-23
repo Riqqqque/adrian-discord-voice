@@ -92,6 +92,7 @@ Registration order, with everything enabled. 52 built-in tools, plus one per all
 | `server_info` | `serverInfo.enabled` | anyone, filtered to what they can see | no | no |
 | `message_member` | `serverInfo.enabled` and `messaging.enabled` | anyone | yes | read-back |
 | `ignore_person` | always (with a model) | owners | except `list` | yes |
+| `use_model` | `brain.models` lists a model and `brain.switching` isn't `off` | `brain.switching` (owners by default) | `use`, `reset` | yes |
 | `pc_handoff` | `satellite.enabled` and `handoff.enabled` | the asker, own PC | yes | yes |
 | `tell_call` | `handoff.enabled` and `handoff.tellCall.enabled` | a member of her server who isn't in her call | yes | yes |
 | `game_night` | `gameNight.enabled` | anyone; join and leave only change the asker | `ping`, `join`, `leave` | the ping question, "Pinged them.", and join and leave (next release) |
@@ -411,6 +412,16 @@ File: `src/features/ignore.ts`. `action` (`ignore`, `listen_again`, `list`; requ
 Names are looked up in her call first, then the server (`findPeople` in stack.ts, using `matchMembers`). A name that fits several people gets "which one?". The list is kept in `ignored.json` in the state folder, so it survives restarts. Timed entries drop themselves. The tool's own line is what she says, with no second model call.
 
 **Cost:** one model call to understand the order; the change itself is free.
+
+### `use_model`
+
+File: `src/brain/models.ts`. Only there when `brain.models` lists at least one model (see [configuration.md](configuration.md#more-models-and-switching-brainmodels-optional-list)). `action` (`use`, `reset`, `which`, `list`; required), `model` (for `use`: a listed name, "the smart model", or a model id).
+
+"Use the smart model for this", "switch to private", "go back to normal", "what model are you on?", "which models do you have?". The switch is per person and lasts until they switch back or don't talk to her for half an hour. Who may switch is the tool's own check (`brain.switching`: owners by default, or everyone, or off), and a model marked `ownersOnly` is for owners only, whatever was said. `/model list|which|use|reset` runs the same tool (private replies).
+
+Which model answers is picked per request in `stack.ts` (`brainFor`): their switch, then the low-budget pick for people who aren't owners once `brain.lowBudget.atPercent` of a cap is spent, then the route for the job (`brain.routes`), then the main model. Each listed model has its own orchestrator sharing memory, tools and turn counts, and its answers are priced at its own rates. The router only offers this tool when the words are about models (`route`).
+
+**Cost:** one model call; the switch is free.
 
 ## Minecraft servers
 
