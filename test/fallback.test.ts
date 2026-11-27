@@ -163,3 +163,62 @@ describe('fallback LLM', () => {
     expect(secondary.calls).toBe(0);
   });
 });
+
+describe('a slow primary and a fallback that refuses', () => {
+  /** Answers after `ms`, or rejects when its request is ended. */
+  const late = (name: string, ms: number, text: string): LlmProvider & { ended: number } => ({
+    model: name,
+    ended: 0,
+    async *stream(_m, opts) {
+      await new Promise<void>((res, rej) => {
+        const t = setTimeout(res, ms);
+        opts.signal?.addEventListener('abort', () => (clearTimeout(t), this.ended++, rej(new Error('aborted'))), { once: true });
+      });
+      yield { type: 'text', delta: text };
+      yield { type: 'usage', inputTokens: 1, cachedTokens: 0, outputTokens: 1 } as LlmEvent;
+    },
+  });
+
+  it('keeps waiting for the primary when the fallback refuses the request (too large for its tier)', async () => {
+    const primary = late('claude', 80, 'A');
+    const reasons: string[] = [];
+    const f = new FallbackLlm(primary, provider('groq', [], 0), (e) => reasons.push(e.message), 20);
+    expect(await collect(f.stream([], {}))).toEqual(['A']);
+    expect(primary.ended).toBe(0);
+    expect(reasons[0]).toMatch(/20 ms/);
+  });
+
+  it('a primary that turns up before the fallback still answers, and the fallback is ended', async () => {
+    const primary = late('claude', 50, 'A');
+    const secondary = late('groq', 500, 'B');
+    const f = new FallbackLlm(primary, secondary, undefined, 20);
+    expect(await collect(f.stream([], {}))).toEqual(['A']);
+    expect(secondary.ended).toBe(1);
+  });
+
+  it('the fallback answering first ends the primary, and its usage is marked', async () => {
+    const primary = late('claude', 500, 'A');
+    const f = new FallbackLlm(primary, counted('groq', [{ type: 'text', delta: 'B' }, { type: 'usage', inputTokens: 1, cachedTokens: 0, outputTokens: 1 } as LlmEvent]), undefined, 20);
+    const evs: LlmEvent[] = [];
+    for await (const e of f.stream([], {})) evs.push(e);
+    expect(evs.map((e) => (e.type === 'text' ? e.delta : e.type))).toEqual(['B', 'usage']);
+    expect((evs[1] as { fallback?: boolean }).fallback).toBe(true);
+    expect(primary.ended).toBe(1);
+  });
+
+  it('both failing gives the last error', async () => {
+    const f = new FallbackLlm(provider('a', [], 0), provider('b', [], 0), undefined, 20);
+    await expect(collect(f.stream([], {}))).rejects.toThrow('b failed');
+  });
+
+  it('the caller ending the request ends both', async () => {
+    const primary = late('claude', 500, 'A');
+    const secondary = late('groq', 500, 'B');
+    const ac = new AbortController();
+    const f = new FallbackLlm(primary, secondary, undefined, 20);
+    setTimeout(() => ac.abort(), 60);
+    await expect(collect(f.stream([], { signal: ac.signal }))).rejects.toThrow();
+    expect(primary.ended).toBe(1);
+    expect(secondary.ended).toBe(1);
+  });
+});
