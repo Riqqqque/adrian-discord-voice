@@ -27,7 +27,7 @@ is in [satellite.md](satellite.md).
   three ask first, out loud), PC status and health. Only when asked: reads the
   clipboard, looks at a window or the screen.
 - **Quiet while gaming.** While a game is in front she only answers to her
-  name, keeps answers short and holds reminders until the match ends.
+  name and keeps answers short. Reminders and timers still come on time.
 - **Alarms.** Stop and Snooze in the window and the tray, and a backup ring
   on the PC itself if the server doesn't ring an alarm or can't be reached.
 - **Music, sounds and the music quiz** play on the PC when asked for there.

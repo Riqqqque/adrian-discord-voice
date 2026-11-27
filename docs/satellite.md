@@ -370,8 +370,9 @@ While that PC is in a game, and `satellite.quietWhileGaming` is on (default):
   her ("stop" and her name still do), and she never answers side talk. After a
   bare "Adrian" ("Yes?") and after her own questions ("Restart the PC?") the
   next words are still taken.
-- Answers there are kept to one short sentence, and she knows the game's name,
-  so "am I in a game?" works.
+- Answers there are kept short (longer when asked), and she knows the game's
+  name, so "am I in a game?" works. What she'll do doesn't change: searches,
+  timers, music and PC actions all work as usual.
 - The Discord call is unaffected, and so are requests from the call that reach
   the PC.
 
@@ -380,7 +381,7 @@ What would reach the PC unasked, and what happens to it:
 | what | while playing |
 |---|---|
 | Timers and alarms they set | Ring as usual: they set them to ring. |
-| Reminders said at that PC | Held, and so is the DM that goes with every PC reminder (a Discord notification would pop up over the game). The DM goes when the reminder is released, worded as it was due ("late" if it was). |
+| Reminders said at that PC | Said on time, with their DM, as usual: they set them to hear them then. |
 | Reminders due while they're audible in her call | Said in the call, as usual. |
 | Messages from other people (`message_member`) | Never spoken at a PC: they're a DM or an @mention in Discord, so nothing changes. |
 | Answers to their own stop ("Okay.", a restart called off) | Said: they asked. |

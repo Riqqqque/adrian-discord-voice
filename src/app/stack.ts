@@ -89,7 +89,7 @@ import { startSatelliteServer } from '../satellite/server.js';
 import { PC_RULE, pcTools, PowerDownWindow } from '../satellite/tools.js';
 import { NAMES_MUSIC, PC_MUSIC_MS, pcMusicOrder, pcMusicReply } from '../satellite/pc-music.js';
 import { answerForLog, PRIVATE_TOOLS, PrivateTurns } from '../satellite/senses.js';
-import { GameQuiet, gamingLine, HeldItems, reminderBrief, toldLine } from '../satellite/quiet.js';
+import { GameQuiet, gamingLine, HeldItems, toldLine } from '../satellite/quiet.js';
 import { pcDiscordTools, watchDiscord } from '../features/handoff-discord.js';
 import { MusicStarts, notingStarts } from '../features/handoff.js';
 import { toSpeakable } from '../brain/speech-text.js';
@@ -315,7 +315,7 @@ export async function startVoiceStack(
     return mine.find((c) => `sat:${c.device.id}` === ctx.channelId) ?? mine.sort((a, b) => b.lastSeen - a.lastSeen)[0];
   }
   const power = new PowerDownWindow();
-  // Quiet while gaming (satellite/quiet.ts): a PC in a game keeps reminders for after the match.
+  // Quiet while gaming (satellite/quiet.ts): a PC in a game hears only her name, and answers stay short.
   const lowerFirst = (t: string) => t.charAt(0).toLowerCase() + t.slice(1);
   const quiet = new GameQuiet(new HeldItems(satEnabled ? join(stateDir!, 'held-while-gaming.json') : undefined), {
     enabled: () => config.satellite.quietWhileGaming,
@@ -401,17 +401,9 @@ export async function startVoiceStack(
     const plain = text.replace(/^[^,]+, /, '');
     const pc = r.room ? satRooms.get(r.room) : undefined;
     const route = reminderRoute({ audibleInCall: inHerCall(r.userId), inChannel: transport.isReady() && !!inHerChannel(r.userId), pcUp: !!pc?.ctl });
-    // In a game at that PC, a reminder waits for the end of the match, and so
-    // does its DM (a Discord notification would pop up over the game): it goes
-    // when the reminder is released, worded as it was due. A timer, set to
-    // ring, doesn't wait. A full hold list says it now instead.
-    const holding =
-      route.speak === 'pc' &&
-      r.kind === 'reminder' &&
-      quiet.playingAt(pc!.ui!) &&
-      quiet.hold(pc!.ui!, { kind: 'reminder', line: dueMessage(r, 0).replace(/^[^,]+, /, ''), brief: reminderBrief(r.text), dmSent: !route.dm, ...(route.dm ? { dm: plain } : {}) });
-    log.info('reminder due', { user: r.userId, kind: r.kind, lateMs, route: holding ? 'held' : (route.speak ?? 'dm') });
-    if (holding) return;
+    // In a game at that PC too: they set it to hear it then, so it's said now,
+    // like a timer.
+    log.info('reminder due', { user: r.userId, kind: r.kind, lateMs, route: route.speak ?? 'dm' });
     const dm = route.dm
       ? client.users.send(r.userId, plain).then(
           () => true,

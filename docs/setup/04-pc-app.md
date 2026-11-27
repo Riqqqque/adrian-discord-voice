@@ -183,7 +183,7 @@ The token is stored encrypted for your Windows user only. After a successful sav
 - **Stop her:** say "stop", talk over her, click the square stop button, or press Escape in the window.
 - **Close the window** with the X: she keeps running in the tray. Click the tray icon to open the window again. Right-click the tray icon for **Show A.D.R.I.A.N.**, **Stop alarm**, **Snooze alarm** and **Quit**. In the tray she uses a few MB of memory and almost no CPU.
 - **In the bot's Discord call at the same time?** While you're in her voice channel and not muted, the call answers instead of the PC (so music plays for everyone), and the window says `Answering in the Discord call.` To talk to the PC alone, mute yourself in Discord, hold Ctrl+Alt+Space, or type.
-- **Quiet while gaming:** while a game is in front, she only answers to her name or push-to-talk, keeps answers short, and saves reminders for after the match. Switch it off under **Games** in Settings.
+- **Quiet while gaming:** while a game is in front, she only answers to her name or push-to-talk, and keeps answers short. Everything else works as usual, reminders and timers included. Switch it off under **Games** in Settings.
 
 Things to try: "Hey Adrian, open Spotify", "pause the music", "turn it down", "put Discord on the left", "why is my PC slow?". More: [../pc-app.md](../pc-app.md).
 

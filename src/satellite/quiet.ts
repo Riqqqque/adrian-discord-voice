@@ -1,10 +1,10 @@
 // Quiet while gaming (config satellite.quietWhileGaming). A PC app from 0.15.6
 // says when its owner is playing (`activity` messages, docs/satellite.md).
 // While they are, that PC's room only answers to her name, keeps answers
-// short, and holds what can wait: reminders (never timers, which they set to
-// ring). A reminder's DM, the record, is held with it, so no Discord
-// notification pops up over the game. When the match ends the DMs go and they
-// hear one line about what came in. Held items are kept on disk, per owner, at
+// short, and holds what can wait: messages from other people. Their own
+// timers, alarms and reminders are said on time, since they set them to hear
+// them then. When the match ends any held DMs go and they hear one line about
+// what came in. Held items are kept on disk, per owner, at
 // most 50 for at most 12 hours, and never dropped without going out some
 // other way: an item leaves the file only once its release has run, so one
 // cut short by a restart goes out again after it (its DM only if that hadn't
@@ -378,7 +378,7 @@ export class GameQuiet {
 
 /** The prompt line for a room whose PC is in a game. */
 export function gamingLine(speaker: string, game: string | undefined): string {
-  return `${speaker} is playing ${game ?? 'a game'} at this PC right now. Keep every answer to one short sentence and ask nothing back unless you have to: they're in a match. If they ask whether they're in a game, say so.`;
+  return `${speaker} is playing ${game ?? 'a game'} at this PC right now. Keep answers short, a sentence or two unless they ask for more, and ask nothing back unless you have to: they're in a match. Do everything they ask exactly as you would otherwise (look things up, timers, music, the PC): being in a game changes how long you talk, never what you'll do. If they ask whether they're in a game, say so.`;
 }
 
 /** The prompt line for what came in during their last match. */

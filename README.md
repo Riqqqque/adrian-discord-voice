@@ -72,7 +72,7 @@ Everything below is in the current release (0.17.1), except what is marked *(nex
 - Listens through the PC's mic ("Hey Adrian", or hold Ctrl+Alt+Space), answers through its speakers in the same voice, and shows a small animated window. In the tray it uses about 5 MB of memory.
 - Controls the PC through typed, allow-listed actions: open apps and games, web pages, YouTube and Spotify, media keys, volume, window layout, lock, and sleep, restart or shut down only after a spoken yes. Each PC decides in its own settings what is allowed.
 - PC health, and only when you ask, what you copied or what is on screen.
-- Quiet while gaming: during a game it needs its name every time, keeps answers short and holds reminders until the match ends.
+- Quiet while gaming: during a game it needs its name every time, keeps answers short, and still does everything else, reminders and timers included.
 - Between the PC and Discord: "send that link to my PC", "move the music to my PC", "tell the call I'll be on in 5".
 - When the PC's owner is also in its Discord call, the call answers instead, so music plays for everyone.
 - While its owner is in any voice call the bot can see, a PC on speakers takes only push-to-talk and typing, since its mic hears the call; her name said there gets a soft chime. On headphones hands-free keeps working (Windows says so for most headsets; a USB DAC or dock that calls itself speakers gets a "These speakers are headphones" switch). Push-to-talk covers what you say while you hold the key *(next release, with PC app 0.17.2)*.
