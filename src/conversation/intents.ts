@@ -179,7 +179,7 @@ export function classify(text: string): Intent | undefined {
 
 export type MusicIntent =
   | { kind: 'play'; query: string; mode: 'now' | 'queue'; source?: 'youtube' | 'plex' }
-  | { kind: 'control'; action: 'pause' | 'resume' | 'skip' | 'stop' | 'status' | 'back' | 'who' }
+  | { kind: 'control'; action: 'pause' | 'resume' | 'skip' | 'stop' | 'status' | 'back' | 'who' | 'mute' | 'unmute' }
   | { kind: 'control'; action: 'volume'; level: number };
 
 /** Party games and other things you "play" that aren't music. */
@@ -189,8 +189,11 @@ const NOT_MUSIC = /^(a |the |some )?(game|games|trivia|quiz|would you rather|rid
 const VAGUE = /\b(playlists?|mix(es)?|vibes?|like (this|that|the|what|it)|similar|album|podcasts?|episodes?|radio|something|anything|songs|music|stuff|tunes|type of|kind of|genre|more|whatever|random|mood|hype|chill|sad|happy|for (gaming|studying|sleep|sleeping|working|the gym|a party|driving))\b/i;
 
 const MUSIC_CONTROL: [RegExp, MusicIntent][] = [
-  [/^(skip|next|skip (it|this|that|this song|that song|the song|this one|song)|next song|play the next (one|song)|change the song)$/, { kind: 'control', action: 'skip' }],
-  [/^(pause|pause (it|this|that|the music|the song|music)|hold the music)$/, { kind: 'control', action: 'pause' }],
+  [/^(mute|silence) (it|this|that|the music|my music|the song|this song|my song|music|the audio|the sound|the video|my video|spotify|youtube)$/, { kind: 'control', action: 'mute' }],
+  [/^(unmute|un mute) (it|this|that|the music|my music|the song|this song|my song|music|the audio|the sound|the video|my video|spotify|youtube)$/, { kind: 'control', action: 'unmute' }],
+  [/^(shut (up|off) (the|my) music|shut (the|my) music (up|off)|turn (off|down) my music all the way|turn my music off|stop my music|kill my music|cut my music)$/, { kind: 'control', action: 'stop' }],
+  [/^(skip|next|skip (it|this|that|this song|that song|the song|this one|song|my song)|next song|play the next (one|song)|change the song)$/, { kind: 'control', action: 'skip' }],
+  [/^(pause|pause (it|this|that|the music|the song|music|my music|my song|the video|my video|spotify|youtube)|hold the music)$/, { kind: 'control', action: 'pause' }],
   [/^(resume|unpause|un pause|keep playing|continue|continue (the music|playing)|play (it|the music) again|resume (the music|playing|the song))$/, { kind: 'control', action: 'resume' }],
   [/^(stop (the |this )?(music|song)|stop playing|turn off the music|turn the music off|kill the music|cut the music|music off|no more music|end the music|clear the queue)$/, { kind: 'control', action: 'stop' }],
   [/^(go back|back|previous|previous song|play the (last|previous) (song|one) again|play the previous (song|one)|go back (a|one) song|last song again|replay the last song)$/, { kind: 'control', action: 'back' }],

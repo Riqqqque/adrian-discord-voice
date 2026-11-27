@@ -564,7 +564,7 @@ describe('the dashboard numbers', () => {
     expect(t).toContain('$0.0330 today, $0.0330 this month');
     expect(t).toContain('Caps: $1.00 a day, $10.00 a month.');
     expect(t).toContain('123,456 of 950,000 characters this month');
-    expect(t).toContain('1 today, 1 this month (the free plan has 1,000)');
+    expect(t).toContain('Credits: 1 today, 1 this month (a web search uses two; the free plan has 1,000)');
     expect(t).toContain('$0.0011 last day, $0.0011 last 7 days');
     expect(t).toMatch(/Second listen \(Groq\)off/);
   });

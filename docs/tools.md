@@ -134,7 +134,7 @@ Household date and time (`timezone` config). No arguments. "What time is it" is 
 |---|---|---|
 | `query` | string, required | A few search-engine words. The description tells the model not to add a year unless the person said one. |
 
-- Tavily, basic depth, `brain.search.maxResults` results (default 4, max 8). Each result is its title, publish date and a 400-character snippet.
+- Tavily, advanced depth (about 1 s slower than basic, which missed plain facts such as a song's key), `brain.search.maxResults` results (default 4, max 8). Each result is its title, publish date and a 400-character snippet.
 - `include_answer: false`: Tavily's AI summary was measured to state guesses as facts.
 - `slow`, 8 s.
 - The prompt tells the model to search for anything recent, and otherwise to say its information may be out of date.

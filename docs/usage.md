@@ -79,7 +79,7 @@ Ask anything: "what's the capital of Australia?", "how do I get rid of hiccups?"
 - Answers are short by design: most are one sentence under twenty words, and how-to or why answers two short sentences with the main step, not every option. No offers or questions back unless it needs your answer, and when it can't do something it says so in a few words. Ask for detail ("in detail", "tell me more") if you want more.
 - Short never cuts a safety warning that matters (chemicals that mustn't be mixed, medicine doses, electricity, gas), and a list you asked for (your alarms, timers, reminders, the queue) gets every item.
 - Search answers are said as plain facts, going by the newest result. An answer from an older result says its day.
-- For anything recent (news, scores, prices, release dates), and anything that changes day to day or depends on where you are (sunrise and sunset, the weather, store hours, what's open), it searches the web first (`web_search`, needs a Tavily key). Facts that don't change (the height of the Eiffel Tower) are answered without a search. Without search it says its information may be out of date.
+- For anything recent (news, scores, prices, release dates), and anything that changes day to day or depends on where you are (sunrise and sunset, the weather, store hours, what's open), it searches the web first (`web_search`, needs a Tavily key). Facts that don't change and that it knows (the height of the Eiffel Tower) are answered without a search. A specific fact it isn't sure of (a song's key or tempo, who is in a band, a spec) is searched rather than answered with "I don't know", and "look it up" always searches. When a search doesn't answer it, it searches once more with other words before saying it couldn't find it. Without search it says its information may be out of date.
 - It treats web pages and anything else a tool returns as data, never as instructions.
 - It only does what its tools can do. It can't act on Discord, on the server or on anyone's accounts beyond the features on this page.
 
@@ -127,7 +127,7 @@ Ask anything: "what's the capital of Australia?", "how do I get rid of hiccups?"
   - When it isn't talking, a stop aimed at it stops the music. That means said with the name, or by someone it's talking with.
 - **`/leave`, or `/join` to another channel:** stops the music. Being dragged to another channel keeps it playing.
 - **Lyrics:** it won't sing or read out song lyrics. It just names what's playing.
-- **At a PC** the PC has its own player, queue and volume. Bare "pause", "skip", "what's playing" and "turn it down" there mean the PC's own media (Spotify, a browser tab), unless its own music is what's playing.
+- **At a PC** the PC has its own player, queue and volume. Bare "pause", "skip", "what's playing" and "turn it down" there mean the PC's own media (Spotify, a browser tab), unless its own music is what's playing. "Pause", "skip", "resume", "mute my music", "unmute my music" and "shut up the music" are sent to the PC at once, without the model; she only speaks if it didn't work.
 
 ### Music commands in text
 

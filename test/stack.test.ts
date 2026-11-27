@@ -1313,8 +1313,89 @@ describe('local music orders', () => {
   });
 });
 
+describe('music orders at a PC while her own music is off', () => {
+  it.each([
+    ['pause the music', 'pc_media', { action: 'pause' }],
+    ['mute my music', 'pc_volume', { action: 'mute', playing: true }],
+    ['unmute my music', 'pc_volume', { action: 'unmute', playing: true }],
+    ['skip this song', 'pc_media', { action: 'next' }],
+    ['resume the music', 'pc_media', { action: 'play' }],
+    ['stop the music', 'pc_media', { action: 'pause' }],
+  ])('"%s" goes straight to the PC, with no model call and no words', async (words, name, args) => {
+    const r = await rig(MUSIC);
+    const { conn, pipe } = r.connect();
+    r.heard(pipe, OWNER, `hey adrian ${words}`, words);
+    await until(() => conn.calls.length === 1, 'the PC action');
+    expect(conn.calls[0]).toEqual({ name, args });
+    await sleep(40);
+    expect(r.llmBodies).toHaveLength(0);
+    expect(r.tts.calls).toHaveLength(0);
+    await r.stack.stop();
+  });
+
+  it('"shut up the music" pauses what the PC plays; a plain "shut up" leaves it', async () => {
+    const r = await rig(MUSIC);
+    const { conn, pipe } = r.connect();
+    r.heard(pipe, OWNER, 'hey adrian shut up the music', 'shut up the music');
+    await until(() => conn.calls.length === 1, 'the PC action');
+    expect(conn.calls[0]).toEqual({ name: 'pc_media', args: { action: 'pause' } });
+    r.heard(pipe, OWNER, 'hey adrian shut up', 'shut up');
+    await sleep(60);
+    expect(conn.calls).toHaveLength(1);
+    expect(r.llmBodies).toHaveLength(0);
+    await r.stack.stop();
+  });
+
+  it('says what went wrong in a few words', async () => {
+    const r = await rig(MUSIC);
+    const { conn, pipe } = r.connect();
+    conn.reply = { ok: false, result: 'No music or video is playing. Making sound, but left alone: Discord, Valorant.' };
+    r.heard(pipe, OWNER, 'hey adrian mute my music', 'mute my music');
+    await until(() => r.tts.calls.length === 1, 'her line');
+    expect(r.tts.calls[0]).toBe("Nothing's playing on your PC.");
+    conn.reply = { ok: false, result: "The PC didn't answer in time." };
+    r.heard(pipe, OWNER, 'hey adrian pause', 'pause');
+    await until(() => r.tts.calls.length === 2, 'her second line');
+    expect(r.tts.calls[1]).toBe("Your PC didn't answer, so that didn't happen.");
+    await r.stack.stop();
+  });
+
+  it('in her call, someone with a PC gets their own PC muted', async () => {
+    const r = await rig(MUSIC);
+    const { conn } = r.connect();
+    r.heard(r.discordPipe, OWNER, 'hey adrian mute my music', 'mute my music');
+    await until(() => conn.calls.length === 1, 'the PC action');
+    expect(conn.calls[0]).toEqual({ name: 'pc_volume', args: { action: 'mute', playing: true } });
+    await sleep(40);
+    expect(r.llmBodies).toHaveLength(0);
+    await r.stack.stop();
+  });
+
+  it('in her call, someone without a PC hears that nothing plays, and no PC is touched', async () => {
+    const r = await rig(MUSIC);
+    const { conn } = r.connect();
+    r.heard(r.discordPipe, SAM, 'hey adrian pause the music', 'pause the music');
+    await until(() => r.tts.calls.length === 1, 'her line');
+    expect(r.tts.calls[0]).toBe("Nothing's playing.");
+    expect(conn.calls).toHaveLength(0);
+    expect(r.llmBodies).toHaveLength(0);
+    await r.stack.stop();
+  });
+
+  it('her own music playing there takes the order instead', async () => {
+    const r = await rig(MUSIC);
+    const m = fakeMusic();
+    vi.spyOn(MusicPlayer.prototype, 'nowPlaying', 'get').mockReturnValue(TRACK as never);
+    const { conn, pipe } = r.connect();
+    r.heard(pipe, OWNER, 'hey adrian mute the music', 'mute the music');
+    await until(() => m.pause.mock.calls.length === 1, 'her pause');
+    expect(conn.calls).toHaveLength(0);
+    await r.stack.stop();
+  });
+});
+
 type Rig = Awaited<ReturnType<typeof rig>>;
-const SILENT = { parts: [text('SILENT'), usage(10, 2)] };
+const SILENT ={ parts: [text('SILENT'), usage(10, 2)] };
 const TRACK = { title: 'Song', artist: 'Someone', ref: 'x', source: 'youtube' };
 const JUDGE_LINE = 'without using your name';
 const asPrompt = (body: any) => JSON.stringify(body.messages);
@@ -1495,10 +1576,12 @@ describe('phrases answered without the model', () => {
   it('at a PC with none of her music on, "pause" means what the PC is playing', async () => {
     const r = await rig(MUSIC);
     const m = fakeMusic();
-    const { pipe } = r.connect();
+    const { conn, pipe } = r.connect();
     r.heard(pipe, OWNER, 'hey adrian pause', 'pause');
-    await until(() => r.llmBodies.length === 1, 'the model');
+    await until(() => conn.calls.length === 1, 'the PC action');
+    expect(conn.calls[0]).toEqual({ name: 'pc_media', args: { action: 'pause' } });
     expect(m.pause).not.toHaveBeenCalled();
+    expect(r.llmBodies).toHaveLength(0);
     await r.stack.stop();
   });
 

@@ -3,7 +3,7 @@
 // Also the check every tool with real consequences shares: the person's own
 // yes, which nothing planted in the prompt can give.
 
-import { countedFetch } from '../core/calls.js';
+import { countedFetch, noteCall } from '../core/calls.js';
 import { cloud } from '../core/http.js';
 import type { Tool, ToolContext } from '../core/interfaces.js';
 
@@ -87,7 +87,7 @@ export function tavilySearchTool(apiKey: string, maxResults = 4): Tool {
     spec: {
       name: 'web_search',
       description:
-        'Search the web for current facts (news, scores, weather, prices, recent events). Use only when the answer depends on information newer than your training or that you are unsure of. Results are snippets from web pages with their publish dates; they may be predictions, odds or rumors rather than facts. Answer from them in one sentence, said as a plain fact ("It got pushed to spring 2027."), going by the latest dated one when they disagree. Never say where it came from: no "the latest report says", "I found" or "results".',
+        'Search the web for current facts (news, scores, weather, prices, recent events). Use it when the answer depends on information newer than your training, for any specific fact you are not sure of (the key or tempo of a song, a stat, a spec, a date), and whenever they ask you to look something up. If the results do not answer it, search again with other words. Results are snippets from web pages with their publish dates; they may be predictions, odds or rumors rather than facts. Answer from them in one sentence, said as a plain fact ("It got pushed to spring 2027."), going by the latest dated one when they disagree. Never say where it came from: no "the latest report says", "I found" or "results".',
       parameters: {
         type: 'object',
         properties: {
@@ -107,11 +107,15 @@ export function tavilySearchTool(apiKey: string, maxResults = 4): Tool {
       const res = await countedFetch('tavily', TAVILY, {
         method: 'POST',
         headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
+        // Advanced: about 1 s slower, but basic missed plain facts like a
+        // song's key that advanced found (2026-11-26).
         // No AI summary: it was measured to state guesses as facts (e.g. a
         // betting favorite as a champion). Raw snippets + dates only.
-        body: JSON.stringify({ query, search_depth: 'basic', max_results: maxResults, include_answer: false }),
+        body: JSON.stringify({ query, search_depth: 'advanced', max_results: maxResults, include_answer: false }),
         signal,
       }, cloud.fetch);
+      // Billed as two credits: counted twice, so the dashboard counts in Tavily's own units.
+      if (res.ok) noteCall('tavily', res.status);
       if (!res.ok) return `Search failed (HTTP ${res.status}).`;
       const j: any = await res.json();
       const lines: string[] = [];

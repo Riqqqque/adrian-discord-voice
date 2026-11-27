@@ -432,7 +432,7 @@ async function stepSearch({ settings, has, next, back }) {
   return h(
     'div', { class: 'card' },
     h('h2', {}, 'Web search (Recommended)'),
-    h('p', { class: 'muted small' }, 'Lets A.D.R.I.A.N. look up news, scores and other recent things. Tavily’s free plan includes 1,000 searches a month (sign up at tavily.com). Searches are read-only. Optional: without it she answers from what the model knows, and you can add the key later.'),
+    h('p', { class: 'muted small' }, 'Lets A.D.R.I.A.N. look up news, scores and other recent things. Tavily’s free plan includes 1,000 credits a month, about 500 of her searches (sign up at tavily.com). Searches are read-only. Optional: without it she answers from what the model knows, and you can add the key later.'),
     h('label', { class: 'choice' }, on, 'Use web search'),
     h('label', {}, 'Tavily API key'), key, test, out,
     h('div', {}, back, save),
@@ -609,7 +609,7 @@ function spendCard(d, sp) {
         ? `${num(p.cloudStt.today)} today, ${num(p.cloudStt.month)} this month (about ${usd(p.cloudStt.estMonthUsd)})`
         : off()),
       row('Web search (Tavily)', p.search.on || p.search.month
-        ? `${num(p.search.today)} today, ${num(p.search.month)} this month (the free plan has ${num(p.search.freePlan)})`
+        ? `Credits: ${num(p.search.today)} today, ${num(p.search.month)} this month (a web search uses two; the free plan has ${num(p.search.freePlan)})`
         : off(), p.search.on ? meter(p.search.month, p.search.freePlan) : null)),
     h('p', { class: 'small muted' }, `The dollar caps count the language model only. The other services have their own plans; these are counted here since ${when(d.since)}.`),
     sp.history.length

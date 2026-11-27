@@ -38,7 +38,8 @@ export interface ControllerDeps {
    *  to her (the model judges it like a follow-up). */
   respond(userId: UserId, command: string, signal: AbortSignal, followUp?: boolean, loose?: boolean): Promise<void | 'silent' | 'done' | 'asked'>;
   /** A stop for the bot while it isn't talking (stops the music). */
-  stopOther?: (userId: UserId) => void;
+  /** A stop phrase with nothing being said: whatever else plays (`said` is their words). */
+  stopOther?: (userId: UserId, said?: string) => void;
   /** Short fixed reply (apologies, "Yes?", announcements); stops when `signal` aborts. */
   say(text: string, signal?: AbortSignal): Promise<void>;
   isPriority(userId: UserId): boolean;
@@ -285,7 +286,7 @@ export class ConversationController {
         // Music only stops when the stop was clearly for the bot: said with the
         // name, or by someone it's talking with, and not just an everyday word.
         // "Stop listening" is about her, not the music.
-        if ((e.woke || listening) && (!intent.weak || e.woke) && !intent.listen) this.d.stopOther?.(e.userId);
+        if ((e.woke || listening) && (!intent.weak || e.woke) && !intent.listen) this.d.stopOther?.(e.userId, text);
         if (forBot) this.stopped(e.userId);
         return;
       }

@@ -313,7 +313,7 @@ export function attention(i: DashboardInput, p: Providers, u: ReturnType<typeof 
     else if (used >= 0.8 * of) add('warn', `The cloud voice has used ${pctOf(used, of)}% of its characters for this month (${used.toLocaleString('en-US')} of ${of.toLocaleString('en-US')}).`);
   }
   if (p.search.on && p.search.month >= 0.8 * TAVILY_FREE) {
-    add('warn', `${p.search.month.toLocaleString('en-US')} web searches this month. Tavily's free plan has ${TAVILY_FREE.toLocaleString('en-US')}; past that, searches fail until next month unless the plan is bigger.`);
+    add('warn', `${p.search.month.toLocaleString('en-US')} Tavily credits used this month (a web search uses two). The free plan has ${TAVILY_FREE.toLocaleString('en-US')}; past that, searches fail until next month unless the plan is bigger.`);
   }
 
   // Links.

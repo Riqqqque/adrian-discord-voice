@@ -533,7 +533,7 @@ describe('needs attention', () => {
     expect(d.providers.cloudVoice).toMatchObject({ on: true, monthChars: 91_000, monthlyChars: 100_000 });
     expect(d.attention.map((a) => a.text)).toEqual([
       'The cloud voice has used 91% of its characters for this month (91,000 of 100,000).',
-      "850 web searches this month. Tavily's free plan has 1,000; past that, searches fail until next month unless the plan is bigger.",
+      "850 Tavily credits used this month (a web search uses two). The free plan has 1,000; past that, searches fail until next month unless the plan is bigger.",
     ]);
   });
 

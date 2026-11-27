@@ -19,7 +19,7 @@ import { cachedTool, tavilySearchTool, timeTool, topResultUrl, webYoutubeVideos 
 import type { PocConfig } from '../config.js';
 import { ConversationController, DEFAULT_CONTROLLER_OPTIONS } from '../conversation/controller.js';
 import type { LlmProvider, Logger, Tool, UserId, VoiceTransport } from '../core/interfaces.js';
-import { afterBareVerb, bareMusicVerb, classify, classifyMusic, isTimeQuestion, type PendingPlay } from '../conversation/intents.js';
+import { afterBareVerb, bareMusicVerb, classify, classifyMusic, isTimeQuestion, type MusicIntent, type PendingPlay } from '../conversation/intents.js';
 import { RoomTalk } from '../conversation/room.js';
 import { matureContext } from '../brain/mature.js';
 import { LIMIT_MESSAGES, UsageLedger } from '../limits/usage-ledger.js';
@@ -87,6 +87,7 @@ import { PcPushToTalk, type PttHooks } from '../satellite/ptt.js';
 import { PcRecorder } from '../satellite/recorder.js';
 import { startSatelliteServer } from '../satellite/server.js';
 import { PC_RULE, pcTools, PowerDownWindow } from '../satellite/tools.js';
+import { NAMES_MUSIC, PC_MUSIC_MS, pcMusicOrder, pcMusicReply } from '../satellite/pc-music.js';
 import { answerForLog, PRIVATE_TOOLS, PrivateTurns } from '../satellite/senses.js';
 import { GameQuiet, gamingLine, HeldItems, reminderBrief, toldLine } from '../satellite/quiet.js';
 import { pcDiscordTools, watchDiscord } from '../features/handoff-discord.js';
@@ -1291,6 +1292,23 @@ export async function startVoiceStack(
   }
 
   /** "play X", "skip", "pause"...: answered without the model. */
+  /** "Pause", "skip", "mute my music" at a PC while her own music is off: the
+   *  PC's player, with no model call. Nothing is said when it worked (the
+   *  music stopping is the answer), only what went wrong. False when it's one
+   *  for the model (no PC, "who asked for this"). */
+  async function pcMusic(rm: Room, userId: UserId, m: MusicIntent, signal: AbortSignal): Promise<boolean> {
+    if (m.kind !== 'control') return false;
+    const order = pcMusicOrder(m);
+    const pc = order && pcFor({ userId, channelId: rm.key });
+    if (!order || !pc) return false;
+    const r = await pc.action(order.name, order.args, PC_MUSIC_MS).catch(() => ({ ok: false, result: "The PC didn't answer in time." }));
+    if (config.satellite.logTranscripts) log.info('pc action', { name: order.name, args: order.args, result: r.result.slice(0, 200), local: true });
+    if (signal.aborted) return true;
+    const said = pcMusicReply(m.action, r);
+    if (said) await rm.speaker.speak(fixed(said), rm.speech, signal);
+    return true;
+  }
+
   async function localMusic(rm: Room, userId: UserId, command: string, signal: AbortSignal, onWorking?: (on: boolean) => void): Promise<boolean> {
     const refused = musicRefusal(ignored, userId);
     if (refused && rm.music && (PLAY_THAT_LINK.test(command) || classifyMusic(command))) {
@@ -1302,9 +1320,14 @@ export async function startVoiceStack(
     const music = rm.music;
     if (!m || !music) return false;
     // At a PC, "pause", "skip" and "what's playing" mean whatever the PC is
-    // playing (Spotify, a video) unless her own music is on: the model's PC
-    // tools handle that.
-    if (rm.ui && m.kind !== 'play' && !music.nowPlaying && !music.lent) return false;
+    // playing (Spotify, a video) unless her own music is on, and they go
+    // straight to it: the model sometimes paused her own empty player instead
+    // ("Nothing's playing") while Spotify played on. In her call, the same
+    // goes for someone with a PC connected while her music there is off.
+    if (m.kind !== 'play' && !music.nowPlaying && !music.lent) {
+      if (rm.ui) return pcMusic(rm, userId, m, signal);
+      if (pcFor({ userId }) && (await pcMusic(rm, userId, m, signal))) return true;
+    }
     const say = (t: string) => rm.speaker.speak(fixed(t), rm.speech, signal);
     // A quiz has the music: skip and stop are its own, the volume is the clip's,
     // and the rest waits for it to end.
@@ -1352,6 +1375,12 @@ export async function startVoiceStack(
     switch (m.action) {
       case 'pause':
         if (!music.pause()) await say("Nothing's playing.");
+        return true;
+      case 'mute': // her own music: as good as a pause
+        if (!music.pause()) await say("Nothing's playing.");
+        return true;
+      case 'unmute':
+        if (!music.resume()) await say(music.nowPlaying ? "It's already playing." : "Nothing's paused.");
         return true;
       case 'resume':
         if (!music.resume()) await say(music.nowPlaying ? "It's already playing." : "Nothing's paused.");
@@ -1673,8 +1702,10 @@ export async function startVoiceStack(
     canStop: (id) => isOwner(id),
     ack: (id) => (isOwner(id) && config.ownerAck.length ? `${nextOwnerAck().replace(/[.!]+$/, '')}?` : config.nicknames[id] ? `Yes, ${config.nicknames[id]}?` : 'Yes?'),
     preempts: (id) => isOwner(id),
-    stopOther: (id) => {
+    stopOther: (id, said) => {
       if (rm.music?.stop()) log.info('music stopped', { by: id, how: 'stop phrase', room: rm.key });
+      // "Shut up the music" at a PC with hers off: whatever the PC is playing.
+      else if ((rm.ui || pcFor({ userId: id })) && !rm.music?.lent && said && NAMES_MUSIC.test(said)) void pcMusic(rm, id, { kind: 'control', action: 'pause' }, AbortSignal.timeout(PC_MUSIC_MS + 1000));
     },
     onStopped: (id) => {
       rm.sound.stop();
